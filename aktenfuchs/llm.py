@@ -117,6 +117,7 @@ def _call_ollama(
         prompt_eval_duration_ms,
         eval_duration_ms,
     )
+    logger.debug("Ollama raw output:\n%s", content)
     return content
 
 
@@ -248,6 +249,7 @@ def analyze_document(
         return analysis, warnings
     except Exception as first_exc:  # noqa: BLE001
         logger.warning("LLM returned invalid JSON, retrying with repair prompt: %s", first_exc)
+        logger.debug("Pass 2 failed – raw response was:\n%s", raw)
         warnings.append(f"First LLM response was invalid JSON: {first_exc}")
 
     # --- Retry with repair prompt ---
@@ -266,6 +268,7 @@ def analyze_document(
         return analysis, warnings
     except Exception as second_exc:  # noqa: BLE001
         logger.error("LLM returned invalid JSON after retry: %s", second_exc)
+        logger.debug("Pass 2 repair failed – raw response was:\n%s", raw2)
         raise ValueError(
             f"LLM returned invalid JSON after repair attempt: {second_exc}"
         ) from second_exc
