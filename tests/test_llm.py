@@ -305,6 +305,40 @@ class TestDescriptionFallback:
         assert analysis.summary_short == plain_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
 
     @patch("aktenfuchs.llm._call_ollama")
+    def test_full_summary_filled_from_pass1_when_llm_omits_it(self, mock_call):
+        """When JSON has no summary field, the full pass-1 plain text is stored in summary."""
+        plain_summary = "Full detailed plain-text summary from pass 1 that is longer than 120 chars. " * 3
+        assert len(plain_summary) > DESCRIPTION_SHORT_MAX_CHARS, "test fixture must exceed cap"
+        mock_call.side_effect = [plain_summary, self._make_json_without_summary_short()]
+
+        analysis, _ = analyze_document(
+            "Raw OCR",
+            base_url="http://localhost:11434",
+            model="qwen3:8b",
+            language="de",
+            allowed_categories=["Invoices", "Other"],
+        )
+
+        assert analysis.summary == plain_summary.strip()
+        # summary_short should be capped but summary must be the full text
+        assert len(analysis.summary) > DESCRIPTION_SHORT_MAX_CHARS
+
+    @patch("aktenfuchs.llm._call_ollama")
+    def test_summary_not_overwritten_when_llm_provides_it(self, mock_call):
+        """When the LLM provides summary in pass 2, it must not be replaced by pass-1 text."""
+        mock_call.side_effect = [_PLAIN_SUMMARY, _VALID_ANALYSIS_JSON]
+
+        analysis, _ = analyze_document(
+            "Raw OCR",
+            base_url="http://localhost:11434",
+            model="qwen3:8b",
+            language="de",
+            allowed_categories=["Invoices", "Other"],
+        )
+
+        assert analysis.summary == "Test GmbH invoices a software license fee of EUR 500."
+
+    @patch("aktenfuchs.llm._call_ollama")
     def test_summary_short_filled_from_summary_in_schema(self, mock_call):
         """When JSON has summary but no summary_short, schema fills summary_short."""
         mock_call.side_effect = ["plain summary", self._make_json_with_summary_only()]

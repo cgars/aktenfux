@@ -154,22 +154,35 @@ def _summarize_with_llm(
         use_json_format=False,
     )
     logger.debug("Pass 1 – summary generated: summary_chars=%d", len(summary))
+    logger.debug("Pass 1 – full summary:\n%s", summary)
     return summary
 
 
 def _apply_description_fallback(analysis: DocumentAnalysis, plain_summary: str) -> None:
-    """Ensure *analysis.summary_short* is never empty.
+    """Ensure *analysis.summary* and *analysis.summary_short* are never empty.
 
-    The schema validator already fills it from *summary* when present.
-    This function provides a last-resort fallback: the first
-    ``DESCRIPTION_SHORT_MAX_CHARS`` characters of the pass-1 plain-text
-    summary are used when both ``summary_short`` and ``summary`` are blank.
-    A DEBUG log is emitted so the caller can see the fallback was triggered.
+    The schema validator already fills *summary_short* from *summary* when present.
+    This function provides a last-resort fallback using the pass-1 plain-text summary:
+
+    * If *analysis.summary* is blank, the full pass-1 text is stored there so the
+      complete description is preserved (not just the truncated short version).
+    * If *analysis.summary_short* is still blank after the above, the first
+      ``DESCRIPTION_SHORT_MAX_CHARS`` characters of the pass-1 text are used.
+
+    A DEBUG log is emitted for each field that is filled this way.
     """
-    if not analysis.summary_short.strip() and plain_summary.strip():
-        # Normalize whitespace-only values to empty string before applying fallback.
-        # Strip the plain summary before truncating to avoid leading whitespace in the result.
-        stripped_summary = plain_summary.strip()
+    stripped_summary = plain_summary.strip()
+    if not stripped_summary:
+        return
+
+    if not analysis.summary.strip():
+        analysis.summary = stripped_summary
+        logger.debug(
+            "summary was empty; filled from pass-1 plain-text summary (%d chars)",
+            len(analysis.summary),
+        )
+
+    if not analysis.summary_short.strip():
         analysis.summary_short = stripped_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
         logger.debug(
             "summary_short was empty; filled from pass-1 plain-text summary (%d chars)",
