@@ -103,7 +103,7 @@ class TestDocumentAnalysis:
     def test_summary_short_truncated_at_120_chars_when_filled_from_summary(self):
         long_summary = "x" * 200
         da = DocumentAnalysis(summary=long_summary, summary_short="")
-        assert len(da.summary_short) == 120
+        assert da.summary_short == long_summary[:120]
 
     def test_summary_short_not_overwritten_when_provided(self):
         """An explicitly provided summary_short must not be overwritten."""

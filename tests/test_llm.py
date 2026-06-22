@@ -302,10 +302,8 @@ class TestDescriptionFallback:
             allowed_categories=["Invoices", "Other"],
         )
 
-        assert analysis.summary_short != ""
-        assert analysis.summary_short in plain_summary or plain_summary.startswith(
-            analysis.summary_short
-        )
+        from aktenfuchs.schema import DESCRIPTION_SHORT_MAX_CHARS
+        assert analysis.summary_short == plain_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
 
     @patch("aktenfuchs.llm._call_ollama")
     def test_summary_short_filled_from_summary_in_schema(self, mock_call):
@@ -340,7 +338,7 @@ class TestDescriptionFallback:
 
     @patch("aktenfuchs.llm._call_ollama")
     def test_pass1_fallback_truncated_at_120_chars(self, mock_call):
-        """Fallback from pass-1 summary is capped at _DESCRIPTION_FALLBACK_CHARS."""
+        """Fallback from pass-1 summary is capped at DESCRIPTION_SHORT_MAX_CHARS."""
         long_summary = "A" * 300
         mock_call.side_effect = [long_summary, self._make_json_without_summary_short()]
 
@@ -352,5 +350,5 @@ class TestDescriptionFallback:
             allowed_categories=["Invoices", "Other"],
         )
 
-        from aktenfuchs.llm import _DESCRIPTION_FALLBACK_CHARS
-        assert len(analysis.summary_short) <= _DESCRIPTION_FALLBACK_CHARS
+        from aktenfuchs.schema import DESCRIPTION_SHORT_MAX_CHARS
+        assert analysis.summary_short == long_summary[:DESCRIPTION_SHORT_MAX_CHARS]

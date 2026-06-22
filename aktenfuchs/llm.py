@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from aktenfuchs.schema import DocumentAnalysis
+from aktenfuchs.schema import DESCRIPTION_SHORT_MAX_CHARS, DocumentAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +35,6 @@ _REPAIR_SUFFIX = (
     "\n\nYour previous response was not valid JSON. "
     "Please reply ONLY with valid JSON, no markdown, no explanation."
 )
-
-# Characters from the pass-1 plain-text summary used as last-resort fallback
-# for summary_short when the LLM leaves it blank in the JSON response.
-_DESCRIPTION_FALLBACK_CHARS = 120
 
 
 def _build_summarize_prompt(ocr_text: str, language: str) -> str:
@@ -166,13 +162,12 @@ def _apply_description_fallback(analysis: DocumentAnalysis, plain_summary: str) 
 
     The schema validator already fills it from *summary* when present.
     This function provides a last-resort fallback: the first
-    ``_DESCRIPTION_FALLBACK_CHARS`` characters of the pass-1 plain-text
+    ``DESCRIPTION_SHORT_MAX_CHARS`` characters of the pass-1 plain-text
     summary are used when both ``summary_short`` and ``summary`` are blank.
-    A warning is added to ``analysis`` via the *warnings* side-channel so
-    the caller is informed.
+    A DEBUG log is emitted so the caller can see the fallback was triggered.
     """
     if not analysis.summary_short and plain_summary:
-        analysis.summary_short = plain_summary[:_DESCRIPTION_FALLBACK_CHARS].rstrip()
+        analysis.summary_short = plain_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
         logger.debug(
             "summary_short was empty; filled from pass-1 plain-text summary (%d chars)",
             len(analysis.summary_short),

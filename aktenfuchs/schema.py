@@ -7,6 +7,11 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+# Maximum characters for the auto-filled short description / summary_short.
+# Also used by llm.py as the last-resort fallback length.
+DESCRIPTION_SHORT_MAX_CHARS = 120
+
+
 # ---------------------------------------------------------------------------
 # Document type and category enums
 # ---------------------------------------------------------------------------
@@ -101,7 +106,7 @@ class DocumentAnalysis(BaseModel):
     def ensure_summary_short(self) -> "DocumentAnalysis":
         """Fill summary_short from summary when the LLM leaves it blank."""
         if not self.summary_short and self.summary:
-            self.summary_short = self.summary[:120].rstrip()
+            self.summary_short = self.summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
         return self
 
 
