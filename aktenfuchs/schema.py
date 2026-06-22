@@ -103,7 +103,7 @@ class DocumentAnalysis(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-DocumentStatus = Literal["review", "approved", "rejected", "error"]
+DocumentStatus = Literal["review", "approved", "rejected", "error", "dry_run"]
 
 
 class SidecarDocument(BaseModel):

@@ -14,6 +14,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "imported_dir": "_Imported",
     "error_dir": "_Error",
     "archive_dir": "Archive",
+    "dry_run_dir": "_DryRun",
     "ollama_url": "http://localhost:11434",
     "ollama_model": "qwen3:8b",
     "ollama_timeout": 120.0,
@@ -57,6 +58,7 @@ class AktenfuchsConfig:
         self.imported_dir: str = merged["imported_dir"]
         self.error_dir: str = merged["error_dir"]
         self.archive_dir: str = merged["archive_dir"]
+        self.dry_run_dir: str = merged["dry_run_dir"]
 
         self.ollama_url: str = merged["ollama_url"]
         self.ollama_model: str = merged["ollama_model"]
@@ -102,6 +104,10 @@ class AktenfuchsConfig:
     def archive_path(self) -> Path:
         return self.base_dir / self.archive_dir
 
+    @property
+    def dry_run_path(self) -> Path:
+        return self.base_dir / self.dry_run_dir
+
     def all_working_dirs(self) -> list[Path]:
         return [
             self.inbox_path,
@@ -109,6 +115,7 @@ class AktenfuchsConfig:
             self.imported_path,
             self.error_path,
             self.archive_path,
+            self.dry_run_path,
         ]
 
 
