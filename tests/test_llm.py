@@ -12,7 +12,7 @@ from aktenfuchs.llm import (
     _summarize_with_llm,
     analyze_document,
 )
-from aktenfuchs.schema import DocumentAnalysis
+from aktenfuchs.schema import DESCRIPTION_SHORT_MAX_CHARS, DocumentAnalysis
 
 _VALID_ANALYSIS_JSON = json.dumps(
     {
@@ -302,7 +302,6 @@ class TestDescriptionFallback:
             allowed_categories=["Invoices", "Other"],
         )
 
-        from aktenfuchs.schema import DESCRIPTION_SHORT_MAX_CHARS
         assert analysis.summary_short == plain_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
 
     @patch("aktenfuchs.llm._call_ollama")
@@ -350,5 +349,25 @@ class TestDescriptionFallback:
             allowed_categories=["Invoices", "Other"],
         )
 
-        from aktenfuchs.schema import DESCRIPTION_SHORT_MAX_CHARS
         assert analysis.summary_short == long_summary[:DESCRIPTION_SHORT_MAX_CHARS]
+
+    @patch("aktenfuchs.llm._call_ollama")
+    def test_pass1_fallback_rstrips_trailing_whitespace(self, mock_call):
+        """Trailing whitespace at the truncation boundary is stripped."""
+        # Put trailing spaces exactly at the cut point so rstrip matters
+        core = "B" * (DESCRIPTION_SHORT_MAX_CHARS - 5)
+        trailing = "   \t " + "C" * 200
+        long_summary = core + trailing  # spaces fall inside the 120-char window
+        mock_call.side_effect = [long_summary, self._make_json_without_summary_short()]
+
+        analysis, _ = analyze_document(
+            "Raw OCR",
+            base_url="http://localhost:11434",
+            model="qwen3:8b",
+            language="de",
+            allowed_categories=["Invoices", "Other"],
+        )
+
+        assert not analysis.summary_short.endswith(" ")
+        assert not analysis.summary_short.endswith("\t")
+        assert analysis.summary_short == long_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()

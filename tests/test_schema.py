@@ -6,7 +6,13 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from aktenfuchs.schema import Amount, DocumentAnalysis, Entities, SidecarDocument
+from aktenfuchs.schema import (
+    DESCRIPTION_SHORT_MAX_CHARS,
+    Amount,
+    DocumentAnalysis,
+    Entities,
+    SidecarDocument,
+)
 
 
 class TestAmount:
@@ -103,7 +109,16 @@ class TestDocumentAnalysis:
     def test_summary_short_truncated_at_120_chars_when_filled_from_summary(self):
         long_summary = "x" * 200
         da = DocumentAnalysis(summary=long_summary, summary_short="")
-        assert da.summary_short == long_summary[:120]
+        assert da.summary_short == long_summary[:DESCRIPTION_SHORT_MAX_CHARS]
+
+    def test_summary_short_rstrips_trailing_whitespace_from_summary(self):
+        """Trailing whitespace at the truncation boundary must be stripped."""
+        core = "y" * (DESCRIPTION_SHORT_MAX_CHARS - 5)
+        trailing = "   " + "z" * 200  # spaces fall within the 120-char window
+        long_summary = core + trailing
+        da = DocumentAnalysis(summary=long_summary, summary_short="")
+        assert not da.summary_short.endswith(" ")
+        assert da.summary_short == long_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
 
     def test_summary_short_not_overwritten_when_provided(self):
         """An explicitly provided summary_short must not be overwritten."""

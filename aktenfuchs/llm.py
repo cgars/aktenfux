@@ -166,7 +166,7 @@ def _apply_description_fallback(analysis: DocumentAnalysis, plain_summary: str) 
     summary are used when both ``summary_short`` and ``summary`` are blank.
     A DEBUG log is emitted so the caller can see the fallback was triggered.
     """
-    if not analysis.summary_short and plain_summary:
+    if not analysis.summary_short.strip() and plain_summary.strip():
         analysis.summary_short = plain_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
         logger.debug(
             "summary_short was empty; filled from pass-1 plain-text summary (%d chars)",
