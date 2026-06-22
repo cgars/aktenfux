@@ -15,7 +15,9 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 # Number of characters shown for the document ID in the review table.
-_ID_DISPLAY_LENGTH = 14
+# Must match _DOC_ID_LENGTH in main.py (16) so the full ID is visible and
+# can be copy-pasted directly into `afu approve` / `afu reject`.
+_ID_DISPLAY_LENGTH = 16
 
 
 def list_review_documents(review_path: Path) -> list[SidecarDocument]:
@@ -35,13 +37,19 @@ def list_review_documents(review_path: Path) -> list[SidecarDocument]:
 
 
 def find_document_by_id(review_path: Path, doc_id: str) -> tuple[Path, SidecarDocument] | None:
-    """Find a PDF and its sidecar in *review_path* by document ID."""
+    """Find a PDF and its sidecar in *review_path* by document ID.
+
+    *doc_id* is matched against the full stored ID first (exact match), then
+    as a prefix, so users can supply the abbreviated ID shown in the review table.
+    """
     if not review_path.exists():
         return None
 
     for pdf in review_path.glob("*.pdf"):
         sidecar = read_sidecar(pdf)
-        if sidecar is not None and sidecar.id == doc_id:
+        if sidecar is not None and (
+            sidecar.id == doc_id or sidecar.id.startswith(doc_id)
+        ):
             return pdf, sidecar
 
     return None
