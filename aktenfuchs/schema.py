@@ -97,6 +97,13 @@ class DocumentAnalysis(BaseModel):
             self.action_summary = None
         return self
 
+    @model_validator(mode="after")
+    def ensure_summary_short(self) -> "DocumentAnalysis":
+        """Fill summary_short from summary when the LLM leaves it blank."""
+        if not self.summary_short and self.summary:
+            self.summary_short = self.summary[:120].rstrip()
+        return self
+
 
 # ---------------------------------------------------------------------------
 # Sidecar document (stored as JSON next to the PDF)

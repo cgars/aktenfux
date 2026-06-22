@@ -135,6 +135,17 @@ def _process_single(pdf: Path, config: AktenfuchsConfig) -> None:
         _move_to_error(pdf, config, reason=f"LLM analysis failed: {exc}")
         return
 
+    # --- Log description and warn if still empty after all fallbacks ---
+    logger.debug(
+        "Analysis for %s: description=%r category=%s confidence=%.0f%%",
+        pdf.name,
+        analysis.summary_short,
+        analysis.category,
+        analysis.confidence * 100,
+    )
+    if not analysis.summary_short:
+        logger.warning("summary_short is empty for %s; sidecar will have no description.", pdf.name)
+
     # --- Patch LLM suggestions if empty ---
     if not analysis.suggested_filename:
         analysis.suggested_filename = make_suggested_filename(

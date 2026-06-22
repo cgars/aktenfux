@@ -256,3 +256,101 @@ class TestSummarizeWithLlm:
         )
 
         assert mock_call.call_args.kwargs.get("use_json_format") is False
+
+
+class TestDescriptionFallback:
+    """summary_short must never be empty after analyze_document returns."""
+
+    def _make_json_without_summary_short(self) -> str:
+        """Valid analysis JSON where summary_short and summary are both absent."""
+        return json.dumps(
+            {
+                "document_type": "Invoice",
+                "category": "Invoices",
+                "confidence": 0.7,
+                "suggested_filename": "invoice.pdf",
+                "suggested_folder": "Invoices",
+                "action_required": False,
+            }
+        )
+
+    def _make_json_with_summary_only(self) -> str:
+        """Valid analysis JSON where summary is present but summary_short is not."""
+        return json.dumps(
+            {
+                "document_type": "Invoice",
+                "category": "Invoices",
+                "confidence": 0.7,
+                "summary": "Full length summary of the invoice document.",
+                "suggested_filename": "invoice.pdf",
+                "suggested_folder": "Invoices",
+                "action_required": False,
+            }
+        )
+
+    @patch("aktenfuchs.llm._call_ollama")
+    def test_summary_short_filled_from_pass1_when_both_empty(self, mock_call):
+        """When JSON has no summary_short/summary, the pass-1 text is used."""
+        plain_summary = "Plain text summary from pass 1."
+        mock_call.side_effect = [plain_summary, self._make_json_without_summary_short()]
+
+        analysis, _ = analyze_document(
+            "Raw OCR",
+            base_url="http://localhost:11434",
+            model="qwen3:8b",
+            language="de",
+            allowed_categories=["Invoices", "Other"],
+        )
+
+        assert analysis.summary_short != ""
+        assert analysis.summary_short in plain_summary or plain_summary.startswith(
+            analysis.summary_short
+        )
+
+    @patch("aktenfuchs.llm._call_ollama")
+    def test_summary_short_filled_from_summary_in_schema(self, mock_call):
+        """When JSON has summary but no summary_short, schema fills summary_short."""
+        mock_call.side_effect = ["plain summary", self._make_json_with_summary_only()]
+
+        analysis, _ = analyze_document(
+            "Raw OCR",
+            base_url="http://localhost:11434",
+            model="qwen3:8b",
+            language="de",
+            allowed_categories=["Invoices", "Other"],
+        )
+
+        assert analysis.summary_short != ""
+        assert "invoice" in analysis.summary_short.lower()
+
+    @patch("aktenfuchs.llm._call_ollama")
+    def test_summary_short_not_overwritten_when_llm_provides_it(self, mock_call):
+        """When the LLM provides summary_short, it must not be replaced."""
+        mock_call.side_effect = [_PLAIN_SUMMARY, _VALID_ANALYSIS_JSON]
+
+        analysis, _ = analyze_document(
+            "Raw OCR",
+            base_url="http://localhost:11434",
+            model="qwen3:8b",
+            language="de",
+            allowed_categories=["Invoices", "Other"],
+        )
+
+        assert analysis.summary_short == "Invoice for software license."
+
+    @patch("aktenfuchs.llm._call_ollama")
+    def test_pass1_fallback_truncated_at_120_chars(self, mock_call):
+        """Fallback from pass-1 summary is capped at _DESCRIPTION_FALLBACK_CHARS."""
+        long_summary = "A" * 300
+        mock_call.side_effect = [long_summary, self._make_json_without_summary_short()]
+
+        analysis, _ = analyze_document(
+            "Raw OCR",
+            base_url="http://localhost:11434",
+            model="qwen3:8b",
+            language="de",
+            allowed_categories=["Invoices", "Other"],
+        )
+
+        from aktenfuchs.llm import _DESCRIPTION_FALLBACK_CHARS
+        assert len(analysis.summary_short) <= _DESCRIPTION_FALLBACK_CHARS

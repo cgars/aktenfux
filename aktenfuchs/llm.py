@@ -36,6 +36,10 @@ _REPAIR_SUFFIX = (
     "Please reply ONLY with valid JSON, no markdown, no explanation."
 )
 
+# Characters from the pass-1 plain-text summary used as last-resort fallback
+# for summary_short when the LLM leaves it blank in the JSON response.
+_DESCRIPTION_FALLBACK_CHARS = 120
+
 
 def _build_summarize_prompt(ocr_text: str, language: str) -> str:
     return (
@@ -157,6 +161,24 @@ def _summarize_with_llm(
     return summary
 
 
+def _apply_description_fallback(analysis: DocumentAnalysis, plain_summary: str) -> None:
+    """Ensure *analysis.summary_short* is never empty.
+
+    The schema validator already fills it from *summary* when present.
+    This function provides a last-resort fallback: the first
+    ``_DESCRIPTION_FALLBACK_CHARS`` characters of the pass-1 plain-text
+    summary are used when both ``summary_short`` and ``summary`` are blank.
+    A warning is added to ``analysis`` via the *warnings* side-channel so
+    the caller is informed.
+    """
+    if not analysis.summary_short and plain_summary:
+        analysis.summary_short = plain_summary[:_DESCRIPTION_FALLBACK_CHARS].rstrip()
+        logger.debug(
+            "summary_short was empty; filled from pass-1 plain-text summary (%d chars)",
+            len(analysis.summary_short),
+        )
+
+
 def analyze_document(
     ocr_text: str,
     *,
@@ -205,10 +227,12 @@ def analyze_document(
 
     try:
         analysis = _parse_analysis(raw)
+        _apply_description_fallback(analysis, summary)
         logger.debug(
-            "LLM analysis succeeded: category=%s confidence=%.2f",
+            "LLM analysis succeeded: category=%s confidence=%.2f description=%r",
             analysis.category,
             analysis.confidence,
+            analysis.summary_short,
         )
         return analysis, warnings
     except Exception as first_exc:  # noqa: BLE001
@@ -222,7 +246,12 @@ def analyze_document(
 
     try:
         analysis = _parse_analysis(raw2)
-        logger.debug("LLM analysis succeeded after repair: category=%s", analysis.category)
+        _apply_description_fallback(analysis, summary)
+        logger.debug(
+            "LLM analysis succeeded after repair: category=%s description=%r",
+            analysis.category,
+            analysis.summary_short,
+        )
         return analysis, warnings
     except Exception as second_exc:  # noqa: BLE001
         logger.error("LLM returned invalid JSON after retry: %s", second_exc)

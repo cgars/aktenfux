@@ -95,6 +95,29 @@ class TestDocumentAnalysis:
         with pytest.raises(ValidationError):
             DocumentAnalysis(document_type="Nonsense")
 
+    def test_summary_short_filled_from_summary_when_empty(self):
+        """summary_short must be auto-filled from summary when the LLM omits it."""
+        da = DocumentAnalysis(summary="A longer description of the document.", summary_short="")
+        assert da.summary_short == "A longer description of the document."
+
+    def test_summary_short_truncated_at_120_chars_when_filled_from_summary(self):
+        long_summary = "x" * 200
+        da = DocumentAnalysis(summary=long_summary, summary_short="")
+        assert len(da.summary_short) == 120
+
+    def test_summary_short_not_overwritten_when_provided(self):
+        """An explicitly provided summary_short must not be overwritten."""
+        da = DocumentAnalysis(
+            summary_short="Short desc.",
+            summary="Much longer summary text that should not replace the short one.",
+        )
+        assert da.summary_short == "Short desc."
+
+    def test_summary_short_stays_empty_when_no_summary(self):
+        """When both summary and summary_short are empty, summary_short remains empty."""
+        da = DocumentAnalysis(summary_short="", summary="")
+        assert da.summary_short == ""
+
     def test_json_roundtrip(self):
         da = DocumentAnalysis(
             document_date="2026-01-01",
