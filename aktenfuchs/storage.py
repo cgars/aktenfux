@@ -163,8 +163,8 @@ def move_file_with_sidecar(
 
     if source_json.exists():
         shutil.move(str(source_json), str(dest_json))
-        logger.info("Moved sidecar %s → %s", source_json, dest_json)
+        logger.debug("Moved sidecar %s → %s", source_json, dest_json)
 
     if move_markdown and source_md.exists():
         shutil.move(str(source_md), str(dest_md))
-        logger.info("Moved markdown %s → %s", source_md, dest_md)
+        logger.debug("Moved markdown %s → %s", source_md, dest_md)

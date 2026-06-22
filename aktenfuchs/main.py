@@ -34,6 +34,16 @@ def _generate_id() -> str:
 def process_inbox(config: AktenfuchsConfig) -> None:
     """Process all PDFs currently in the inbox folder."""
     inbox = config.inbox_path
+    logger.debug(
+        "process_inbox config: base_dir=%s ollama_url=%s model=%s timeout=120s "
+        "max_chars=%d language=%s dry_run=%s",
+        config.base_dir,
+        config.ollama_url,
+        config.ollama_model,
+        config.max_chars_for_llm,
+        config.language,
+        config.dry_run,
+    )
     if not inbox.exists():
         logger.warning("Inbox folder does not exist: %s", inbox)
         return
@@ -75,9 +85,17 @@ def _process_single(pdf: Path, config: AktenfuchsConfig) -> None:
         return
 
     truncated = truncate_text(ocr_text, config.max_chars_for_llm)
+    if len(truncated) < len(ocr_text):
+        logger.debug(
+            "Text truncated for LLM: original=%d chars → %d chars (limit=%d)",
+            len(ocr_text),
+            len(truncated),
+            config.max_chars_for_llm,
+        )
 
     # --- Compute SHA-256 ---
     file_hash = sha256_file(pdf)
+    logger.debug("SHA-256 for %s: %s", pdf.name, file_hash)
 
     # --- Duplicate check (SQLite) ---
     if config.use_sqlite_index:

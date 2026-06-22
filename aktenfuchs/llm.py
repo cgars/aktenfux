@@ -53,6 +53,13 @@ def _call_ollama(
     timeout: float = 120.0,
 ) -> str:
     """Call Ollama's /api/chat endpoint. Returns the raw response text."""
+    logger.debug(
+        "Calling Ollama: url=%s model=%s timeout=%.0fs prompt_chars=%d",
+        base_url,
+        model,
+        timeout,
+        len(user_prompt),
+    )
     payload: dict[str, Any] = {
         "model": model,
         "messages": [
@@ -68,7 +75,13 @@ def _call_ollama(
         data = response.json()
 
     # The chat endpoint wraps the response in message.content
-    return data.get("message", {}).get("content", "")
+    content = data.get("message", {}).get("content", "")
+    logger.debug(
+        "Ollama response received: model=%s response_chars=%d",
+        model,
+        len(content),
+    )
+    return content
 
 
 def _extract_json(text: str) -> str:
@@ -92,6 +105,7 @@ def analyze_document(
     model: str,
     language: str = "de",
     allowed_categories: list[str],
+    timeout: float = 120.0,
 ) -> tuple[DocumentAnalysis, list[str]]:
     """Analyze *ocr_text* with the local LLM and return a validated result.
 
@@ -99,23 +113,38 @@ def analyze_document(
     On failure raises an exception after one retry.
     """
     warnings: list[str] = []
+    logger.debug(
+        "Starting document analysis: model=%s url=%s timeout=%.0fs language=%s text_chars=%d",
+        model,
+        base_url,
+        timeout,
+        language,
+        len(ocr_text),
+    )
     user_prompt = _build_user_prompt(ocr_text, language, allowed_categories)
 
-    raw = _call_ollama(base_url, model, _SYSTEM_PROMPT, user_prompt)
+    raw = _call_ollama(base_url, model, _SYSTEM_PROMPT, user_prompt, timeout=timeout)
 
     try:
         analysis = _parse_analysis(raw)
+        logger.debug(
+            "LLM analysis succeeded: category=%s confidence=%.2f",
+            analysis.category,
+            analysis.confidence,
+        )
         return analysis, warnings
     except Exception as first_exc:  # noqa: BLE001
         logger.warning("LLM returned invalid JSON, retrying with repair prompt: %s", first_exc)
         warnings.append(f"First LLM response was invalid JSON: {first_exc}")
 
     # --- Retry with repair prompt ---
+    logger.debug("Sending repair prompt to model=%s timeout=%.0fs", model, timeout)
     repair_prompt = user_prompt + _REPAIR_SUFFIX
-    raw2 = _call_ollama(base_url, model, _SYSTEM_PROMPT, repair_prompt)
+    raw2 = _call_ollama(base_url, model, _SYSTEM_PROMPT, repair_prompt, timeout=timeout)
 
     try:
         analysis = _parse_analysis(raw2)
+        logger.debug("LLM analysis succeeded after repair: category=%s", analysis.category)
         return analysis, warnings
     except Exception as second_exc:  # noqa: BLE001
         logger.error("LLM returned invalid JSON after retry: %s", second_exc)

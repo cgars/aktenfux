@@ -43,6 +43,7 @@ def extract_text(pdf_path: Path) -> str:
     except Exception as exc:  # noqa: BLE001
         logger.warning("pypdf extraction failed for %s: %s", pdf_path, exc)
 
+    logger.debug("Falling back to pdfplumber for %s", pdf_path.name)
     try:
         return _extract_with_pdfplumber(pdf_path)
     except ImportError:
@@ -58,10 +59,18 @@ def _extract_with_pypdf(pdf_path: Path) -> str:
 
     text_parts: list[str] = []
     with pypdf.PdfReader(str(pdf_path)) as reader:
+        page_count = len(reader.pages)
         for page in reader.pages:
             page_text = page.extract_text() or ""
             text_parts.append(page_text)
-    return "\n".join(text_parts)
+    text = "\n".join(text_parts)
+    logger.debug(
+        "pypdf extracted %d chars from %d page(s) in %s",
+        len(text),
+        page_count,
+        pdf_path.name,
+    )
+    return text
 
 
 def _extract_with_pdfplumber(pdf_path: Path) -> str:
@@ -69,10 +78,18 @@ def _extract_with_pdfplumber(pdf_path: Path) -> str:
 
     text_parts: list[str] = []
     with pdfplumber.open(str(pdf_path)) as pdf:
+        page_count = len(pdf.pages)
         for page in pdf.pages:
             page_text = page.extract_text() or ""
             text_parts.append(page_text)
-    return "\n".join(text_parts)
+    text = "\n".join(text_parts)
+    logger.debug(
+        "pdfplumber extracted %d chars from %d page(s) in %s",
+        len(text),
+        page_count,
+        pdf_path.name,
+    )
+    return text
 
 
 def has_usable_text(text: str, min_chars: int = _MIN_USABLE_CHARS) -> bool:

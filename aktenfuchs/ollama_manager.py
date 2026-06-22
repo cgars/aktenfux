@@ -33,19 +33,26 @@ def is_ollama_installed() -> bool:
 
 def is_ollama_running(base_url: str = "http://localhost:11434") -> bool:
     """Return True if Ollama's HTTP API responds."""
+    logger.debug("Checking Ollama availability: url=%s timeout=%.0fs", base_url, _TIMEOUT)
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
             r = client.get(base_url)
-            return r.status_code < 500
-    except Exception:  # noqa: BLE001
+            running = r.status_code < 500
+            logger.debug("Ollama reachability check: status=%d running=%s", r.status_code, running)
+            return running
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Ollama not reachable: %s", exc)
         return False
 
 
 def list_models(base_url: str = "http://localhost:11434") -> list[str]:
     """Return the names of locally installed Ollama models."""
+    logger.debug("Listing Ollama models: url=%s timeout=%.0fs", base_url, _TIMEOUT)
     try:
         data = _get(f"{base_url}/api/tags")
-        return [m["name"] for m in data.get("models", [])]
+        models = [m["name"] for m in data.get("models", [])]
+        logger.debug("Ollama models available: %s", models)
+        return models
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not list Ollama models: %s", exc)
         return []
@@ -60,6 +67,7 @@ def ensure_model(model_name: str, base_url: str = "http://localhost:11434") -> b
     installed = list_models(base_url)
     # Ollama model names may include a tag; match on name prefix too.
     if any(m == model_name or m.startswith(model_name + ":") for m in installed):
+        logger.debug("Model '%s' is already installed locally.", model_name)
         return True
 
     print(
@@ -79,9 +87,11 @@ def ensure_model(model_name: str, base_url: str = "http://localhost:11434") -> b
 
 def pull_model(model_name: str, base_url: str = "http://localhost:11434") -> bool:
     """Pull *model_name* via the Ollama HTTP API. Returns True on success."""
+    _pull_timeout = 600.0
     logger.info("Pulling model %s …", model_name)
+    logger.debug("Pull request: url=%s model=%s timeout=%.0fs", base_url, model_name, _pull_timeout)
     try:
-        with httpx.Client(timeout=600.0) as client:
+        with httpx.Client(timeout=_pull_timeout) as client:
             with client.stream(
                 "POST",
                 f"{base_url}/api/pull",
@@ -99,9 +109,11 @@ def pull_model(model_name: str, base_url: str = "http://localhost:11434") -> boo
 
 def test_model(model_name: str, base_url: str = "http://localhost:11434") -> bool:
     """Send a small test prompt to *model_name*. Returns True on success."""
+    _test_timeout = 120.0
     logger.info("Testing model %s …", model_name)
+    logger.debug("Test request: url=%s model=%s timeout=%.0fs", base_url, model_name, _test_timeout)
     try:
-        with httpx.Client(timeout=120.0) as client:
+        with httpx.Client(timeout=_test_timeout) as client:
             response = client.post(
                 f"{base_url}/api/generate",
                 json={
