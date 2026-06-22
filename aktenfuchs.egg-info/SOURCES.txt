@@ -20,6 +20,7 @@ aktenfuchs.egg-info/dependency_links.txt
 aktenfuchs.egg-info/entry_points.txt
 aktenfuchs.egg-info/requires.txt
 aktenfuchs.egg-info/top_level.txt
+tests/test_dry_run_sidecar.py
 tests/test_filenames.py
 tests/test_schema.py
 tests/test_sidecar.py
