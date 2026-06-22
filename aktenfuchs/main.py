@@ -181,8 +181,9 @@ def _process_single(pdf: Path, config: AktenfuchsConfig) -> None:
         )
         # Write the sidecar to the dry-run folder so the LLM analysis is preserved.
         dry_run_dest = config.dry_run_path / sidecar.suggested_filename
+        dry_run_json = sidecar_path_for(dry_run_dest)
         sidecar.status = "dry_run"
-        sidecar.current_path = str(dry_run_dest)
+        sidecar.current_path = str(dry_run_json)
         config.dry_run_path.mkdir(parents=True, exist_ok=True)
         written = write_sidecar(sidecar, dry_run_dest)
         logger.info("[DRY-RUN] Sidecar written to %s", written)

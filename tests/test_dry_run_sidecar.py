@@ -59,6 +59,9 @@ class TestDryRunSidecar:
         assert dry_run_dir.exists(), "DryRun folder should be created"
         json_files = list(dry_run_dir.glob("*.json"))
         assert len(json_files) == 1, "Exactly one sidecar JSON should be written"
+        # current_path inside the sidecar should point to the JSON file itself
+        data = json.loads(json_files[0].read_text(encoding="utf-8"))
+        assert data["current_path"].endswith(".json")
 
     @patch("aktenfuchs.main.analyze_document")
     @patch("aktenfuchs.main.extract_text", return_value="Some invoice text " * 50)
