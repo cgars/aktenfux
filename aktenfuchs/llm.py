@@ -53,12 +53,16 @@ def _call_ollama(
     timeout: float = 120.0,
 ) -> str:
     """Call Ollama's /api/chat endpoint. Returns the raw response text."""
+    input_chars = len(system_prompt) + len(user_prompt)
+    input_tokens_estimate = input_chars // 4
     logger.debug(
-        "Calling Ollama: url=%s model=%s timeout=%.0fs prompt_chars=%d",
+        "Calling Ollama: url=%s model=%s timeout=%.0fs "
+        "input_chars=%d input_tokens_estimate=%d",
         base_url,
         model,
         timeout,
-        len(user_prompt),
+        input_chars,
+        input_tokens_estimate,
     )
     payload: dict[str, Any] = {
         "model": model,
@@ -76,10 +80,24 @@ def _call_ollama(
 
     # The chat endpoint wraps the response in message.content
     content = data.get("message", {}).get("content", "")
+    output_chars = len(content)
+
+    # Ollama reports durations in nanoseconds; convert to milliseconds for readability.
+    _ns_to_ms = 1_000_000
+    total_duration_ms = data.get("total_duration", 0) // _ns_to_ms
+    prompt_eval_duration_ms = data.get("prompt_eval_duration", 0) // _ns_to_ms
+    eval_duration_ms = data.get("eval_duration", 0) // _ns_to_ms
+    eval_count = data.get("eval_count", 0)
+
     logger.debug(
-        "Ollama response received: model=%s response_chars=%d",
+        "Ollama response: model=%s output_chars=%d eval_count=%d "
+        "total_duration=%dms prompt_eval_duration=%dms eval_duration=%dms",
         model,
-        len(content),
+        output_chars,
+        eval_count,
+        total_duration_ms,
+        prompt_eval_duration_ms,
+        eval_duration_ms,
     )
     return content
 
