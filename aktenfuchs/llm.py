@@ -168,7 +168,9 @@ def _apply_description_fallback(analysis: DocumentAnalysis, plain_summary: str) 
     """
     if not analysis.summary_short.strip() and plain_summary.strip():
         # Normalize whitespace-only values to empty string before applying fallback.
-        analysis.summary_short = plain_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
+        # Strip the plain summary before truncating to avoid leading whitespace in the result.
+        stripped_summary = plain_summary.strip()
+        analysis.summary_short = stripped_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
         logger.debug(
             "summary_short was empty; filled from pass-1 plain-text summary (%d chars)",
             len(analysis.summary_short),

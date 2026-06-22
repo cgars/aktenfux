@@ -357,7 +357,7 @@ class TestDescriptionFallback:
         # Put trailing spaces exactly at the cut point so rstrip matters
         core = "B" * (DESCRIPTION_SHORT_MAX_CHARS - 5)
         trailing = "   \t " + "C" * 200
-        long_summary = core + trailing  # spaces fall inside the 120-char window
+        long_summary = core + trailing  # spaces fall inside the DESCRIPTION_SHORT_MAX_CHARS window
         mock_call.side_effect = [long_summary, self._make_json_without_summary_short()]
 
         analysis, _ = analyze_document(
@@ -370,4 +370,4 @@ class TestDescriptionFallback:
 
         assert not analysis.summary_short.endswith(" ")
         assert not analysis.summary_short.endswith("\t")
-        assert analysis.summary_short == long_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
+        assert analysis.summary_short == long_summary.strip()[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
