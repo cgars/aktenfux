@@ -25,6 +25,29 @@ class TestAmount:
         a = Amount(label="total", amount=10.0)
         assert a.currency == "EUR"
 
+    def test_german_comma_decimal(self):
+        """German '500,00' should be parsed as 500.0."""
+        a = Amount(label="total", amount="500,00")
+        assert a.amount == pytest.approx(500.0)
+
+    def test_german_dot_thousands_comma_decimal(self):
+        """German '1.500,00' should be parsed as 1500.0."""
+        a = Amount(label="total", amount="1.500,00")
+        assert a.amount == pytest.approx(1500.0)
+
+    def test_amount_with_currency_symbol(self):
+        """Embedded currency symbols should be stripped."""
+        a = Amount(label="total", amount="€ 347,82")
+        assert a.amount == pytest.approx(347.82)
+
+    def test_amount_plain_float_string(self):
+        a = Amount(label="total", amount="123.45")
+        assert a.amount == pytest.approx(123.45)
+
+    def test_amount_empty_string_becomes_zero(self):
+        a = Amount(label="total", amount="")
+        assert a.amount == 0.0
+
 
 class TestEntities:
     def test_default_empty(self):
@@ -36,6 +59,19 @@ class TestEntities:
         e = Entities(organizations=["Acme Corp"], contract_numbers=["CN-001"])
         assert "Acme Corp" in e.organizations
         assert "CN-001" in e.contract_numbers
+
+    def test_entity_string_coerced_to_list(self):
+        """A comma-separated string should be split into a list."""
+        e = Entities(organizations="Acme Corp, Beta GmbH")
+        assert e.organizations == ["Acme Corp", "Beta GmbH"]
+
+    def test_entity_empty_string_becomes_empty_list(self):
+        e = Entities(people="")
+        assert e.people == []
+
+    def test_entity_non_list_non_string_becomes_empty_list(self):
+        e = Entities(organizations=None)
+        assert e.organizations == []
 
 
 class TestDocumentAnalysis:
@@ -72,8 +108,15 @@ class TestDocumentAnalysis:
         assert len(da.amounts) == 1
 
     def test_confidence_bounds(self):
-        with pytest.raises(ValidationError):
-            DocumentAnalysis(confidence=1.5)
+        # Values > 1.0 are interpreted as percentages and normalized, not rejected.
+        da = DocumentAnalysis(confidence=85)
+        assert da.confidence == pytest.approx(0.85)
+        da2 = DocumentAnalysis(confidence=1.5)  # 1.5 (as percentage) → 1.5/100 → 0.015
+        assert da2.confidence == pytest.approx(0.015)
+        # Values above 100% are clamped to 1.0.
+        da3 = DocumentAnalysis(confidence=150)
+        assert da3.confidence == pytest.approx(1.0)
+        # Negative values are still rejected.
         with pytest.raises(ValidationError):
             DocumentAnalysis(confidence=-0.1)
 
@@ -98,8 +141,9 @@ class TestDocumentAnalysis:
         assert da.document_date is None
 
     def test_invalid_document_type(self):
-        with pytest.raises(ValidationError):
-            DocumentAnalysis(document_type="Nonsense")
+        # Unknown document types fall back to "Other" instead of raising.
+        da = DocumentAnalysis(document_type="Nonsense")
+        assert da.document_type == "Other"
 
     def test_summary_short_filled_from_summary_when_empty(self):
         """summary_short must be auto-filled from summary when the LLM omits it."""
@@ -132,6 +176,76 @@ class TestDocumentAnalysis:
         """When both summary and summary_short are empty, summary_short remains empty."""
         da = DocumentAnalysis(summary_short="", summary="")
         assert da.summary_short == ""
+
+    # --- German / lenient coercion tests ---
+
+    def test_german_document_type_rechnung(self):
+        da = DocumentAnalysis(document_type="Rechnung")
+        assert da.document_type == "Invoice"
+
+    def test_german_document_type_vertrag(self):
+        da = DocumentAnalysis(document_type="vertrag")
+        assert da.document_type == "Contract"
+
+    def test_german_document_type_kontoauszug(self):
+        da = DocumentAnalysis(document_type="Kontoauszug")
+        assert da.document_type == "BankStatement"
+
+    def test_document_type_lowercase_canonical_accepted(self):
+        """Lowercase versions of canonical type names should be accepted."""
+        da = DocumentAnalysis(document_type="invoice")
+        assert da.document_type == "Invoice"
+
+    def test_german_null_date_becomes_none(self):
+        """German strings expressing 'unknown' should become None."""
+        for val in (
+            "unbekannt", "Unbekannt", "nicht angegeben", "Nicht angegeben",
+            "n/a", "N/A", "na", "-", "—", "null", "none",
+            "keine angabe", "nicht bekannt", "unknown", "not available",
+        ):
+            da = DocumentAnalysis(document_date=val)
+            assert da.document_date is None, f"expected None for {val!r}"
+
+    def test_confidence_percentage_normalized(self):
+        da = DocumentAnalysis(confidence=85)
+        assert da.confidence == pytest.approx(0.85)
+
+    def test_confidence_fraction_unchanged(self):
+        da = DocumentAnalysis(confidence=0.85)
+        assert da.confidence == pytest.approx(0.85)
+
+    def test_confidence_over_100_clamped(self):
+        da = DocumentAnalysis(confidence=150)
+        assert da.confidence == pytest.approx(1.0)
+
+    def test_tags_as_string_split_to_list(self):
+        da = DocumentAnalysis(tags="invoice, insurance, car")
+        assert da.tags == ["invoice", "insurance", "car"]
+
+    def test_tags_non_list_becomes_empty(self):
+        da = DocumentAnalysis(tags=None)
+        assert da.tags == []
+
+    def test_key_points_as_newline_string(self):
+        da = DocumentAnalysis(key_points="Point A\nPoint B\nPoint C")
+        assert da.key_points == ["Point A", "Point B", "Point C"]
+
+    def test_amounts_invalid_entries_dropped(self):
+        """Non-dict entries in 'amounts' should be silently dropped."""
+        data = {
+            "amounts": [
+                {"label": "total", "amount": "500,00"},
+                "not a dict",
+                None,
+                {"label": "fee", "amount": "12,50"},
+            ]
+        }
+        da = DocumentAnalysis.model_validate(data)
+        assert len(da.amounts) == 2
+        assert da.amounts[0].label == "total"
+        assert da.amounts[0].amount == pytest.approx(500.0)
+        assert da.amounts[1].label == "fee"
+        assert da.amounts[1].amount == pytest.approx(12.50)
 
     def test_json_roundtrip(self):
         da = DocumentAnalysis(
