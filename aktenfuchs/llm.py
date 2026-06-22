@@ -167,6 +167,7 @@ def _apply_description_fallback(analysis: DocumentAnalysis, plain_summary: str) 
     A DEBUG log is emitted so the caller can see the fallback was triggered.
     """
     if not analysis.summary_short.strip() and plain_summary.strip():
+        # Normalize whitespace-only values to empty string before applying fallback.
         analysis.summary_short = plain_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
         logger.debug(
             "summary_short was empty; filled from pass-1 plain-text summary (%d chars)",

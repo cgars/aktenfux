@@ -143,7 +143,7 @@ def _process_single(pdf: Path, config: AktenfuchsConfig) -> None:
         analysis.category,
         analysis.confidence * 100,
     )
-    if not analysis.summary_short:
+    if not analysis.summary_short.strip():
         logger.warning("summary_short is empty for %s; sidecar will have no description.", pdf.name)
 
     # --- Patch LLM suggestions if empty ---
