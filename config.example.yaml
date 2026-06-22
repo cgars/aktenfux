@@ -15,6 +15,8 @@ archive_dir: "Archive"
 # Ollama settings
 ollama_url: "http://localhost:11434"
 ollama_model: "qwen3:8b"
+# Timeout in seconds for LLM inference calls (increase for slower hardware or larger models).
+ollama_timeout: 120
 
 # Safety: dry_run is ON by default.
 # Set to false only after you have verified the setup.

@@ -35,11 +35,12 @@ def process_inbox(config: AktenfuchsConfig) -> None:
     """Process all PDFs currently in the inbox folder."""
     inbox = config.inbox_path
     logger.debug(
-        "process_inbox config: base_dir=%s ollama_url=%s model=%s timeout=120s "
+        "process_inbox config: base_dir=%s ollama_url=%s model=%s timeout=%.0fs "
         "max_chars=%d language=%s dry_run=%s",
         config.base_dir,
         config.ollama_url,
         config.ollama_model,
+        config.ollama_timeout,
         config.max_chars_for_llm,
         config.language,
         config.dry_run,
@@ -123,6 +124,7 @@ def _process_single(pdf: Path, config: AktenfuchsConfig) -> None:
             model=config.ollama_model,
             language=config.language,
             allowed_categories=config.allowed_top_level_categories,
+            timeout=config.ollama_timeout,
         )
         warnings.extend(llm_warnings)
     except Exception as exc:  # noqa: BLE001

@@ -16,6 +16,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "archive_dir": "Archive",
     "ollama_url": "http://localhost:11434",
     "ollama_model": "qwen3:8b",
+    "ollama_timeout": 120.0,
     "dry_run": True,
     "max_chars_for_llm": 12000,
     "language": "de",
@@ -59,6 +60,7 @@ class AktenfuchsConfig:
 
         self.ollama_url: str = merged["ollama_url"]
         self.ollama_model: str = merged["ollama_model"]
+        self.ollama_timeout: float = float(merged["ollama_timeout"])
 
         self.dry_run: bool = bool(merged["dry_run"])
         self.max_chars_for_llm: int = int(merged["max_chars_for_llm"])
