@@ -7,6 +7,8 @@ from unittest.mock import call, patch
 import pytest
 
 from aktenfuchs.llm import (
+    _JSON_FIELD_CONSTRAINTS,
+    _JSON_SCHEMA_TEMPLATE,
     _build_analysis_prompt,
     _build_summarize_prompt,
     _summarize_with_llm,
@@ -63,6 +65,57 @@ class TestBuildAnalysisPrompt:
     def test_includes_language(self):
         prompt = _build_analysis_prompt("summary", "en", ["Other"])
         assert "en" in prompt
+
+    def test_includes_json_schema_template(self):
+        """The analysis prompt must contain the full JSON schema template."""
+        prompt = _build_analysis_prompt("any summary", "de", ["Other"])
+        assert _JSON_SCHEMA_TEMPLATE in prompt
+
+    def test_includes_field_constraints(self):
+        """The analysis prompt must contain the field constraints text."""
+        prompt = _build_analysis_prompt("any summary", "de", ["Other"])
+        assert _JSON_FIELD_CONSTRAINTS in prompt
+
+    def test_schema_template_is_valid_json(self):
+        """The schema template must be parseable as valid JSON."""
+        parsed = json.loads(_JSON_SCHEMA_TEMPLATE)
+        assert isinstance(parsed, dict)
+
+    def test_schema_template_contains_all_required_fields(self):
+        """All DocumentAnalysis fields should be present in the schema template."""
+        parsed = json.loads(_JSON_SCHEMA_TEMPLATE)
+        required_fields = [
+            "document_date", "correspondent", "document_type", "topic",
+            "category", "tags", "summary_short", "summary", "key_points",
+            "action_required", "action_summary", "deadline", "amounts",
+            "entities", "suggested_folder", "suggested_filename", "confidence",
+        ]
+        for field in required_fields:
+            assert field in parsed, f"Field '{field}' missing from schema template"
+
+    def test_schema_template_nullable_fields_use_real_null(self):
+        """Nullable fields in the template must use JSON null, not the string 'null'."""
+        # The example uses real values for all fields (action_required=true with a
+        # non-null action_summary). What matters is that no field contains the
+        # literal string "null" as its value – nullability is conveyed in the
+        # field constraints text, not by embedding "null" strings in the example.
+        parsed = json.loads(_JSON_SCHEMA_TEMPLATE)
+        # Verify no field contains the literal string "null" as its value
+        def _has_string_null(obj: object) -> bool:
+            if isinstance(obj, dict):
+                return any(_has_string_null(v) for v in obj.values())
+            if isinstance(obj, list):
+                return any(_has_string_null(i) for i in obj)
+            return obj == "null"
+        assert not _has_string_null(parsed), "Template must not use the string 'null' as a value"
+
+    def test_summary_appears_after_schema_template(self):
+        """The document summary must appear after the schema template in the prompt."""
+        summary = "unique-document-summary-content-xyz"
+        prompt = _build_analysis_prompt(summary, "de", ["Other"])
+        schema_pos = prompt.index(_JSON_SCHEMA_TEMPLATE)
+        summary_pos = prompt.index(summary)
+        assert summary_pos > schema_pos, "Summary should appear after the schema template"
 
 
 class TestAnalyzeDocument:

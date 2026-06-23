@@ -36,6 +36,58 @@ _REPAIR_SUFFIX = (
     "Please reply ONLY with valid JSON, no markdown, no explanation."
 )
 
+# JSON schema template shown verbatim in every Pass 2 prompt.
+# A concrete filled-in example is the most universally understood format for
+# instruction-tuned LLMs. Using real JSON types (null, bool, number) avoids
+# ambiguity – e.g. the LLM outputting the string "null" instead of JSON null.
+_JSON_SCHEMA_TEMPLATE = """\
+{
+  "document_date": "2024-03-15",
+  "correspondent": "Example Corp GmbH",
+  "document_type": "Invoice",
+  "topic": "Annual Software License",
+  "category": "Invoices",
+  "tags": ["invoice", "software", "annual"],
+  "summary_short": "Invoice for annual software license renewal.",
+  "summary": "Full multi-sentence description of what this document contains and its context.",
+  "key_points": ["License fee: EUR 1200", "Valid until 2025-03-14"],
+  "action_required": true,
+  "action_summary": "Pay invoice by due date",
+  "deadline": "2024-04-15",
+  "amounts": [
+    {"label": "Net", "amount": 1008.40, "currency": "EUR"},
+    {"label": "VAT", "amount": 191.60, "currency": "EUR"},
+    {"label": "Total", "amount": 1200.00, "currency": "EUR"}
+  ],
+  "entities": {
+    "people": ["John Doe"],
+    "organizations": ["Example Corp GmbH"],
+    "addresses": ["Musterstrasse 1, 10115 Berlin"],
+    "contract_numbers": ["V-2024-001"],
+    "invoice_numbers": ["RE-2024-12345"],
+    "customer_numbers": ["K-98765"]
+  },
+  "suggested_folder": "Invoices/Example-Corp",
+  "suggested_filename": "2024-03-15_Example-Corp_Invoice_Software-License.pdf",
+  "confidence": 0.90
+}"""
+
+# Field-level constraints shown in the prompt as plain text (separate from the
+# JSON example so the LLM does not confuse them with required literal values).
+_JSON_FIELD_CONSTRAINTS = (
+    "Field constraints:\n"
+    "- document_date, deadline: use YYYY-MM-DD format, or null if not present in the document.\n"
+    "- correspondent: name of the sender or issuer, or null if unknown.\n"
+    "- document_type: must be exactly one of: "
+    "Invoice, Contract, Notice, Policy, BankStatement, Letter, Receipt, Manual, Other.\n"
+    "- action_summary: set to null when action_required is false.\n"
+    "- confidence: a float between 0.0 (uncertain) and 1.0 (certain).\n"
+    "- summary_short: a single sentence, 120 characters maximum.\n"
+    "- key_points: up to 5 short bullet points.\n"
+    "- amounts: use decimal point as separator (e.g. 1500.00, not 1.500,00).\n"
+    "Use null for any field that is not present in the document."
+)
+
 
 def _build_summarize_prompt(ocr_text: str, language: str) -> str:
     return (
@@ -54,8 +106,11 @@ def _build_analysis_prompt(
     return (
         f"Language for summaries: {language}\n"
         f"Allowed categories: [{categories_str}]\n\n"
-        "Based on the following document summary, return ONLY a JSON object "
-        "matching the required schema:\n\n"
+        "Return ONLY a JSON object with the same structure as the example below.\n"
+        "Extract the actual values from the document summary; do not copy the example values.\n\n"
+        f"Example structure:\n{_JSON_SCHEMA_TEMPLATE}\n\n"
+        f"{_JSON_FIELD_CONSTRAINTS}\n\n"
+        "Document summary to analyse:\n\n"
         f"{summary}"
     )
 
