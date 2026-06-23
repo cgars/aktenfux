@@ -5,7 +5,7 @@ import logging
 import sqlite3
 from pathlib import Path
 
-from aktenfuchs.schema import SidecarDocument
+from aktenfux.schema import SidecarDocument
 
 logger = logging.getLogger(__name__)
 

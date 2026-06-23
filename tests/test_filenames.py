@@ -1,11 +1,11 @@
-"""Tests for aktenfuchs/filenames.py."""
+"""Tests for aktenfux/filenames.py."""
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from aktenfuchs.filenames import (
+from aktenfux.filenames import (
     make_suggested_filename,
     make_suggested_folder,
     normalize_unicode,

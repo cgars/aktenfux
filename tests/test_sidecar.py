@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from aktenfuchs.schema import SidecarDocument
-from aktenfuchs.storage import read_sidecar, sidecar_path_for, write_sidecar
+from aktenfux.schema import SidecarDocument
+from aktenfux.storage import read_sidecar, sidecar_path_for, write_sidecar
 
 
 def _make_sidecar(doc_id: str = "test001", **kwargs) -> SidecarDocument:

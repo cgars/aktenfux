@@ -6,12 +6,12 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from aktenfuchs.config import AktenfuchsConfig
-from aktenfuchs.filenames import make_suggested_filename, make_suggested_folder, resolve_collision
-from aktenfuchs.llm import analyze_document
-from aktenfuchs.pdf_text import extract_text, has_usable_text, is_ignored_file, truncate_text
-from aktenfuchs.schema import SidecarDocument
-from aktenfuchs.storage import (
+from aktenfux.config import AktenfuxConfig
+from aktenfux.filenames import make_suggested_filename, make_suggested_folder, resolve_collision
+from aktenfux.llm import analyze_document
+from aktenfux.pdf_text import extract_text, has_usable_text, is_ignored_file, truncate_text
+from aktenfux.schema import SidecarDocument
+from aktenfux.storage import (
     assert_within_base,
     move_file_with_sidecar,
     read_sidecar,
@@ -31,7 +31,7 @@ def _generate_id() -> str:
     return uuid.uuid4().hex[:_DOC_ID_LENGTH]
 
 
-def process_inbox(config: AktenfuchsConfig) -> None:
+def process_inbox(config: AktenfuxConfig) -> None:
     """Process all PDFs currently in the inbox folder."""
     inbox = config.inbox_path
     logger.debug(
@@ -57,7 +57,7 @@ def process_inbox(config: AktenfuchsConfig) -> None:
     logger.info("Found %d PDF(s) in inbox.", len(pdfs))
 
     try:
-        import aktenfuchs.db as db  # noqa: PLC0415
+        import aktenfux.db as db  # noqa: PLC0415
         if config.use_sqlite_index:
             db.initialize_db(config.sqlite_path)
     except Exception as exc:  # noqa: BLE001
@@ -72,7 +72,7 @@ def process_inbox(config: AktenfuchsConfig) -> None:
                 _move_to_error(pdf, config, reason=str(exc))
 
 
-def _process_single(pdf: Path, config: AktenfuchsConfig) -> None:
+def _process_single(pdf: Path, config: AktenfuxConfig) -> None:
     logger.info("Processing: %s", pdf.name)
 
     # --- Extract OCR text ---
@@ -101,7 +101,7 @@ def _process_single(pdf: Path, config: AktenfuchsConfig) -> None:
     # --- Duplicate check (SQLite) ---
     if config.use_sqlite_index:
         try:
-            import aktenfuchs.db as db  # noqa: PLC0415
+            import aktenfux.db as db  # noqa: PLC0415
             existing = db.find_by_sha256(config.sqlite_path, file_hash)
             if existing:
                 logger.warning(
@@ -223,7 +223,7 @@ def _process_single(pdf: Path, config: AktenfuchsConfig) -> None:
     # --- Optional SQLite update ---
     if config.use_sqlite_index:
         try:
-            import aktenfuchs.db as db  # noqa: PLC0415
+            import aktenfux.db as db  # noqa: PLC0415
             db.upsert_document(config.sqlite_path, sidecar)
         except Exception as exc:  # noqa: BLE001
             logger.warning("SQLite update failed: %s", exc)
@@ -233,7 +233,7 @@ def _process_single(pdf: Path, config: AktenfuchsConfig) -> None:
     )
 
 
-def _move_to_error(pdf: Path, config: AktenfuchsConfig, reason: str = "") -> None:
+def _move_to_error(pdf: Path, config: AktenfuxConfig, reason: str = "") -> None:
     """Move a PDF to the _Error folder."""
     config.error_path.mkdir(parents=True, exist_ok=True)
     dest = resolve_collision(config.error_path / pdf.name)
@@ -247,9 +247,9 @@ def _move_to_error(pdf: Path, config: AktenfuchsConfig, reason: str = "") -> Non
     logger.info("Moved %s to _Error: %s", pdf.name, reason)
 
 
-def approve_document(doc_id: str, config: AktenfuchsConfig) -> None:
+def approve_document(doc_id: str, config: AktenfuxConfig) -> None:
     """Move a reviewed document from _Review to Archive."""
-    from aktenfuchs.review import find_document_by_id  # noqa: PLC0415
+    from aktenfux.review import find_document_by_id  # noqa: PLC0415
 
     result = find_document_by_id(config.review_path, doc_id)
     if result is None:
@@ -283,7 +283,7 @@ def approve_document(doc_id: str, config: AktenfuchsConfig) -> None:
 
     if config.use_sqlite_index:
         try:
-            import aktenfuchs.db as db  # noqa: PLC0415
+            import aktenfux.db as db  # noqa: PLC0415
             db.update_status(
                 config.sqlite_path,
                 doc_id,
@@ -297,9 +297,9 @@ def approve_document(doc_id: str, config: AktenfuchsConfig) -> None:
     logger.info("Approved %s → %s", pdf_path.name, target_pdf)
 
 
-def reject_document(doc_id: str, config: AktenfuchsConfig) -> None:
+def reject_document(doc_id: str, config: AktenfuxConfig) -> None:
     """Move a reviewed document from _Review to _Error."""
-    from aktenfuchs.review import find_document_by_id  # noqa: PLC0415
+    from aktenfux.review import find_document_by_id  # noqa: PLC0415
 
     result = find_document_by_id(config.review_path, doc_id)
     if result is None:
@@ -329,7 +329,7 @@ def reject_document(doc_id: str, config: AktenfuchsConfig) -> None:
 
     if config.use_sqlite_index:
         try:
-            import aktenfuchs.db as db  # noqa: PLC0415
+            import aktenfux.db as db  # noqa: PLC0415
             db.update_status(
                 config.sqlite_path,
                 doc_id,
@@ -342,9 +342,9 @@ def reject_document(doc_id: str, config: AktenfuchsConfig) -> None:
     logger.info("Rejected %s → _Error", pdf_path.name)
 
 
-def reprocess_document(doc_id: str, config: AktenfuchsConfig) -> None:
+def reprocess_document(doc_id: str, config: AktenfuxConfig) -> None:
     """Re-analyze a document from _Review."""
-    from aktenfuchs.review import find_document_by_id  # noqa: PLC0415
+    from aktenfux.review import find_document_by_id  # noqa: PLC0415
 
     result = find_document_by_id(config.review_path, doc_id)
     if result is None:

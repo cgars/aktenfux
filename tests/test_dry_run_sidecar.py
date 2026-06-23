@@ -7,14 +7,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aktenfuchs.config import AktenfuchsConfig
-from aktenfuchs.main import _process_single
-from aktenfuchs.schema import DocumentAnalysis, SidecarDocument
-from aktenfuchs.storage import sidecar_path_for
+from aktenfux.config import AktenfuxConfig
+from aktenfux.main import _process_single
+from aktenfux.schema import DocumentAnalysis, SidecarDocument
+from aktenfux.storage import sidecar_path_for
 
 
-def _make_config(base_dir: Path, dry_run: bool = True) -> AktenfuchsConfig:
-    return AktenfuchsConfig(
+def _make_config(base_dir: Path, dry_run: bool = True) -> AktenfuxConfig:
+    return AktenfuxConfig(
         {
             "base_dir": str(base_dir),
             "dry_run": dry_run,
@@ -44,8 +44,8 @@ class TestDryRunSidecar:
         pdf.write_bytes(b"%PDF-1.4 fake content")
         return pdf
 
-    @patch("aktenfuchs.main.analyze_document")
-    @patch("aktenfuchs.main.extract_text", return_value="Some invoice text " * 50)
+    @patch("aktenfux.main.analyze_document")
+    @patch("aktenfux.main.extract_text", return_value="Some invoice text " * 50)
     def test_dry_run_writes_sidecar_to_dry_run_folder(
         self, mock_extract, mock_analyze, tmp_path
     ):
@@ -63,8 +63,8 @@ class TestDryRunSidecar:
         data = json.loads(json_files[0].read_text(encoding="utf-8"))
         assert data["current_path"].endswith(".json")
 
-    @patch("aktenfuchs.main.analyze_document")
-    @patch("aktenfuchs.main.extract_text", return_value="Some invoice text " * 50)
+    @patch("aktenfux.main.analyze_document")
+    @patch("aktenfux.main.extract_text", return_value="Some invoice text " * 50)
     def test_dry_run_sidecar_has_dry_run_status(
         self, mock_extract, mock_analyze, tmp_path
     ):
@@ -78,8 +78,8 @@ class TestDryRunSidecar:
         data = json.loads(json_files[0].read_text(encoding="utf-8"))
         assert data["status"] == "dry_run"
 
-    @patch("aktenfuchs.main.analyze_document")
-    @patch("aktenfuchs.main.extract_text", return_value="Some invoice text " * 50)
+    @patch("aktenfux.main.analyze_document")
+    @patch("aktenfux.main.extract_text", return_value="Some invoice text " * 50)
     def test_dry_run_does_not_move_pdf(
         self, mock_extract, mock_analyze, tmp_path
     ):
@@ -92,8 +92,8 @@ class TestDryRunSidecar:
         assert pdf.exists(), "PDF must not be moved in dry_run mode"
         assert not any(config.review_path.glob("*.pdf")), "Review folder must stay empty"
 
-    @patch("aktenfuchs.main.analyze_document")
-    @patch("aktenfuchs.main.extract_text", return_value="Some invoice text " * 50)
+    @patch("aktenfux.main.analyze_document")
+    @patch("aktenfux.main.extract_text", return_value="Some invoice text " * 50)
     def test_non_dry_run_does_not_write_to_dry_run_folder(
         self, mock_extract, mock_analyze, tmp_path
     ):

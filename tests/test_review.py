@@ -1,4 +1,4 @@
-"""Tests for aktenfuchs/review.py – document listing and ID lookup."""
+"""Tests for aktenfux/review.py – document listing and ID lookup."""
 from __future__ import annotations
 
 import json
@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from aktenfuchs.review import find_document_by_id, list_review_documents
-from aktenfuchs.schema import SidecarDocument
+from aktenfux.review import find_document_by_id, list_review_documents
+from aktenfux.schema import SidecarDocument
 
 
 def _write_sidecar(directory: Path, pdf_name: str, doc_id: str) -> Path:
@@ -88,7 +88,7 @@ class TestFindDocumentById:
 class TestIdDisplayLength:
     def test_full_id_is_shown_in_table(self):
         """_ID_DISPLAY_LENGTH must equal the full ID length used in main.py."""
-        from aktenfuchs.review import _ID_DISPLAY_LENGTH
+        from aktenfux.review import _ID_DISPLAY_LENGTH
 
         # _DOC_ID_LENGTH in main.py is 16; the table must show all 16 chars.
         assert _ID_DISPLAY_LENGTH == 16, (

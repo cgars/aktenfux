@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from aktenfuchs.storage import (
+from aktenfux.storage import (
     assert_within_base,
     markdown_path_for,
     move_file_with_sidecar,
@@ -57,7 +57,7 @@ class TestSha256File:
     def test_known_hash(self, tmp_path):
         import hashlib
 
-        content = b"Hello, Aktenfuchs!"
+        content = b"Hello, Aktenfux!"
         f = tmp_path / "test.txt"
         f.write_bytes(content)
         expected = hashlib.sha256(content).hexdigest()

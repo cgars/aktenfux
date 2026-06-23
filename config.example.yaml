@@ -1,9 +1,9 @@
-# Aktenfuchs – Example Configuration
+# Aktenfux – Example Configuration
 # Copy this file to config.yaml and adjust the paths and settings.
 
-# Base directory for all Aktenfuchs working folders.
+# Base directory for all Aktenfux working folders.
 # Tilde (~) is expanded to the user's home directory.
-base_dir: "~/Documents/Aktenfuchs"
+base_dir: "~/Documents/Aktenfux"
 
 # Sub-folder names (relative to base_dir)
 inbox_dir: "_Inbox"
@@ -36,7 +36,7 @@ write_markdown_summary: false
 # Optional SQLite index for status, IDs, history, and duplicate detection.
 # Core functionality works without SQLite.
 use_sqlite_index: false
-sqlite_path: "aktenfuchs.db"
+sqlite_path: "aktenfux.db"
 
 # Allowed top-level categories for document classification.
 allowed_top_level_categories:

@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from aktenfuchs.schema import DESCRIPTION_SHORT_MAX_CHARS, DocumentAnalysis
+from aktenfux.schema import DESCRIPTION_SHORT_MAX_CHARS, DocumentAnalysis
 
 logger = logging.getLogger(__name__)
 

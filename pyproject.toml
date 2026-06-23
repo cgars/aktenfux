@@ -3,7 +3,7 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aktenfuchs"
+name = "aktenfux"
 version = "0.1.0"
 description = "A local, privacy-first document assistant for OCR-ready PDFs"
 readme = "README.md"
@@ -31,11 +31,11 @@ pdf-extra = [
 ]
 
 [project.scripts]
-afu = "aktenfuchs.cli:app"
+afu = "aktenfux.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["aktenfuchs*"]
+include = ["aktenfux*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

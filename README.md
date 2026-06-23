@@ -1,12 +1,12 @@
-# Aktenfuchs
+# Aktenfux
 
 > A local, privacy-first document assistant for OCR-ready PDFs.
 
-Aktenfuchs (`afu`) reads OCR text from PDF files, analyzes documents with a **local LLM via Ollama**, creates summaries, extracts metadata, and suggests safe filenames and archive locations. Documents remain on your machine at all times and are only permanently archived after **explicit user review**.
+Aktenfux (`afu`) reads OCR text from PDF files, analyzes documents with a **local LLM via Ollama**, creates summaries, extracts metadata, and suggests safe filenames and archive locations. Documents remain on your machine at all times and are only permanently archived after **explicit user review**.
 
 ---
 
-## 1. What is Aktenfuchs?
+## 1. What is Aktenfux?
 
 - A local tool for analyzing and sorting PDF documents.
 - Uses **existing OCR text** already embedded in the PDF (no cloud OCR).
@@ -34,8 +34,8 @@ Aktenfuchs (`afu`) reads OCR text from PDF files, analyzes documents with a **lo
 
 ```bash
 # Clone the repository
-git clone https://github.com/cgars/aktenfuchs.git
-cd aktenfuchs
+git clone https://github.com/cgars/aktenfux.git
+cd aktenfux
 
 # Create and activate a virtual environment
 python -m venv .venv
@@ -83,9 +83,9 @@ afu status
 All commands are also available as:
 
 ```bash
-python -m aktenfuchs scan
-python -m aktenfuchs review
-python -m aktenfuchs approve <id>
+python -m aktenfux scan
+python -m aktenfux review
+python -m aktenfux approve <id>
 ```
 
 ---
@@ -93,7 +93,7 @@ python -m aktenfuchs approve <id>
 ## 3. Folder Structure
 
 ```
-<base_dir>/               (default: ~/Documents/Aktenfuchs)
+<base_dir>/               (default: ~/Documents/Aktenfux)
 ├── _Inbox/               Drop new PDFs here
 ├── _Review/              Waiting for your approval
 ├── _Imported/            (reserved)
@@ -114,7 +114,7 @@ Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as ne
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `base_dir` | `~/Documents/Aktenfuchs` | Root folder for all working directories |
+| `base_dir` | `~/Documents/Aktenfux` | Root folder for all working directories |
 | `ollama_url` | `http://localhost:11434` | Ollama API endpoint |
 | `ollama_model` | `qwen3:8b` | Model to use for analysis |
 | `dry_run` | `true` | **Safety default** – no files are moved |
@@ -143,7 +143,7 @@ Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as ne
 
 ## 6. Security
 
-- Aktenfuchs works **entirely offline**.
+- Aktenfux works **entirely offline**.
 - Documents are **never sent to external APIs**.
 - Ollama runs **locally** on your machine.
 - The default mode (`dry_run: true`) is conservative – nothing moves until you decide.
@@ -151,7 +151,7 @@ Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as ne
 - Sidecar JSON stays next to each PDF as a transparent audit trail.
 - SHA-256 hashing detects duplicates before re-importing.
 - All file moves are validated to stay within `base_dir` (no path traversal).
-- **Backup your document folder** – Aktenfuchs is a tool, not a backup solution.
+- **Backup your document folder** – Aktenfux is a tool, not a backup solution.
 
 ---
 
@@ -191,7 +191,7 @@ pip install -e ".[dev]"
 pytest
 
 # Run tests with coverage
-pytest --cov=aktenfuchs --cov-report=term-missing
+pytest --cov=aktenfux --cov-report=term-missing
 ```
 
 ---

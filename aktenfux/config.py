@@ -1,4 +1,4 @@
-"""Configuration loading and validation for Aktenfuchs."""
+"""Configuration loading and validation for Aktenfux."""
 from __future__ import annotations
 
 import shutil
@@ -8,7 +8,7 @@ from typing import Any
 import yaml
 
 _DEFAULT_CONFIG: dict[str, Any] = {
-    "base_dir": "~/Documents/Aktenfuchs",
+    "base_dir": "~/Documents/Aktenfux",
     "inbox_dir": "_Inbox",
     "review_dir": "_Review",
     "imported_dir": "_Imported",
@@ -23,7 +23,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "language": "de",
     "write_markdown_summary": False,
     "use_sqlite_index": False,
-    "sqlite_path": "aktenfuchs.db",
+    "sqlite_path": "aktenfux.db",
     "allowed_top_level_categories": [
         "Taxes",
         "Banking",
@@ -46,7 +46,7 @@ _EXAMPLE_FILENAME = "config.example.yaml"
 _PACKAGE_ROOT = Path(__file__).parent.parent.resolve()
 
 
-class AktenfuchsConfig:
+class AktenfuxConfig:
     """Holds all runtime configuration values."""
 
     def __init__(self, data: dict[str, Any]) -> None:
@@ -131,7 +131,7 @@ def _find_config_file() -> Path | None:
     return None
 
 
-def load_config(config_path: Path | None = None) -> AktenfuchsConfig:
+def load_config(config_path: Path | None = None) -> AktenfuxConfig:
     """Load configuration from *config_path* or auto-discover config.yaml.
 
     Raises FileNotFoundError when no config.yaml is found and
@@ -147,7 +147,7 @@ def load_config(config_path: Path | None = None) -> AktenfuchsConfig:
     with config_path.open("r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
 
-    return AktenfuchsConfig(data)
+    return AktenfuxConfig(data)
 
 
 def init_config(target_dir: Path | None = None) -> Path:

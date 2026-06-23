@@ -1,4 +1,4 @@
-"""Tests for aktenfuchs/schema.py."""
+"""Tests for aktenfux/schema.py."""
 from __future__ import annotations
 
 import json
@@ -6,7 +6,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from aktenfuchs.schema import (
+from aktenfux.schema import (
     DESCRIPTION_SHORT_MAX_CHARS,
     Amount,
     DocumentAnalysis,

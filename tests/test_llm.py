@@ -1,4 +1,4 @@
-"""Tests for the two-pass LLM analysis in aktenfuchs/llm.py."""
+"""Tests for the two-pass LLM analysis in aktenfux/llm.py."""
 from __future__ import annotations
 
 import json
@@ -6,7 +6,7 @@ from unittest.mock import call, patch
 
 import pytest
 
-from aktenfuchs.llm import (
+from aktenfux.llm import (
     _JSON_FIELD_CONSTRAINTS,
     _JSON_SCHEMA_TEMPLATE,
     _build_analysis_prompt,
@@ -14,7 +14,7 @@ from aktenfuchs.llm import (
     _summarize_with_llm,
     analyze_document,
 )
-from aktenfuchs.schema import DESCRIPTION_SHORT_MAX_CHARS, DocumentAnalysis
+from aktenfux.schema import DESCRIPTION_SHORT_MAX_CHARS, DocumentAnalysis
 
 _VALID_ANALYSIS_JSON = json.dumps(
     {
@@ -119,7 +119,7 @@ class TestBuildAnalysisPrompt:
 
 
 class TestAnalyzeDocument:
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_two_pass_calls_ollama_twice(self, mock_call):
         """analyze_document should make two LLM calls: summarize then analyze."""
         mock_call.side_effect = [_PLAIN_SUMMARY, _VALID_ANALYSIS_JSON]
@@ -136,7 +136,7 @@ class TestAnalyzeDocument:
         assert isinstance(analysis, DocumentAnalysis)
         assert warnings == []
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_first_call_uses_plain_format(self, mock_call):
         """Pass 1 (summarize) must NOT request JSON format from Ollama."""
         mock_call.side_effect = [_PLAIN_SUMMARY, _VALID_ANALYSIS_JSON]
@@ -152,7 +152,7 @@ class TestAnalyzeDocument:
         first_call_kwargs = mock_call.call_args_list[0].kwargs
         assert first_call_kwargs.get("use_json_format") is False
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_second_call_uses_json_format(self, mock_call):
         """Pass 2 (analyze) must request JSON format from Ollama."""
         mock_call.side_effect = [_PLAIN_SUMMARY, _VALID_ANALYSIS_JSON]
@@ -169,7 +169,7 @@ class TestAnalyzeDocument:
         # use_json_format defaults to True and is not passed explicitly
         assert second_call_kwargs.get("use_json_format", True) is True
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_summary_passed_to_analysis_prompt(self, mock_call):
         """The plain-text summary from pass 1 must appear in the pass 2 user prompt."""
         mock_call.side_effect = [_PLAIN_SUMMARY, _VALID_ANALYSIS_JSON]
@@ -186,7 +186,7 @@ class TestAnalyzeDocument:
         second_user_prompt = mock_call.call_args_list[1].args[3]
         assert _PLAIN_SUMMARY in second_user_prompt
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_raw_ocr_not_in_analysis_prompt(self, mock_call):
         """Raw OCR text must NOT be passed directly to the JSON extraction step."""
         mock_call.side_effect = [_PLAIN_SUMMARY, _VALID_ANALYSIS_JSON]
@@ -204,7 +204,7 @@ class TestAnalyzeDocument:
         second_user_prompt = mock_call.call_args_list[1].args[3]
         assert raw_ocr not in second_user_prompt
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_analysis_result_fields(self, mock_call):
         """Parsed analysis should contain the fields from the JSON response."""
         mock_call.side_effect = [_PLAIN_SUMMARY, _VALID_ANALYSIS_JSON]
@@ -221,7 +221,7 @@ class TestAnalyzeDocument:
         assert analysis.category == "Invoices"
         assert analysis.confidence == pytest.approx(0.85)
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_retry_on_invalid_json(self, mock_call):
         """If pass 2 returns invalid JSON, a repair call should be attempted."""
         mock_call.side_effect = [
@@ -243,7 +243,7 @@ class TestAnalyzeDocument:
         assert "invalid JSON" in warnings[0]
         assert isinstance(analysis, DocumentAnalysis)
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_raises_after_failed_retry(self, mock_call):
         """If both pass 2 attempts fail, ValueError should be raised."""
         mock_call.side_effect = [
@@ -261,7 +261,7 @@ class TestAnalyzeDocument:
                 allowed_categories=["Invoices", "Other"],
             )
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_timeout_passed_to_both_calls(self, mock_call):
         """The configured timeout must be forwarded to both LLM calls."""
         mock_call.side_effect = [_PLAIN_SUMMARY, _VALID_ANALYSIS_JSON]
@@ -282,7 +282,7 @@ class TestAnalyzeDocument:
 
 
 class TestSummarizeWithLlm:
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_returns_summary_string(self, mock_call):
         mock_call.return_value = "A concise summary of the document."
 
@@ -296,7 +296,7 @@ class TestSummarizeWithLlm:
 
         assert result == "A concise summary of the document."
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_calls_without_json_format(self, mock_call):
         mock_call.return_value = "Summary text."
 
@@ -341,7 +341,7 @@ class TestDescriptionFallback:
             }
         )
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_summary_short_filled_from_pass1_when_both_empty(self, mock_call):
         """When JSON has no summary_short/summary, the pass-1 text is used."""
         plain_summary = "Plain text summary from pass 1."
@@ -357,7 +357,7 @@ class TestDescriptionFallback:
 
         assert analysis.summary_short == plain_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_full_summary_filled_from_pass1_when_llm_omits_it(self, mock_call):
         """When JSON has no summary field, the full pass-1 plain text is stored in summary."""
         plain_summary = "Full detailed plain-text summary from pass 1 that is longer than 120 chars. " * 3
@@ -376,7 +376,7 @@ class TestDescriptionFallback:
         # summary_short should be capped but summary must be the full text
         assert len(analysis.summary) > DESCRIPTION_SHORT_MAX_CHARS
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_summary_not_overwritten_when_llm_provides_it(self, mock_call):
         """When the LLM provides summary in pass 2, it must not be replaced by pass-1 text."""
         mock_call.side_effect = [_PLAIN_SUMMARY, _VALID_ANALYSIS_JSON]
@@ -391,7 +391,7 @@ class TestDescriptionFallback:
 
         assert analysis.summary == "Test GmbH invoices a software license fee of EUR 500."
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_summary_short_filled_from_summary_in_schema(self, mock_call):
         """When JSON has summary but no summary_short, schema fills summary_short."""
         mock_call.side_effect = ["plain summary", self._make_json_with_summary_only()]
@@ -407,7 +407,7 @@ class TestDescriptionFallback:
         assert analysis.summary_short != ""
         assert "invoice" in analysis.summary_short.lower()
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_summary_short_not_overwritten_when_llm_provides_it(self, mock_call):
         """When the LLM provides summary_short, it must not be replaced."""
         mock_call.side_effect = [_PLAIN_SUMMARY, _VALID_ANALYSIS_JSON]
@@ -422,7 +422,7 @@ class TestDescriptionFallback:
 
         assert analysis.summary_short == "Invoice for software license."
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_pass1_fallback_truncated_at_120_chars(self, mock_call):
         """Fallback from pass-1 summary is capped at DESCRIPTION_SHORT_MAX_CHARS."""
         long_summary = "A" * 300
@@ -438,7 +438,7 @@ class TestDescriptionFallback:
 
         assert analysis.summary_short == long_summary[:DESCRIPTION_SHORT_MAX_CHARS]
 
-    @patch("aktenfuchs.llm._call_ollama")
+    @patch("aktenfux.llm._call_ollama")
     def test_pass1_fallback_rstrips_trailing_whitespace(self, mock_call):
         """Trailing whitespace at the truncation boundary is stripped."""
         # Put trailing spaces exactly at the cut point so rstrip matters

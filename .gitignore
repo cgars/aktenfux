@@ -30,6 +30,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Aktenfuchs runtime artefacts
+# Aktenfux runtime artefacts
 *.db
 *.db-journal

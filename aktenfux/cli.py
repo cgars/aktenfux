@@ -1,4 +1,4 @@
-"""Typer-based CLI for Aktenfuchs (afu)."""
+"""Typer-based CLI for Aktenfux (afu)."""
 from __future__ import annotations
 
 import logging
@@ -9,11 +9,11 @@ from typing import Optional
 import typer
 from rich.console import Console
 
-from aktenfuchs import __version__
+from aktenfux import __version__
 
 app = typer.Typer(
     name="afu",
-    help="Aktenfuchs – local, privacy-first document assistant for OCR-ready PDFs.",
+    help="Aktenfux – local, privacy-first document assistant for OCR-ready PDFs.",
     add_completion=False,
 )
 console = Console()
@@ -40,7 +40,7 @@ def _setup_logging(verbose: bool = False) -> None:
 
 def _load_config(config_path: Optional[Path], dry_run: Optional[bool]):
     """Load config and optionally override dry_run."""
-    from aktenfuchs.config import load_config  # noqa: PLC0415
+    from aktenfux.config import load_config  # noqa: PLC0415
 
     try:
         cfg = load_config(config_path)
@@ -64,8 +64,8 @@ def _load_config(config_path: Optional[Path], dry_run: Optional[bool]):
 
 @app.command()
 def version() -> None:
-    """Show the Aktenfuchs version."""
-    console.print(f"Aktenfuchs {__version__}")
+    """Show the Aktenfux version."""
+    console.print(f"Aktenfux {__version__}")
 
 
 @app.command()
@@ -80,7 +80,7 @@ def init(
 ) -> None:
     """Initialise config.yaml and create the working folders."""
     _setup_logging(verbose)
-    from aktenfuchs.config import init_config, load_config  # noqa: PLC0415
+    from aktenfux.config import init_config, load_config  # noqa: PLC0415
 
     target_dir = target or Path.cwd()
     config_file = init_config(target_dir)
@@ -116,8 +116,8 @@ def setup(
 ) -> None:
     """Check configuration, folders, Ollama availability, and run a small model test."""
     _setup_logging(verbose)
-    from aktenfuchs.config import load_config  # noqa: PLC0415
-    import aktenfuchs.ollama_manager as om  # noqa: PLC0415
+    from aktenfux.config import load_config  # noqa: PLC0415
+    import aktenfux.ollama_manager as om  # noqa: PLC0415
 
     try:
         cfg = load_config(config_path)
@@ -125,7 +125,7 @@ def setup(
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    console.rule("Aktenfuchs Setup Check")
+    console.rule("Aktenfux Setup Check")
 
     # Folders
     ok = True
@@ -185,8 +185,8 @@ def scan(
     _setup_logging(verbose)
     cfg = _load_config(config_path, dry_run)
 
-    from aktenfuchs.main import process_inbox  # noqa: PLC0415
-    import aktenfuchs.ollama_manager as om  # noqa: PLC0415
+    from aktenfux.main import process_inbox  # noqa: PLC0415
+    import aktenfux.ollama_manager as om  # noqa: PLC0415
 
     if not om.is_ollama_running(cfg.ollama_url):
         err_console.print(
@@ -213,7 +213,7 @@ def review(
     _setup_logging(verbose)
     cfg = _load_config(config_path, dry_run=None)
 
-    from aktenfuchs.review import list_review_documents, print_review_table  # noqa: PLC0415
+    from aktenfux.review import list_review_documents, print_review_table  # noqa: PLC0415
 
     sidecars = list_review_documents(cfg.review_path)
     print_review_table(sidecars)
@@ -230,7 +230,7 @@ def approve(
     _setup_logging(verbose)
     cfg = _load_config(config_path, dry_run)
 
-    from aktenfuchs.main import approve_document  # noqa: PLC0415
+    from aktenfux.main import approve_document  # noqa: PLC0415
 
     try:
         approve_document(doc_id, cfg)
@@ -252,7 +252,7 @@ def reject(
     _setup_logging(verbose)
     cfg = _load_config(config_path, dry_run)
 
-    from aktenfuchs.main import reject_document  # noqa: PLC0415
+    from aktenfux.main import reject_document  # noqa: PLC0415
 
     try:
         reject_document(doc_id, cfg)
@@ -285,7 +285,7 @@ def status(
 
     from rich.table import Table  # noqa: PLC0415
 
-    table = Table(title="Aktenfuchs Status")
+    table = Table(title="Aktenfux Status")
     table.add_column("Folder", style="cyan")
     table.add_column("Count", justify="right")
 
@@ -296,7 +296,7 @@ def status(
     table.add_row("Archive", str(archive_n))
 
     if cfg.use_sqlite_index and cfg.sqlite_path.exists():
-        import aktenfuchs.db as db  # noqa: PLC0415
+        import aktenfux.db as db  # noqa: PLC0415
         counts = db.count_by_status(cfg.sqlite_path)
         table.add_section()
         for st, cnt in sorted(counts.items()):
@@ -316,8 +316,8 @@ def reprocess(
     _setup_logging(verbose)
     cfg = _load_config(config_path, dry_run)
 
-    from aktenfuchs.main import reprocess_document  # noqa: PLC0415
-    import aktenfuchs.ollama_manager as om  # noqa: PLC0415
+    from aktenfux.main import reprocess_document  # noqa: PLC0415
+    import aktenfux.ollama_manager as om  # noqa: PLC0415
 
     if not om.is_ollama_running(cfg.ollama_url):
         err_console.print(f"[red]Ollama is not reachable at {cfg.ollama_url}.[/red]")
