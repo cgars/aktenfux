@@ -7,9 +7,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from aktenfux.schema import SidecarDocument
-from aktenfux.storage import read_sidecar, sidecar_path_for
-
+from aktenfux.storage import read_sidecar
 logger = logging.getLogger(__name__)
 
 console = Console()
