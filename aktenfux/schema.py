@@ -107,7 +107,11 @@ class Amount(BaseModel):
             return 0.0
         # German format: "1.500,00" – dot is thousands separator, comma is decimal.
         if "," in cleaned and "." in cleaned:
-            cleaned = cleaned.replace(".", "").replace(",", ".")
+            # Decide format by last separator: 1.500,00 (de) vs 1,500.00 (en)
+            if cleaned.rfind(",") > cleaned.rfind("."):
+                cleaned = cleaned.replace(".", "").replace(",", ".")
+            else:
+                cleaned = cleaned.replace(",", "")
         elif "," in cleaned:
             # Comma as decimal separator (e.g. "500,00").
             cleaned = cleaned.replace(",", ".")
