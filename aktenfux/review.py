@@ -43,12 +43,30 @@ def find_document_by_id(review_path: Path, doc_id: str) -> tuple[Path, SidecarDo
     if not review_path.exists():
         return None
 
+    # First try exact match, then allow prefix match only if it is unambiguous.
+    exact: tuple[Path, SidecarDocument] | None = None
+    prefix_matches: list[tuple[Path, SidecarDocument]] = []
+
     for pdf in review_path.glob("*.pdf"):
         sidecar = read_sidecar(pdf)
-        if sidecar is not None and (
-            sidecar.id == doc_id or sidecar.id.startswith(doc_id)
-        ):
-            return pdf, sidecar
+        if sidecar is None:
+            continue
+        if sidecar.id == doc_id:
+            exact = (pdf, sidecar)
+            break
+        if sidecar.id.startswith(doc_id):
+            prefix_matches.append((pdf, sidecar))
+
+    if exact is not None:
+        return exact
+
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+
+    if len(prefix_matches) > 1:
+        raise FileNotFoundError(
+            f"Ambiguous document id prefix '{doc_id}'; matches: {[s.id for _, s in prefix_matches]}"
+        )
 
     return None
 
