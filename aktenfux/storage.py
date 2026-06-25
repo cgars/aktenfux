@@ -140,15 +140,18 @@ def move_file_with_sidecar(
     assert_within_base(source_pdf, base_dir)
     assert_within_base(dest_pdf, base_dir)
 
-    if dest_pdf.exists():
-        raise FileExistsError(f"Target already exists: {dest_pdf}")
-
     source_json = sidecar_path_for(source_pdf)
     dest_json = sidecar_path_for(dest_pdf)
 
     source_md = markdown_path_for(source_pdf)
     dest_md = markdown_path_for(dest_pdf)
 
+    if dest_pdf.exists():
+        raise FileExistsError(f"Target already exists: {dest_pdf}")
+    if source_json.exists() and dest_json.exists():
+        raise FileExistsError(f"Target already exists: {dest_json}")
+    if move_markdown and source_md.exists() and dest_md.exists():
+        raise FileExistsError(f"Target already exists: {dest_md}")
     if dry_run:
         logger.info("[DRY-RUN] Would move %s → %s", source_pdf, dest_pdf)
         if source_json.exists():
