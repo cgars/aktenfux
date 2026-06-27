@@ -1,0 +1,53 @@
+# Aktenfux – Example Configuration
+# Copy this file to config.yaml and adjust the paths and settings.
+
+# Base directory for all Aktenfux working folders.
+# Tilde (~) is expanded to the user's home directory.
+base_dir: "~/Documents/Aktenfux"
+
+# Sub-folder names (relative to base_dir)
+inbox_dir: "_Inbox"
+review_dir: "_Review"
+imported_dir: "_Imported"
+error_dir: "_Error"
+archive_dir: "Archive"
+# Folder where sidecar JSON files are written during dry-run scans.
+dry_run_dir: "_DryRun"
+
+# Ollama settings
+ollama_url: "http://localhost:11434"
+ollama_model: "qwen3:8b"
+# Timeout in seconds for LLM inference calls (increase for slower hardware or larger models).
+ollama_timeout: 120
+
+# Safety: dry_run is ON by default.
+# Set to false only after you have verified the setup.
+dry_run: true
+
+# Maximum characters of OCR text sent to the LLM.
+max_chars_for_llm: 12000
+
+# Language for summaries (e.g. "de" for German, "en" for English)
+language: "de"
+
+# Write an additional human-readable Markdown summary next to the sidecar JSON.
+write_markdown_summary: false
+
+# Optional SQLite index for status, IDs, history, and duplicate detection.
+# Core functionality works without SQLite.
+use_sqlite_index: false
+sqlite_path: "aktenfux.db"
+
+# Allowed top-level categories for document classification.
+allowed_top_level_categories:
+  - Taxes
+  - Banking
+  - Insurance
+  - Home
+  - Car
+  - Work
+  - Health
+  - Contracts
+  - Invoices
+  - Warranties
+  - Other
