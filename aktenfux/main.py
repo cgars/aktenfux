@@ -121,6 +121,7 @@ def _process_single(pdf: Path, config: AktenfuxConfig) -> None:
 
     # --- Call LLM ---
     analysis = None
+    try:
         analysis, llm_warnings = analyze_document(
             truncated,
             base_url=config.ollama_url,
