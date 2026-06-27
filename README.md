@@ -64,8 +64,8 @@ afu setup
 # Test run – shows what would happen, moves nothing
 afu scan --dry-run
 
-# Real import – processes PDFs from _Inbox → _Review
-afu scan
+# Real import – disable dry_run in config.yaml (or pass --no-dry-run) to actually move files
+afu scan --no-dry-run
 
 # Review imported documents
 afu review

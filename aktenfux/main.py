@@ -99,6 +99,8 @@ def _process_single(pdf: Path, config: AktenfuxConfig) -> None:
     file_hash = sha256_file(pdf)
     logger.debug("SHA-256 for %s: %s", pdf.name, file_hash)
 
+    warnings: list[str] = []
+
     # --- Duplicate check (SQLite) ---
     if config.use_sqlite_index:
         try:
@@ -111,12 +113,14 @@ def _process_single(pdf: Path, config: AktenfuxConfig) -> None:
                     file_hash,
                     existing["id"],
                 )
+                warnings.append(
+                    f"Duplicate detected (sha256={file_hash}, existing id={existing['id']})."
+                )
                 # Still proceed but add a warning to the sidecar.
         except Exception as exc:  # noqa: BLE001
             logger.warning("Duplicate check failed: %s", exc)
 
     # --- Call LLM ---
-    warnings: list[str] = []
     analysis = None
     try:
         analysis, llm_warnings = analyze_document(
@@ -170,13 +174,17 @@ def _process_single(pdf: Path, config: AktenfuxConfig) -> None:
         analysis.category = "Other"
 
     # --- Build sidecar ---
-    doc_id = _generate_id()
+    existing_sidecar = read_sidecar(pdf)
+    doc_id = existing_sidecar.id if existing_sidecar is not None else _generate_id()
+    original_path = (
+        existing_sidecar.original_path if existing_sidecar is not None else str(pdf)
+    )
     review_dest = resolve_collision(config.review_path / analysis.suggested_filename)
 
     sidecar = SidecarDocument.from_analysis(
         analysis,
         doc_id=doc_id,
-        original_path=str(pdf),
+        original_path=original_path,
         current_path=str(review_dest),
         sha256=file_hash,
         model=config.ollama_model,
