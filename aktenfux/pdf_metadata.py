@@ -21,8 +21,8 @@ Only the document information dictionary is updated.
 Configuration
 -------------
 Metadata writing is controlled by the ``write_pdf_metadata`` setting in
-``config.yaml`` (boolean, default ``false``).  When disabled, calling this
-module's functions has no effect.
+``config.yaml`` (boolean, default ``false``). The Aktenfux pipeline only calls
+:func:`write_pdf_metadata` when enabled.
 
 Usage
 -----
