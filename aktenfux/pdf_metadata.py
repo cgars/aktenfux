@@ -121,22 +121,18 @@ def write_pdf_metadata(pdf_path: Path, sidecar: SidecarDocument) -> None:
         ", ".join(f"{k}={v!r}" for k, v in metadata.items()),
     )
 
+    tmp_path = pdf_path.with_suffix(".tmp_meta")
     try:
-        reader = PdfReader(str(pdf_path))
-        writer = PdfWriter()
-        writer.append(reader)
-        writer.add_metadata(metadata)
+        with PdfReader(str(pdf_path)) as reader:
+            writer = PdfWriter()
+            writer.append(reader)
+            writer.add_metadata(metadata)
 
-        # Write to a sibling temp file, then replace.
-        tmp_path = pdf_path.with_suffix(".tmp_meta")
-        try:
             with tmp_path.open("wb") as fh:
                 writer.write(fh)
-            tmp_path.replace(pdf_path)
-        except Exception:
-            tmp_path.unlink(missing_ok=True)
-            raise
 
+        tmp_path.replace(pdf_path)
     except Exception as exc:  # noqa: BLE001
+        tmp_path.unlink(missing_ok=True)
         logger.error("Failed to write PDF metadata for %s: %s", pdf_path.name, exc)
         raise
