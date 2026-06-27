@@ -111,9 +111,6 @@ def write_pdf_metadata(pdf_path: Path, sidecar: SidecarDocument) -> None:
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
     metadata = build_pdf_metadata(sidecar)
-    if not metadata:
-        logger.debug("No PDF metadata to write for %s – skipping.", pdf_path.name)
-        return
 
     logger.debug(
         "Writing PDF metadata to %s: %s",
