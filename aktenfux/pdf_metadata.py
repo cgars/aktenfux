@@ -37,7 +37,6 @@ Usage
 from __future__ import annotations
 
 import logging
-import tempfile
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
