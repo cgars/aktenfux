@@ -148,7 +148,7 @@ def move_file_with_sidecar(
 
     if dest_pdf.exists():
         raise FileExistsError(f"Target already exists: {dest_pdf}")
-    if source_json.exists() and dest_json.exists():
+    if dest_json.exists():
         raise FileExistsError(f"Target already exists: {dest_json}")
     if move_markdown and source_md.exists() and dest_md.exists():
         raise FileExistsError(f"Target already exists: {dest_md}")
