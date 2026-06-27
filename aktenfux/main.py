@@ -169,13 +169,17 @@ def _process_single(pdf: Path, config: AktenfuxConfig) -> None:
         analysis.category = "Other"
 
     # --- Build sidecar ---
-    doc_id = _generate_id()
+    existing_sidecar = read_sidecar(pdf)
+    doc_id = existing_sidecar.id if existing_sidecar is not None else _generate_id()
+    original_path = (
+        existing_sidecar.original_path if existing_sidecar is not None else str(pdf)
+    )
     review_dest = resolve_collision(config.review_path / analysis.suggested_filename)
 
     sidecar = SidecarDocument.from_analysis(
         analysis,
         doc_id=doc_id,
-        original_path=str(pdf),
+        original_path=original_path,
         current_path=str(review_dest),
         sha256=file_hash,
         model=config.ollama_model,
