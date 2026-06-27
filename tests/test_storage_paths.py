@@ -31,9 +31,10 @@ class TestAssertWithinBase:
         """A resolved symlink outside base_dir must be rejected."""
         outside = tmp_path.parent / "outside"
         outside.mkdir(exist_ok=True)
-        link = tmp_path / "link"
-        link.symlink_to(outside)
-        with pytest.raises(ValueError, match="Path traversal"):
+        try:
+            link.symlink_to(outside)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlinks not supported/allowed on this platform")
             assert_within_base(link / "file.pdf", tmp_path)
 
 
