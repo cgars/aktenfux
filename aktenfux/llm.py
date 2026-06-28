@@ -120,7 +120,7 @@ def _build_analysis_prompt(
     categories_str = ", ".join(f'"{c}"' for c in allowed_categories)
     return (
         f"Target language: {language_label}\n"
-        f"IMPORTANT: All free-text fields (summary_short, summary, key_points, action_summary) MUST be in {language_label}. "
+        f"IMPORTANT: All human-readable string values in the JSON (correspondent, topic, tags, summary_short, summary, key_points, action_summary, suggested_folder, suggested_filename, entities.*) MUST be in {language_label}. "
         "Keep JSON field names, document_type, and category exactly as specified.\n"
         f"Allowed categories: [{categories_str}]\n\n"
         "Return ONLY a JSON object with the same structure as the example below.\n"
