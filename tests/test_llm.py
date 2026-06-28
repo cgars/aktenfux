@@ -81,6 +81,7 @@ class TestBuildAnalysisPrompt:
     def test_has_strong_language_instruction(self):
         prompt = _build_analysis_prompt("summary", "en", ["Other"])
         assert "MUST be in English (en)" in prompt
+        assert "Keep JSON field names" in prompt
 
     def test_keeps_unknown_language_code(self):
         prompt = _build_analysis_prompt("summary", "sv", ["Other"])
