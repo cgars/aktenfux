@@ -12,13 +12,24 @@ from aktenfux.schema import DESCRIPTION_SHORT_MAX_CHARS, DocumentAnalysis
 
 logger = logging.getLogger(__name__)
 
+_LANGUAGE_NAMES = {
+    "de": "German",
+    "en": "English",
+    "fr": "French",
+    "es": "Spanish",
+    "it": "Italian",
+    "nl": "Dutch",
+    "pt": "Portuguese",
+}
+
 _SUMMARIZE_SYSTEM_PROMPT = (
     "You are a document analyst. "
     "Read the OCR text of a document and write a detailed plain-text summary. "
     "Include: document type, date, sender/correspondent, key topics, important numbers "
     "(amounts, account numbers, contract numbers, invoice numbers, customer numbers), "
     "deadlines, required actions, and a concise list of key points. "
-    "Do NOT use JSON. Write only plain text in the requested language."
+    "Do NOT use JSON. Write only plain text. "
+    "IMPORTANT: The entire response MUST be in the requested language."
 )
 
 _ANALYZE_SYSTEM_PROMPT = (
@@ -28,7 +39,8 @@ _ANALYZE_SYSTEM_PROMPT = (
     "Do not invent information not mentioned in the summary. "
     "If a value is not clearly present, use null, 'Other', or an empty list. "
     "Use only the allowed categories. "
-    "Create safe filenames."
+    "Create safe filenames. "
+    "All human-readable content values in the JSON must be in the requested language; keep JSON field names, document_type, and category exactly as specified. suggested_folder and suggested_filename must be safe filesystem strings and do not need translation."
 )
 
 _REPAIR_SUFFIX = (
@@ -90,8 +102,10 @@ _JSON_FIELD_CONSTRAINTS = (
 
 
 def _build_summarize_prompt(ocr_text: str, language: str) -> str:
+    language_label = _language_label(language)
     return (
-        f"Language for the summary: {language}\n\n"
+        f"Target language: {language_label}\n"
+        f"IMPORTANT: Respond ONLY in {language_label}. Do not use any other language.\n\n"
         "Please write a detailed summary of the following OCR text:\n\n"
         f"{ocr_text}"
     )
@@ -102,9 +116,12 @@ def _build_analysis_prompt(
     language: str,
     allowed_categories: list[str],
 ) -> str:
+    language_label = _language_label(language)
     categories_str = ", ".join(f'"{c}"' for c in allowed_categories)
     return (
-        f"Language for summaries: {language}\n"
+        f"Target language: {language_label}\n"
+        f"IMPORTANT: All human-readable content values in the JSON (e.g. correspondent, topic, tags, summary_short, summary, key_points, action_summary, amounts.*.label, entities.*) MUST be in {language_label}. "
+        "Keep JSON field names, document_type, and category exactly as specified. suggested_folder and suggested_filename MUST be safe filesystem path/filename strings and do not need to be translated.\n"
         f"Allowed categories: [{categories_str}]\n\n"
         "Return ONLY a JSON object with the same structure as the example below.\n"
         "Extract the actual values from the document summary; do not copy the example values.\n\n"
@@ -113,6 +130,16 @@ def _build_analysis_prompt(
         "Document summary to analyse:\n\n"
         f"{summary}"
     )
+
+
+def _language_label(language: str) -> str:
+    normalized = language.strip().lower()
+    if not normalized:
+        raise ValueError("language must be a non-empty language code, e.g. 'de' or 'en'")
+    name = _LANGUAGE_NAMES.get(normalized)
+    if name:
+        return f"{name} ({normalized})"
+    return normalized
 
 
 def _call_ollama(
