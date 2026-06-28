@@ -40,7 +40,7 @@ _ANALYZE_SYSTEM_PROMPT = (
     "If a value is not clearly present, use null, 'Other', or an empty list. "
     "Use only the allowed categories. "
     "Create safe filenames. "
-    "All human-readable text values in the JSON must be in the requested language."
+    "All free-text fields (summary_short, summary, key_points, action_summary) must be in the requested language; keep document_type and category exactly as specified."
 )
 
 _REPAIR_SUFFIX = (
