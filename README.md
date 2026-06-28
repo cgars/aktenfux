@@ -135,7 +135,9 @@ Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as ne
 | `afu scan --dry-run` | Preview without moving files |
 | `afu review` | List documents awaiting approval |
 | `afu approve <id>` | Archive an approved document |
+| `afu approve --all` | Archive all documents currently in `_Review` |
 | `afu reject <id>` | Move a document to `_Error` |
+| `afu reject --all` | Move all documents currently in `_Review` to `_Error` |
 | `afu status` | Show document counts per folder |
 | `afu reprocess <id>` | Re-analyze a document with the LLM |
 

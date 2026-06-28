@@ -219,11 +219,40 @@ def review(
     print_review_table(sidecars)
 
 
+def _process_all_in_review(operation, action_label: str, color: str, cfg) -> None:
+    """Apply *operation* to every document currently in *cfg.review_path*.
+
+    *operation* must accept ``(doc_id, cfg)`` and raise ``FileNotFoundError``
+    on failure.  *action_label* is used in status messages (e.g. "Approved").
+    *color* is the Rich colour tag used for success messages.
+    """
+    from aktenfux.review import list_review_documents  # noqa: PLC0415
+
+    sidecars = list_review_documents(cfg.review_path)
+    if not sidecars:
+        console.print(f"[yellow]No documents in _Review were {action_label.lower()}.[/yellow]")
+        return
+    errors = 0
+    for sidecar in sidecars:
+        try:
+            operation(sidecar.id, cfg)
+            if cfg.dry_run:
+                console.print(f"[dim]Would be {action_label.lower()}: {sidecar.id}[/dim]")
+            else:
+                console.print(f"[{color}]✓[/{color}] {action_label}: {sidecar.id}")
+        except FileNotFoundError as exc:
+            err_console.print(f"[red]Error:[/red] {exc}")
+            errors += 1
+    if errors:
+        raise typer.Exit(1)
+
+
 @app.command()
 def approve(
-    doc_id: str = typer.Argument(..., help="Document ID to approve."),
+    doc_id: Optional[str] = typer.Argument(None, help="Document ID to approve."),
     config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
     dry_run: Optional[bool] = typer.Option(None, "--dry-run/--no-dry-run"),
+    all_docs: bool = typer.Option(False, "--all", help="Approve all documents currently in _Review."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Move a reviewed document from _Review into the Archive."""
@@ -231,6 +260,18 @@ def approve(
     cfg = _load_config(config_path, dry_run)
 
     from aktenfux.main import approve_document  # noqa: PLC0415
+
+    if all_docs and doc_id is not None:
+        err_console.print("[red]Error:[/red] Use either a document ID or --all, not both.")
+        raise typer.Exit(1)
+
+    if all_docs:
+        _process_all_in_review(approve_document, "Approved", "green", cfg)
+        return
+
+    if doc_id is None:
+        err_console.print("[red]Error:[/red] Provide a document ID or use --all.")
+        raise typer.Exit(1)
 
     try:
         approve_document(doc_id, cfg)
@@ -243,9 +284,10 @@ def approve(
 
 @app.command()
 def reject(
-    doc_id: str = typer.Argument(..., help="Document ID to reject."),
+    doc_id: Optional[str] = typer.Argument(None, help="Document ID to reject."),
     config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
     dry_run: Optional[bool] = typer.Option(None, "--dry-run/--no-dry-run"),
+    all_docs: bool = typer.Option(False, "--all", help="Reject all documents currently in _Review."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Move a document from _Review to _Error."""
@@ -253,6 +295,18 @@ def reject(
     cfg = _load_config(config_path, dry_run)
 
     from aktenfux.main import reject_document  # noqa: PLC0415
+
+    if all_docs and doc_id is not None:
+        err_console.print("[red]Error:[/red] Use either a document ID or --all, not both.")
+        raise typer.Exit(1)
+
+    if all_docs:
+        _process_all_in_review(reject_document, "Rejected", "yellow", cfg)
+        return
+
+    if doc_id is None:
+        err_console.print("[red]Error:[/red] Provide a document ID or use --all.")
+        raise typer.Exit(1)
 
     try:
         reject_document(doc_id, cfg)
