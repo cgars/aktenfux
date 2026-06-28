@@ -12,6 +12,16 @@ from aktenfux.schema import DESCRIPTION_SHORT_MAX_CHARS, DocumentAnalysis
 
 logger = logging.getLogger(__name__)
 
+_LANGUAGE_NAMES = {
+    "de": "German",
+    "en": "English",
+    "fr": "French",
+    "es": "Spanish",
+    "it": "Italian",
+    "nl": "Dutch",
+    "pt": "Portuguese",
+}
+
 _SUMMARIZE_SYSTEM_PROMPT = (
     "You are a document analyst. "
     "Read the OCR text of a document and write a detailed plain-text summary. "
@@ -92,9 +102,10 @@ _JSON_FIELD_CONSTRAINTS = (
 
 
 def _build_summarize_prompt(ocr_text: str, language: str) -> str:
+    language_label = _language_label(language)
     return (
-        f"Target language: {language}\n"
-        f"IMPORTANT: Respond ONLY in {language}. Do not use any other language.\n\n"
+        f"Target language: {language_label}\n"
+        f"IMPORTANT: Respond ONLY in {language_label}. Do not use any other language.\n\n"
         "Please write a detailed summary of the following OCR text:\n\n"
         f"{ocr_text}"
     )
@@ -105,10 +116,11 @@ def _build_analysis_prompt(
     language: str,
     allowed_categories: list[str],
 ) -> str:
+    language_label = _language_label(language)
     categories_str = ", ".join(f'"{c}"' for c in allowed_categories)
     return (
-        f"Target language: {language}\n"
-        f"IMPORTANT: All human-readable values in the JSON MUST be in {language}. "
+        f"Target language: {language_label}\n"
+        f"IMPORTANT: All human-readable values in the JSON MUST be in {language_label}. "
         "Keep JSON field names unchanged.\n"
         f"Allowed categories: [{categories_str}]\n\n"
         "Return ONLY a JSON object with the same structure as the example below.\n"
@@ -118,6 +130,14 @@ def _build_analysis_prompt(
         "Document summary to analyse:\n\n"
         f"{summary}"
     )
+
+
+def _language_label(language: str) -> str:
+    normalized = language.strip().lower()
+    name = _LANGUAGE_NAMES.get(normalized)
+    if name:
+        return f"{name} ({normalized})"
+    return language.strip()
 
 
 def _call_ollama(

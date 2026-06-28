@@ -49,11 +49,15 @@ class TestBuildSummarizePrompt:
 
     def test_includes_language(self):
         prompt = _build_summarize_prompt("text", "en")
-        assert "en" in prompt
+        assert "English (en)" in prompt
 
     def test_has_strong_language_instruction(self):
         prompt = _build_summarize_prompt("text", "en")
-        assert "Respond ONLY in en" in prompt
+        assert "Respond ONLY in English (en)" in prompt
+
+    def test_keeps_unknown_language_code(self):
+        prompt = _build_summarize_prompt("text", "sv")
+        assert "Target language: sv" in prompt
 
 
 class TestBuildAnalysisPrompt:
@@ -68,11 +72,15 @@ class TestBuildAnalysisPrompt:
 
     def test_includes_language(self):
         prompt = _build_analysis_prompt("summary", "en", ["Other"])
-        assert "en" in prompt
+        assert "English (en)" in prompt
 
     def test_has_strong_language_instruction(self):
         prompt = _build_analysis_prompt("summary", "en", ["Other"])
-        assert "MUST be in en" in prompt
+        assert "MUST be in English (en)" in prompt
+
+    def test_keeps_unknown_language_code(self):
+        prompt = _build_analysis_prompt("summary", "sv", ["Other"])
+        assert "Target language: sv" in prompt
 
     def test_includes_json_schema_template(self):
         """The analysis prompt must contain the full JSON schema template."""
