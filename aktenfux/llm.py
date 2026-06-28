@@ -40,7 +40,7 @@ _ANALYZE_SYSTEM_PROMPT = (
     "If a value is not clearly present, use null, 'Other', or an empty list. "
     "Use only the allowed categories. "
     "Create safe filenames. "
-    "All human-readable string values in the JSON must be in the requested language; keep JSON field names, document_type, and category exactly as specified."
+    "All human-readable content values in the JSON must be in the requested language; keep JSON field names, document_type, and category exactly as specified. suggested_folder and suggested_filename must be safe filesystem strings and do not need translation."
 )
 
 _REPAIR_SUFFIX = (
@@ -120,8 +120,8 @@ def _build_analysis_prompt(
     categories_str = ", ".join(f'"{c}"' for c in allowed_categories)
     return (
         f"Target language: {language_label}\n"
-        f"IMPORTANT: All human-readable string values in the JSON (e.g. correspondent, topic, tags, summary_short, summary, key_points, action_summary, amounts.*.label, suggested_folder, suggested_filename, entities.*) MUST be in {language_label}. "
-        "Keep JSON field names, document_type, and category exactly as specified.\n"
+        f"IMPORTANT: All human-readable content values in the JSON (e.g. correspondent, topic, tags, summary_short, summary, key_points, action_summary, amounts.*.label, entities.*) MUST be in {language_label}. "
+        "Keep JSON field names, document_type, and category exactly as specified. suggested_folder and suggested_filename MUST be safe filesystem path/filename strings and do not need to be translated.\n"
         f"Allowed categories: [{categories_str}]\n\n"
         "Return ONLY a JSON object with the same structure as the example below.\n"
         "Extract the actual values from the document summary; do not copy the example values.\n\n"
