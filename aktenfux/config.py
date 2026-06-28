@@ -22,6 +22,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "max_chars_for_llm": 12000,
     "language": "de",
     "write_markdown_summary": False,
+    "write_pdf_metadata": False,
     "use_sqlite_index": False,
     "sqlite_path": "aktenfux.db",
     "allowed_top_level_categories": [
@@ -68,6 +69,7 @@ class AktenfuxConfig:
         self.max_chars_for_llm: int = int(merged["max_chars_for_llm"])
         self.language: str = merged["language"]
         self.write_markdown_summary: bool = bool(merged["write_markdown_summary"])
+        self.write_pdf_metadata: bool = bool(merged["write_pdf_metadata"])
         self.use_sqlite_index: bool = bool(merged["use_sqlite_index"])
 
         sqlite_raw = merged["sqlite_path"]

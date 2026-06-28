@@ -9,6 +9,7 @@ from pathlib import Path
 from aktenfux.config import AktenfuxConfig
 from aktenfux.filenames import make_suggested_filename, make_suggested_folder, resolve_collision
 from aktenfux.llm import analyze_document
+from aktenfux.pdf_metadata import write_pdf_metadata
 from aktenfux.pdf_text import extract_text, has_usable_text, is_ignored_file, truncate_text
 from aktenfux.schema import SidecarDocument
 from aktenfux.storage import (
@@ -228,6 +229,14 @@ def _process_single(pdf: Path, config: AktenfuxConfig) -> None:
     sidecar.current_path = str(review_dest)
     write_sidecar(sidecar, review_dest)
 
+    # --- Optional PDF metadata update ---
+    if config.write_pdf_metadata:
+        try:
+            write_pdf_metadata(review_dest, sidecar)
+            logger.debug("PDF metadata written to %s", review_dest.name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("PDF metadata update failed for %s: %s", review_dest.name, exc)
+
     # --- Optional SQLite update ---
     if config.use_sqlite_index:
         try:
@@ -288,6 +297,14 @@ def approve_document(doc_id: str, config: AktenfuxConfig) -> None:
     sidecar.current_path = str(target_pdf)
     sidecar.approved_at = datetime.now().isoformat(timespec="seconds")
     write_sidecar(sidecar, target_pdf)
+
+    # --- Optional PDF metadata update ---
+    if config.write_pdf_metadata:
+        try:
+            write_pdf_metadata(target_pdf, sidecar)
+            logger.debug("PDF metadata written to %s", target_pdf.name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("PDF metadata update failed for %s: %s", target_pdf.name, exc)
 
     if config.use_sqlite_index:
         try:

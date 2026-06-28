@@ -33,6 +33,11 @@ language: "de"
 # Write an additional human-readable Markdown summary next to the sidecar JSON.
 write_markdown_summary: false
 
+# Write descriptive metadata (Title, Author, Subject, Keywords, Creator, Producer)
+# directly into the PDF file.  The existing page content is never modified.
+# Set to true to enable automatic PDF metadata enrichment.
+write_pdf_metadata: false
+
 # Optional SQLite index for status, IDs, history, and duplicate detection.
 # Core functionality works without SQLite.
 use_sqlite_index: false
