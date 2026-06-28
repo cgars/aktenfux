@@ -18,7 +18,8 @@ _SUMMARIZE_SYSTEM_PROMPT = (
     "Include: document type, date, sender/correspondent, key topics, important numbers "
     "(amounts, account numbers, contract numbers, invoice numbers, customer numbers), "
     "deadlines, required actions, and a concise list of key points. "
-    "Do NOT use JSON. Write only plain text in the requested language."
+    "Do NOT use JSON. Write only plain text. "
+    "IMPORTANT: The entire response MUST be in the requested language."
 )
 
 _ANALYZE_SYSTEM_PROMPT = (
@@ -28,7 +29,8 @@ _ANALYZE_SYSTEM_PROMPT = (
     "Do not invent information not mentioned in the summary. "
     "If a value is not clearly present, use null, 'Other', or an empty list. "
     "Use only the allowed categories. "
-    "Create safe filenames."
+    "Create safe filenames. "
+    "All human-readable text values in the JSON must be in the requested language."
 )
 
 _REPAIR_SUFFIX = (
@@ -91,7 +93,8 @@ _JSON_FIELD_CONSTRAINTS = (
 
 def _build_summarize_prompt(ocr_text: str, language: str) -> str:
     return (
-        f"Language for the summary: {language}\n\n"
+        f"Target language: {language}\n"
+        f"IMPORTANT: Respond ONLY in {language}. Do not use any other language.\n\n"
         "Please write a detailed summary of the following OCR text:\n\n"
         f"{ocr_text}"
     )
@@ -104,7 +107,9 @@ def _build_analysis_prompt(
 ) -> str:
     categories_str = ", ".join(f'"{c}"' for c in allowed_categories)
     return (
-        f"Language for summaries: {language}\n"
+        f"Target language: {language}\n"
+        f"IMPORTANT: All human-readable values in the JSON MUST be in {language}. "
+        "Keep JSON field names unchanged.\n"
         f"Allowed categories: [{categories_str}]\n\n"
         "Return ONLY a JSON object with the same structure as the example below.\n"
         "Extract the actual values from the document summary; do not copy the example values.\n\n"
