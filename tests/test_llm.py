@@ -59,6 +59,10 @@ class TestBuildSummarizePrompt:
         prompt = _build_summarize_prompt("text", "sv")
         assert "Target language: sv" in prompt
 
+    def test_normalizes_unknown_language_code_to_lowercase(self):
+        prompt = _build_summarize_prompt("text", "SV")
+        assert "Target language: sv" in prompt
+
 
 class TestBuildAnalysisPrompt:
     def test_includes_summary(self):
@@ -80,6 +84,10 @@ class TestBuildAnalysisPrompt:
 
     def test_keeps_unknown_language_code(self):
         prompt = _build_analysis_prompt("summary", "sv", ["Other"])
+        assert "Target language: sv" in prompt
+
+    def test_normalizes_unknown_language_code_to_lowercase(self):
+        prompt = _build_analysis_prompt("summary", "SV", ["Other"])
         assert "Target language: sv" in prompt
 
     def test_includes_json_schema_template(self):

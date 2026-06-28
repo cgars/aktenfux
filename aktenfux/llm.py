@@ -137,7 +137,7 @@ def _language_label(language: str) -> str:
     name = _LANGUAGE_NAMES.get(normalized)
     if name:
         return f"{name} ({normalized})"
-    return language.strip()
+    return normalized
 
 
 def _call_ollama(
