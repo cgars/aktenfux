@@ -1,7 +1,6 @@
 """Tests for the --all flag on the approve and reject CLI commands."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import patch
 

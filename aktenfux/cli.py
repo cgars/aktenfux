@@ -230,14 +230,14 @@ def _process_all_in_review(operation, action_label: str, color: str, cfg) -> Non
 
     sidecars = list_review_documents(cfg.review_path)
     if not sidecars:
-        console.print(f"[yellow]No documents in _Review to {action_label.lower()}.[/yellow]")
+        console.print(f"[yellow]No documents in _Review were {action_label.lower()}.[/yellow]")
         return
     errors = 0
     for sidecar in sidecars:
         try:
             operation(sidecar.id, cfg)
             if cfg.dry_run:
-                console.print(f"[dim]Would {action_label.lower()}: {sidecar.id}[/dim]")
+                console.print(f"[dim]Would be {action_label.lower()}: {sidecar.id}[/dim]")
             else:
                 console.print(f"[{color}]✓[/{color}] {action_label}: {sidecar.id}")
         except FileNotFoundError as exc:
@@ -260,6 +260,10 @@ def approve(
     cfg = _load_config(config_path, dry_run)
 
     from aktenfux.main import approve_document  # noqa: PLC0415
+
+    if all_docs and doc_id is not None:
+        err_console.print("[red]Error:[/red] Use either a document ID or --all, not both.")
+        raise typer.Exit(1)
 
     if all_docs:
         _process_all_in_review(approve_document, "Approved", "green", cfg)
@@ -291,6 +295,10 @@ def reject(
     cfg = _load_config(config_path, dry_run)
 
     from aktenfux.main import reject_document  # noqa: PLC0415
+
+    if all_docs and doc_id is not None:
+        err_console.print("[red]Error:[/red] Use either a document ID or --all, not both.")
+        raise typer.Exit(1)
 
     if all_docs:
         _process_all_in_review(reject_document, "Rejected", "yellow", cfg)
