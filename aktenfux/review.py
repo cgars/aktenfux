@@ -78,7 +78,7 @@ def multi_doc_display(sidecar: SidecarDocument) -> str:
     integrity = sidecar.document_integrity
     if integrity.recommended_action == "manual_review":
         return "Review"
-    if integrity.possible_multi_document_scan:
+    if integrity.recommended_action == "run_split_detection" or integrity.possible_multi_document_scan:
         return "Yes"
     return "No"
 

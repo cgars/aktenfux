@@ -104,12 +104,11 @@ class TestBuildAnalysisPrompt:
         assert "Keep JSON field names" in prompt
 
 
-    def test_summarize_prompt_requests_integrity_assessment(self):
-        prompt = _build_summarize_prompt("text", "en")
-        assert "document integrity assessment" in prompt
-        assert "multiple separate documents" in prompt
+    def test_analysis_prompt_requests_integrity_assessment(self):
+        prompt = _build_analysis_prompt("summary", "en", ["Other"])
+        assert "document_integrity" in prompt
+        assert "multiple unrelated senders" in prompt
         assert "multiple pages" in prompt
-
     def test_keeps_unknown_language_code(self):
         prompt = _build_analysis_prompt("summary", "sv", ["Other"])
         assert "Target language: sv" in prompt
