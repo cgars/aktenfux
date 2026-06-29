@@ -98,6 +98,7 @@ python -m aktenfux approve <id>
 ├── _Review/              Waiting for your approval
 ├── _Imported/            (reserved)
 ├── _Error/               Files that could not be processed
+├── _Split/               Approved scans recommended for splitting
 └── Archive/
     └── <category>/
         └── <correspondent>/
@@ -118,6 +119,7 @@ Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as ne
 | `ollama_url` | `http://localhost:11434` | Ollama API endpoint |
 | `ollama_model` | `qwen3:8b` | Model to use for analysis |
 | `dry_run` | `true` | **Safety default** – no files are moved |
+| `split_dir` | `_Split` | Folder for approved documents recommended for split detection |
 | `max_chars_for_llm` | `12000` | OCR text truncation limit |
 | `language` | `de` | Summary language (`de` or `en`) |
 | `write_markdown_summary` | `false` | Write `.md` summary next to sidecar JSON |
@@ -134,8 +136,8 @@ Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as ne
 | `afu scan` | Process PDFs from `_Inbox` |
 | `afu scan --dry-run` | Preview without moving files |
 | `afu review` | List documents awaiting approval |
-| `afu approve <id>` | Archive an approved document |
-| `afu approve --all` | Archive all documents currently in `_Review` |
+| `afu approve <id>` | Archive an approved document, or stage it in `_Split` when split detection is recommended |
+| `afu approve --all` | Archive/stage all documents currently in `_Review` |
 | `afu reject <id>` | Move a document to `_Error` |
 | `afu reject --all` | Move all documents currently in `_Review` to `_Error` |
 | `afu status` | Show document counts per folder |

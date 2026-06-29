@@ -9,6 +9,8 @@ from typer.testing import CliRunner
 
 from aktenfux.cli import app
 from aktenfux.config import AktenfuxConfig
+from aktenfux.main import approve_document
+from aktenfux.storage import read_sidecar
 from aktenfux.schema import SidecarDocument
 
 runner = CliRunner()
@@ -25,11 +27,21 @@ def _make_config(base_dir: Path) -> AktenfuxConfig:
     )
 
 
-def _write_sidecar(directory: Path, pdf_name: str, doc_id: str) -> Path:
+def _write_sidecar(
+    directory: Path,
+    pdf_name: str,
+    doc_id: str,
+    *,
+    document_integrity: dict[str, object] | None = None,
+) -> Path:
     """Create a minimal PDF and its sidecar JSON in *directory*."""
     directory.mkdir(parents=True, exist_ok=True)
     pdf = directory / pdf_name
     pdf.write_bytes(b"%PDF-1.4 fake")
+
+    sidecar_kwargs = {}
+    if document_integrity is not None:
+        sidecar_kwargs["document_integrity"] = document_integrity
 
     sidecar_data = SidecarDocument(
         id=doc_id,
@@ -38,6 +50,7 @@ def _write_sidecar(directory: Path, pdf_name: str, doc_id: str) -> Path:
         sha256="a" * 64,
         suggested_filename=pdf_name,
         status="review",
+        **sidecar_kwargs,
     )
     pdf.with_suffix(".json").write_text(
         sidecar_data.model_dump_json(indent=2), encoding="utf-8"
@@ -66,6 +79,34 @@ class TestApproveAll:
         # Documents should have moved out of _Review
         assert not (review_dir / "doc1.pdf").exists()
         assert not (review_dir / "doc2.pdf").exists()
+        assert (cfg.archive_path / "doc1.pdf").exists()
+        assert (cfg.archive_path / "doc2.pdf").exists()
+
+    def test_approve_split_recommendation_moves_document_to_split_folder(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        review_dir = cfg.review_path
+        _write_sidecar(
+            review_dir,
+            "split-me.pdf",
+            "split00000000001",
+            document_integrity={
+                "possible_multi_document_scan": True,
+                "suspected_document_count": 2,
+                "confidence": 0.92,
+                "reason": "Two distinct documents appear in this scan.",
+                "recommended_action": "run_split_detection",
+            },
+        )
+
+        approve_document("split00000000001", cfg)
+
+        split_pdf = cfg.split_path / "split-me.pdf"
+        assert split_pdf.exists()
+        assert not (cfg.archive_path / "split-me.pdf").exists()
+        moved_sidecar = read_sidecar(split_pdf)
+        assert moved_sidecar is not None
+        assert moved_sidecar.status == "approved"
+        assert moved_sidecar.current_path == str(split_pdf)
 
     def test_empty_review_prints_message(self, tmp_path):
         cfg = _make_config(tmp_path)
