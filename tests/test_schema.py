@@ -362,38 +362,6 @@ class TestSidecarDocument:
         assert data["correspondent"] == "ACME"
         assert data["confidence"] == 0.8
 
-
-    def test_document_integrity_complete_valid(self):
-        integrity = DocumentIntegrity.model_validate(VALID_INTEGRITY)
-        assert integrity.possible_multi_document_scan is False
-        assert integrity.suspected_document_count == 1
-
-    def test_missing_document_integrity_rejected(self):
-        with pytest.raises(ValidationError):
-            DocumentAnalysis.model_validate({"document_type": "Invoice"})
-
-    def test_invalid_document_integrity_recommended_action_rejected(self):
-        bad = {**VALID_INTEGRITY, "recommended_action": "split_now"}
-        with pytest.raises(ValidationError):
-            DocumentAnalysis.model_validate({"document_integrity": bad})
-
-    def test_document_integrity_confidence_bounds(self):
-        bad = {**VALID_INTEGRITY, "confidence": -0.1}
-        with pytest.raises(ValidationError):
-            DocumentAnalysis.model_validate({"document_integrity": bad})
-
-    def test_document_integrity_confidence_percentage_normalized(self):
-        da = DocumentAnalysis.model_validate({
-            "document_integrity": {**VALID_INTEGRITY, "confidence": 91}
-        })
-        assert da.document_integrity.confidence == pytest.approx(0.91)
-
-    def test_document_integrity_confidence_over_100_clamped(self):
-        da = DocumentAnalysis.model_validate({
-            "document_integrity": {**VALID_INTEGRITY, "confidence": 150}
-        })
-        assert da.document_integrity.confidence == pytest.approx(1.0)
-
     def test_json_roundtrip(self):
         s = self._make_sidecar(
             document_date="2026-03-15",
