@@ -82,6 +82,36 @@ class TestApproveAll:
         assert (cfg.archive_path / "doc1.pdf").exists()
         assert (cfg.archive_path / "doc2.pdf").exists()
 
+
+    def test_approve_all_routes_split_recommendations_to_split_folder(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        review_dir = cfg.review_path
+        _write_sidecar(review_dir, "normal.pdf", "normal000000001")
+        _write_sidecar(
+            review_dir,
+            "split.pdf",
+            "split00000000002",
+            document_integrity={
+                "possible_multi_document_scan": True,
+                "suspected_document_count": 2,
+                "confidence": 0.93,
+                "reason": "The scan appears to contain two separate letters.",
+                "recommended_action": "run_split_detection",
+            },
+        )
+
+        with patch("aktenfux.cli._load_config", return_value=cfg):
+            result = runner.invoke(app, ["approve", "--all"])
+
+        assert result.exit_code == 0, result.output
+        assert "normal000000001" in result.output
+        assert "split00000000002" in result.output
+        assert (cfg.archive_path / "normal.pdf").exists()
+        assert (cfg.split_path / "split.pdf").exists()
+        assert not (cfg.archive_path / "split.pdf").exists()
+        assert not (review_dir / "normal.pdf").exists()
+        assert not (review_dir / "split.pdf").exists()
+
     def test_approve_split_recommendation_moves_document_to_split_folder(self, tmp_path):
         cfg = _make_config(tmp_path)
         review_dir = cfg.review_path
