@@ -75,6 +75,46 @@ DocumentType = Literal[
 
 
 # ---------------------------------------------------------------------------
+# Document integrity / multi-document scan assessment
+# ---------------------------------------------------------------------------
+
+
+RecommendedIntegrityAction = Literal["none", "run_split_detection", "manual_review"]
+
+
+class DocumentIntegrity(BaseModel):
+    """Assessment of whether a PDF may contain multiple logical documents."""
+
+    possible_multi_document_scan: bool
+    suspected_document_count: int = Field(ge=1)
+    confidence: float = Field(ge=0.0, le=1.0)
+    reason: str
+    recommended_action: RecommendedIntegrityAction
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def normalize_confidence(cls, v: Any) -> Any:
+        """Normalize a percentage confidence value (e.g. 85) to a fraction (0.85)."""
+        if isinstance(v, (int, float)) and v > 1.0:
+            normalized = v / 100.0
+            # Clamp in case the percentage itself is out of range.
+            return min(max(normalized, 0.0), 1.0)
+        return v
+
+
+def default_document_integrity() -> DocumentIntegrity:
+    """Return the default single-document integrity assessment for sidecars."""
+
+    return DocumentIntegrity(
+        possible_multi_document_scan=False,
+        suspected_document_count=1,
+        confidence=0.0,
+        reason="No document integrity assessment was provided.",
+        recommended_action="none",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Amount sub-model
 # ---------------------------------------------------------------------------
 
@@ -180,6 +220,7 @@ class DocumentAnalysis(BaseModel):
     suggested_folder: str = ""
     suggested_filename: str = ""
     confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
+    document_integrity: DocumentIntegrity
 
     @field_validator("document_type", mode="before")
     @classmethod
@@ -298,6 +339,7 @@ class SidecarDocument(BaseModel):
     suggested_folder: str = ""
     suggested_filename: str = ""
     confidence: float = 0.0
+    document_integrity: DocumentIntegrity = Field(default_factory=default_document_integrity)
 
     # Processing metadata
     model: str = ""
@@ -343,6 +385,7 @@ class SidecarDocument(BaseModel):
             suggested_folder=analysis.suggested_folder,
             suggested_filename=analysis.suggested_filename,
             confidence=analysis.confidence,
+            document_integrity=analysis.document_integrity,
             model=model,
             warnings=warnings or [],
         )

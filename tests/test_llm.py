@@ -7,6 +7,7 @@ from unittest.mock import call, patch
 import pytest
 
 from aktenfux.llm import (
+    _SUMMARIZE_SYSTEM_PROMPT,
     _JSON_FIELD_CONSTRAINTS,
     _JSON_SCHEMA_TEMPLATE,
     _build_analysis_prompt,
@@ -33,6 +34,13 @@ _VALID_ANALYSIS_JSON = json.dumps(
         "amounts": [{"label": "total", "amount": 500.0, "currency": "EUR"}],
         "entities": {"organizations": ["Test GmbH"]},
         "tags": ["invoice", "software"],
+        "document_integrity": {
+            "possible_multi_document_scan": False,
+            "suspected_document_count": 1,
+            "confidence": 0.91,
+            "reason": "The document appears to have one consistent sender and topic.",
+            "recommended_action": "none",
+        },
     }
 )
 
@@ -43,6 +51,11 @@ _PLAIN_SUMMARY = (
 
 
 class TestBuildSummarizePrompt:
+
+    def test_summarize_system_prompt_mentions_integrity(self):
+        assert "document integrity assessment" in _SUMMARIZE_SYSTEM_PROMPT
+        assert "possible multi-document scan" in _SUMMARIZE_SYSTEM_PROMPT
+
     def test_includes_ocr_text(self):
         prompt = _build_summarize_prompt("some ocr content", "de")
         assert "some ocr content" in prompt
@@ -54,6 +67,13 @@ class TestBuildSummarizePrompt:
     def test_has_strong_language_instruction(self):
         prompt = _build_summarize_prompt("text", "en")
         assert "Respond ONLY in English (en)" in prompt
+
+
+    def test_summarize_prompt_requests_integrity_assessment(self):
+        prompt = _build_summarize_prompt("text", "en")
+        assert "document integrity assessment" in prompt
+        assert "multiple separate documents" in prompt
+        assert "multiple pages" in prompt
 
     def test_keeps_unknown_language_code(self):
         prompt = _build_summarize_prompt("text", "sv")
@@ -83,6 +103,12 @@ class TestBuildAnalysisPrompt:
         assert "MUST be in English (en)" in prompt
         assert "Keep JSON field names" in prompt
 
+
+    def test_analysis_prompt_requests_integrity_assessment(self):
+        prompt = _build_analysis_prompt("summary", "en", ["Other"])
+        assert "document_integrity" in prompt
+        assert "multiple unrelated senders" in prompt
+        assert "multiple pages" in prompt
     def test_keeps_unknown_language_code(self):
         prompt = _build_analysis_prompt("summary", "sv", ["Other"])
         assert "Target language: sv" in prompt
@@ -114,6 +140,7 @@ class TestBuildAnalysisPrompt:
             "category", "tags", "summary_short", "summary", "key_points",
             "action_required", "action_summary", "deadline", "amounts",
             "entities", "suggested_folder", "suggested_filename", "confidence",
+            "document_integrity",
         ]
         for field in required_fields:
             assert field in parsed, f"Field '{field}' missing from schema template"
@@ -133,6 +160,11 @@ class TestBuildAnalysisPrompt:
                 return any(_has_string_null(i) for i in obj)
             return obj == "null"
         assert not _has_string_null(parsed), "Template must not use the string 'null' as a value"
+
+    def test_prompt_requires_document_integrity(self):
+        prompt = _build_analysis_prompt("summary", "en", ["Other"])
+        assert "Do not omit document_integrity" in prompt
+        assert "multi-document scan" in prompt
 
     def test_summary_appears_after_schema_template(self):
         """The document summary must appear after the schema template in the prompt."""
@@ -349,6 +381,13 @@ class TestDescriptionFallback:
                 "suggested_filename": "invoice.pdf",
                 "suggested_folder": "Invoices",
                 "action_required": False,
+        "document_integrity": {
+            "possible_multi_document_scan": False,
+            "suspected_document_count": 1,
+            "confidence": 0.91,
+            "reason": "The document appears to have one consistent sender and topic.",
+            "recommended_action": "none",
+        },
             }
         )
 
@@ -363,6 +402,13 @@ class TestDescriptionFallback:
                 "suggested_filename": "invoice.pdf",
                 "suggested_folder": "Invoices",
                 "action_required": False,
+        "document_integrity": {
+            "possible_multi_document_scan": False,
+            "suspected_document_count": 1,
+            "confidence": 0.91,
+            "reason": "The document appears to have one consistent sender and topic.",
+            "recommended_action": "none",
+        },
             }
         )
 

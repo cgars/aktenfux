@@ -252,10 +252,14 @@ def approve(
     doc_id: Optional[str] = typer.Argument(None, help="Document ID to approve."),
     config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
     dry_run: Optional[bool] = typer.Option(None, "--dry-run/--no-dry-run"),
-    all_docs: bool = typer.Option(False, "--all", help="Approve all documents currently in _Review."),
+    all_docs: bool = typer.Option(
+        False,
+        "--all",
+        help="Approve all documents currently in _Review, staging split recommendations in _Split.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Move a reviewed document from _Review into the Archive."""
+    """Move reviewed documents from _Review into Archive or _Split."""
     _setup_logging(verbose)
     cfg = _load_config(config_path, dry_run)
 

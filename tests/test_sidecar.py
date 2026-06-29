@@ -138,6 +138,28 @@ class TestReadSidecar:
         assert restored.confidence == 0.86
         assert "test warning" in restored.warnings
 
+    def test_roundtrip_preserves_document_integrity(self, tmp_path):
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"fake pdf")
+        sidecar = _make_sidecar(
+            doc_id="integrity",
+            document_integrity={
+                "possible_multi_document_scan": True,
+                "suspected_document_count": 3,
+                "confidence": 0.78,
+                "reason": "The OCR text contains multiple unrelated senders and topics.",
+                "recommended_action": "run_split_detection",
+            },
+        )
+
+        write_sidecar(sidecar, pdf)
+        restored = read_sidecar(pdf)
+
+        assert restored is not None
+        assert restored.document_integrity.possible_multi_document_scan is True
+        assert restored.document_integrity.suspected_document_count == 3
+        assert restored.document_integrity.recommended_action == "run_split_detection"
+
 
 class TestSidecarPathFor:
     def test_pdf_gets_json_sidecar(self, tmp_path):

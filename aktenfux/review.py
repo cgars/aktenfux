@@ -7,6 +7,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from aktenfux.schema import SidecarDocument
 from aktenfux.storage import read_sidecar
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,17 @@ def find_document_by_id(review_path: Path, doc_id: str) -> tuple[Path, SidecarDo
     return None
 
 
+def multi_doc_display(sidecar: SidecarDocument) -> str:
+    """Return the review table label for the document integrity assessment."""
+
+    integrity = sidecar.document_integrity
+    if integrity.recommended_action == "manual_review":
+        return "Review"
+    if integrity.recommended_action == "run_split_detection" or integrity.possible_multi_document_scan:
+        return "Yes"
+    return "No"
+
+
 def print_review_table(sidecars: list[SidecarDocument]) -> None:
     """Render a Rich table of review documents to the console."""
     if not sidecars:
@@ -86,6 +98,7 @@ def print_review_table(sidecars: list[SidecarDocument]) -> None:
     table.add_column("Category", style="blue")
     table.add_column("Summary", max_width=40)
     table.add_column("Action?", style="red")
+    table.add_column("Multi-doc", style="yellow")
     table.add_column("Deadline", style="yellow", no_wrap=True)
     table.add_column("Conf.", style="dim")
     table.add_column("Suggested Filename", max_width=40)
@@ -100,6 +113,7 @@ def print_review_table(sidecars: list[SidecarDocument]) -> None:
             s.category,
             s.summary_short[:60] if s.summary_short else "",
             "✓" if s.action_required else "",
+            multi_doc_display(s),
             s.deadline or "",
             f"{s.confidence:.0%}",
             s.suggested_filename or "",

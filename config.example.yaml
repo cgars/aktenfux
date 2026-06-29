@@ -11,6 +11,8 @@ review_dir: "_Review"
 imported_dir: "_Imported"
 error_dir: "_Error"
 archive_dir: "Archive"
+# Folder for approved documents that are likely multi-document scans and need splitting.
+split_dir: "_Split"
 # Folder where sidecar JSON files are written during dry-run scans.
 dry_run_dir: "_DryRun"
 

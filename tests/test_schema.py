@@ -10,9 +10,19 @@ from aktenfux.schema import (
     DESCRIPTION_SHORT_MAX_CHARS,
     Amount,
     DocumentAnalysis,
+    DocumentIntegrity,
     Entities,
     SidecarDocument,
 )
+
+
+VALID_INTEGRITY = {
+    "possible_multi_document_scan": False,
+    "suspected_document_count": 1,
+    "confidence": 0.91,
+    "reason": "The document appears to have one consistent sender and topic.",
+    "recommended_action": "none",
+}
 
 
 class TestAmount:
@@ -76,7 +86,7 @@ class TestEntities:
 
 class TestDocumentAnalysis:
     def test_minimal_valid(self):
-        da = DocumentAnalysis()
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, )
         assert da.document_type == "Other"
         assert da.category == "Other"
         assert da.confidence == 0.0
@@ -101,6 +111,7 @@ class TestDocumentAnalysis:
             "suggested_folder": "Insurance/HUK-COBURG/Car",
             "suggested_filename": "2026-06-20_HUK-COBURG_Invoice_Car-Insurance.pdf",
             "confidence": 0.86,
+            "document_integrity": VALID_INTEGRITY,
         }
         da = DocumentAnalysis.model_validate(data)
         assert da.correspondent == "HUK-COBURG"
@@ -109,50 +120,50 @@ class TestDocumentAnalysis:
 
     def test_confidence_bounds(self):
         # Values > 1.0 are interpreted as percentages and normalized, not rejected.
-        da = DocumentAnalysis(confidence=85)
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, confidence=85)
         assert da.confidence == pytest.approx(0.85)
-        da2 = DocumentAnalysis(confidence=1.5)  # 1.5 (as percentage) → 1.5/100 → 0.015
+        da2 = DocumentAnalysis(document_integrity=VALID_INTEGRITY, confidence=1.5)  # 1.5 (as percentage) → 1.5/100 → 0.015
         assert da2.confidence == pytest.approx(0.015)
         # Values above 100% are clamped to 1.0.
-        da3 = DocumentAnalysis(confidence=150)
+        da3 = DocumentAnalysis(document_integrity=VALID_INTEGRITY, confidence=150)
         assert da3.confidence == pytest.approx(1.0)
         # Negative values are still rejected.
         with pytest.raises(ValidationError):
-            DocumentAnalysis(confidence=-0.1)
+            DocumentAnalysis(document_integrity=VALID_INTEGRITY, confidence=-0.1)
 
     def test_key_points_limited_to_5(self):
-        da = DocumentAnalysis(key_points=["a", "b", "c", "d", "e", "f", "g"])
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, key_points=["a", "b", "c", "d", "e", "f", "g"])
         assert len(da.key_points) == 5
 
     def test_action_summary_cleared_when_not_required(self):
-        da = DocumentAnalysis(action_required=False, action_summary="Do something")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, action_required=False, action_summary="Do something")
         assert da.action_summary is None
 
     def test_action_summary_kept_when_required(self):
-        da = DocumentAnalysis(action_required=True, action_summary="Pay invoice")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, action_required=True, action_summary="Pay invoice")
         assert da.action_summary == "Pay invoice"
 
     def test_empty_string_date_becomes_none(self):
-        da = DocumentAnalysis(document_date="")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, document_date="")
         assert da.document_date is None
 
     def test_null_string_date_becomes_none(self):
-        da = DocumentAnalysis(document_date="null")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, document_date="null")
         assert da.document_date is None
 
     def test_invalid_document_type(self):
         # Unknown document types fall back to "Other" instead of raising.
-        da = DocumentAnalysis(document_type="Nonsense")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, document_type="Nonsense")
         assert da.document_type == "Other"
 
     def test_summary_short_filled_from_summary_when_empty(self):
         """summary_short must be auto-filled from summary when the LLM omits it."""
-        da = DocumentAnalysis(summary="A longer description of the document.", summary_short="")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, summary="A longer description of the document.", summary_short="")
         assert da.summary_short == "A longer description of the document."
 
     def test_summary_short_truncated_at_120_chars_when_filled_from_summary(self):
         long_summary = "x" * 200
-        da = DocumentAnalysis(summary=long_summary, summary_short="")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, summary=long_summary, summary_short="")
         assert da.summary_short == long_summary[:DESCRIPTION_SHORT_MAX_CHARS]
 
     def test_summary_short_rstrips_trailing_whitespace_from_summary(self):
@@ -160,13 +171,14 @@ class TestDocumentAnalysis:
         core = "y" * (DESCRIPTION_SHORT_MAX_CHARS - 5)
         trailing = "   " + "z" * 200  # spaces fall within the 120-char window
         long_summary = core + trailing
-        da = DocumentAnalysis(summary=long_summary, summary_short="")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, summary=long_summary, summary_short="")
         assert not da.summary_short.endswith(" ")
         assert da.summary_short == long_summary[:DESCRIPTION_SHORT_MAX_CHARS].rstrip()
 
     def test_summary_short_not_overwritten_when_provided(self):
         """An explicitly provided summary_short must not be overwritten."""
         da = DocumentAnalysis(
+            document_integrity=VALID_INTEGRITY,
             summary_short="Short desc.",
             summary="Much longer summary text that should not replace the short one.",
         )
@@ -174,26 +186,26 @@ class TestDocumentAnalysis:
 
     def test_summary_short_stays_empty_when_no_summary(self):
         """When both summary and summary_short are empty, summary_short remains empty."""
-        da = DocumentAnalysis(summary_short="", summary="")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, summary_short="", summary="")
         assert da.summary_short == ""
 
     # --- German / lenient coercion tests ---
 
     def test_german_document_type_rechnung(self):
-        da = DocumentAnalysis(document_type="Rechnung")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, document_type="Rechnung")
         assert da.document_type == "Invoice"
 
     def test_german_document_type_vertrag(self):
-        da = DocumentAnalysis(document_type="vertrag")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, document_type="vertrag")
         assert da.document_type == "Contract"
 
     def test_german_document_type_kontoauszug(self):
-        da = DocumentAnalysis(document_type="Kontoauszug")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, document_type="Kontoauszug")
         assert da.document_type == "BankStatement"
 
     def test_document_type_lowercase_canonical_accepted(self):
         """Lowercase versions of canonical type names should be accepted."""
-        da = DocumentAnalysis(document_type="invoice")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, document_type="invoice")
         assert da.document_type == "Invoice"
 
     def test_german_null_date_becomes_none(self):
@@ -203,31 +215,31 @@ class TestDocumentAnalysis:
             "n/a", "N/A", "na", "-", "—", "null", "none",
             "keine angabe", "nicht bekannt", "unknown", "not available",
         ):
-            da = DocumentAnalysis(document_date=val)
+            da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, document_date=val)
             assert da.document_date is None, f"expected None for {val!r}"
 
     def test_confidence_percentage_normalized(self):
-        da = DocumentAnalysis(confidence=85)
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, confidence=85)
         assert da.confidence == pytest.approx(0.85)
 
     def test_confidence_fraction_unchanged(self):
-        da = DocumentAnalysis(confidence=0.85)
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, confidence=0.85)
         assert da.confidence == pytest.approx(0.85)
 
     def test_confidence_over_100_clamped(self):
-        da = DocumentAnalysis(confidence=150)
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, confidence=150)
         assert da.confidence == pytest.approx(1.0)
 
     def test_tags_as_string_split_to_list(self):
-        da = DocumentAnalysis(tags="invoice, insurance, car")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, tags="invoice, insurance, car")
         assert da.tags == ["invoice", "insurance", "car"]
 
     def test_tags_non_list_becomes_empty(self):
-        da = DocumentAnalysis(tags=None)
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, tags=None)
         assert da.tags == []
 
     def test_key_points_as_newline_string(self):
-        da = DocumentAnalysis(key_points="Point A\nPoint B\nPoint C")
+        da = DocumentAnalysis(document_integrity=VALID_INTEGRITY, key_points="Point A\nPoint B\nPoint C")
         assert da.key_points == ["Point A", "Point B", "Point C"]
 
     def test_amounts_invalid_entries_dropped(self):
@@ -238,7 +250,8 @@ class TestDocumentAnalysis:
                 "not a dict",
                 None,
                 {"label": "fee", "amount": "12,50"},
-            ]
+            ],
+            "document_integrity": VALID_INTEGRITY,
         }
         da = DocumentAnalysis.model_validate(data)
         assert len(da.amounts) == 2
@@ -247,8 +260,41 @@ class TestDocumentAnalysis:
         assert da.amounts[1].label == "fee"
         assert da.amounts[1].amount == pytest.approx(12.50)
 
+
+    def test_document_integrity_complete_valid(self):
+        integrity = DocumentIntegrity.model_validate(VALID_INTEGRITY)
+        assert integrity.possible_multi_document_scan is False
+        assert integrity.suspected_document_count == 1
+
+    def test_missing_document_integrity_rejected(self):
+        with pytest.raises(ValidationError):
+            DocumentAnalysis.model_validate({"document_type": "Invoice"})
+
+    def test_invalid_document_integrity_recommended_action_rejected(self):
+        bad = {**VALID_INTEGRITY, "recommended_action": "split_now"}
+        with pytest.raises(ValidationError):
+            DocumentAnalysis.model_validate({"document_integrity": bad})
+
+    def test_document_integrity_confidence_bounds(self):
+        bad = {**VALID_INTEGRITY, "confidence": -0.1}
+        with pytest.raises(ValidationError):
+            DocumentAnalysis.model_validate({"document_integrity": bad})
+
+    def test_document_integrity_confidence_percentage_normalized(self):
+        da = DocumentAnalysis.model_validate({
+            "document_integrity": {**VALID_INTEGRITY, "confidence": 91}
+        })
+        assert da.document_integrity.confidence == pytest.approx(0.91)
+
+    def test_document_integrity_confidence_over_100_clamped(self):
+        da = DocumentAnalysis.model_validate({
+            "document_integrity": {**VALID_INTEGRITY, "confidence": 150}
+        })
+        assert da.document_integrity.confidence == pytest.approx(1.0)
+
     def test_json_roundtrip(self):
         da = DocumentAnalysis(
+            document_integrity=VALID_INTEGRITY,
             document_date="2026-01-01",
             correspondent="Test Corp",
             document_type="Invoice",
@@ -279,6 +325,7 @@ class TestSidecarDocument:
 
     def test_from_analysis(self):
         analysis = DocumentAnalysis(
+            document_integrity=VALID_INTEGRITY,
             document_date="2026-06-20",
             correspondent="Test GmbH",
             document_type="Invoice",

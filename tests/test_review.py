@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from aktenfux.review import find_document_by_id, list_review_documents
+from aktenfux.review import find_document_by_id, list_review_documents, multi_doc_display
 from aktenfux.schema import SidecarDocument
 
 
@@ -127,3 +127,31 @@ class TestListReviewDocuments:
         docs = list_review_documents(review_dir)
         assert len(docs) == 1
         assert docs[0].id == "cccc000000000003"
+
+
+class TestMultiDocDisplay:
+    def test_marks_possible_multi_document_scan_yes(self):
+        sidecar = SidecarDocument(
+            id="multi", original_path="/x.pdf", current_path="/x.pdf", sha256="a" * 64,
+            document_integrity={
+                "possible_multi_document_scan": True,
+                "suspected_document_count": 2,
+                "confidence": 0.74,
+                "reason": "Two unrelated senders are present.",
+                "recommended_action": "run_split_detection",
+            },
+        )
+        assert multi_doc_display(sidecar) == "Yes"
+
+    def test_marks_manual_review(self):
+        sidecar = SidecarDocument(
+            id="review", original_path="/x.pdf", current_path="/x.pdf", sha256="a" * 64,
+            document_integrity={
+                "possible_multi_document_scan": False,
+                "suspected_document_count": 1,
+                "confidence": 0.45,
+                "reason": "The document is ambiguous.",
+                "recommended_action": "manual_review",
+            },
+        )
+        assert multi_doc_display(sidecar) == "Review"

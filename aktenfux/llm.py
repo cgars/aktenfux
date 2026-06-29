@@ -28,6 +28,7 @@ _SUMMARIZE_SYSTEM_PROMPT = (
     "Include: document type, date, sender/correspondent, key topics, important numbers "
     "(amounts, account numbers, contract numbers, invoice numbers, customer numbers), "
     "deadlines, required actions, and a concise list of key points. "
+    "Also include a plain-text document integrity assessment that notes whether the OCR text appears to describe one logical document or a possible multi-document scan. "
     "Do NOT use JSON. Write only plain text. "
     "IMPORTANT: The entire response MUST be in the requested language."
 )
@@ -44,7 +45,10 @@ _ANALYZE_SYSTEM_PROMPT = (
 )
 
 _REPAIR_SUFFIX = (
-    "\n\nYour previous response was not valid JSON. "
+    "\n\nYour previous response was not valid JSON or did not match the required schema. "
+    "Your previous response may have omitted the required document_integrity object. "
+    "Return the complete JSON object again and include all required fields. "
+    "Use possible_multi_document_scan=false and recommended_action=\"none\" if the document appears to be a single logical document. "
     "Please reply ONLY with valid JSON, no markdown, no explanation."
 )
 
@@ -81,7 +85,14 @@ _JSON_SCHEMA_TEMPLATE = """\
   },
   "suggested_folder": "Invoices/Example-Corp",
   "suggested_filename": "2024-03-15_Example-Corp_Invoice_Software-License.pdf",
-  "confidence": 0.90
+  "confidence": 0.90,
+  "document_integrity": {
+    "possible_multi_document_scan": false,
+    "suspected_document_count": 1,
+    "confidence": 0.91,
+    "reason": "The document appears to be one invoice with consistent sender, invoice number, and topic.",
+    "recommended_action": "none"
+  }
 }"""
 
 # Field-level constraints shown in the prompt as plain text (separate from the
@@ -94,6 +105,12 @@ _JSON_FIELD_CONSTRAINTS = (
     "Invoice, Contract, Notice, Policy, BankStatement, Letter, Receipt, Manual, Other.\n"
     "- action_summary: set to null when action_required is false.\n"
     "- confidence: a float between 0.0 (uncertain) and 1.0 (certain).\n"
+    "- document_integrity: required object assessing whether the PDF appears to contain one logical document or multiple separate documents.\n"
+    "- document_integrity.possible_multi_document_scan: true only if the PDF may contain more than one logical document.\n"
+    "- document_integrity.suspected_document_count: integer >= 1; use 1 for a single coherent document or if uncertain.\n"
+    "- document_integrity.confidence: float between 0.0 and 1.0 for the integrity assessment only.\n"
+    "- document_integrity.recommended_action: exactly one of none, run_split_detection, manual_review.\n"
+    "- Use recommended_action=none for normal single documents, run_split_detection for likely multi-document scans, and manual_review for suspicious low-confidence cases.\n"
     "- summary_short: a single sentence, 120 characters maximum.\n"
     "- key_points: up to 5 short bullet points.\n"
     "- amounts: use decimal point as separator (e.g. 1500.00, not 1.500,00).\n"
@@ -106,7 +123,11 @@ def _build_summarize_prompt(ocr_text: str, language: str) -> str:
     return (
         f"Target language: {language_label}\n"
         f"IMPORTANT: Respond ONLY in {language_label}. Do not use any other language.\n\n"
-        "Please write a detailed summary of the following OCR text:\n\n"
+        "Please write a detailed summary of the following OCR text.\n\n"
+        "Include a document integrity assessment in the summary. Evaluate whether the PDF appears to contain one logical document or multiple separate documents. "
+        "Look for evidence such as multiple unrelated senders, unrelated document types, independent invoice/customer/contract numbers, clear topic changes, a new letterhead or salutation after another document seems complete, unrelated payment instructions or bank details, or unrelated dates/reference numbers. "
+        "Do not treat multiple pages, attachments, or terms and conditions as multi-document evidence by themselves. "
+        "If the OCR text is ambiguous, say that explicitly so the JSON extraction pass can choose manual_review or a conservative single-document assessment.\n\n"
         f"{ocr_text}"
     )
 
@@ -124,7 +145,12 @@ def _build_analysis_prompt(
         "Keep JSON field names, document_type, and category exactly as specified. suggested_folder and suggested_filename MUST be safe filesystem path/filename strings and do not need to be translated.\n"
         f"Allowed categories: [{categories_str}]\n\n"
         "Return ONLY a JSON object with the same structure as the example below.\n"
-        "Extract the actual values from the document summary; do not copy the example values.\n\n"
+        "Extract the actual values from the document summary; do not copy the example values.\n"
+        "Also assess whether the PDF appears to contain one logical document or multiple separate documents. "
+        "A multi-document scan may contain multiple unrelated senders, multiple unrelated document types, multiple independent invoice/customer/contract numbers, a clear change of topic, a new letterhead or salutation after another document seems complete, unrelated payment instructions or bank details, or unrelated dates/reference numbers. "
+        "Do not claim multi-document status just because a document has multiple pages, attachments, or terms and conditions. "
+        "If uncertain, set possible_multi_document_scan to false or use recommended_action manual_review with lower confidence. "
+        "Do not omit document_integrity.\n\n"
         f"Example structure:\n{_JSON_SCHEMA_TEMPLATE}\n\n"
         f"{_JSON_FIELD_CONSTRAINTS}\n\n"
         "Document summary to analyse:\n\n"
