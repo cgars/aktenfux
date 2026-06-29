@@ -276,10 +276,21 @@ class TestDocumentAnalysis:
             DocumentAnalysis.model_validate({"document_integrity": bad})
 
     def test_document_integrity_confidence_bounds(self):
-        for value in (-0.1, 1.1):
-            bad = {**VALID_INTEGRITY, "confidence": value}
-            with pytest.raises(ValidationError):
-                DocumentAnalysis.model_validate({"document_integrity": bad})
+        bad = {**VALID_INTEGRITY, "confidence": -0.1}
+        with pytest.raises(ValidationError):
+            DocumentAnalysis.model_validate({"document_integrity": bad})
+
+    def test_document_integrity_confidence_percentage_normalized(self):
+        da = DocumentAnalysis.model_validate({
+            "document_integrity": {**VALID_INTEGRITY, "confidence": 91}
+        })
+        assert da.document_integrity.confidence == pytest.approx(0.91)
+
+    def test_document_integrity_confidence_over_100_clamped(self):
+        da = DocumentAnalysis.model_validate({
+            "document_integrity": {**VALID_INTEGRITY, "confidence": 150}
+        })
+        assert da.document_integrity.confidence == pytest.approx(1.0)
 
     def test_json_roundtrip(self):
         da = DocumentAnalysis(
@@ -367,10 +378,21 @@ class TestSidecarDocument:
             DocumentAnalysis.model_validate({"document_integrity": bad})
 
     def test_document_integrity_confidence_bounds(self):
-        for value in (-0.1, 1.1):
-            bad = {**VALID_INTEGRITY, "confidence": value}
-            with pytest.raises(ValidationError):
-                DocumentAnalysis.model_validate({"document_integrity": bad})
+        bad = {**VALID_INTEGRITY, "confidence": -0.1}
+        with pytest.raises(ValidationError):
+            DocumentAnalysis.model_validate({"document_integrity": bad})
+
+    def test_document_integrity_confidence_percentage_normalized(self):
+        da = DocumentAnalysis.model_validate({
+            "document_integrity": {**VALID_INTEGRITY, "confidence": 91}
+        })
+        assert da.document_integrity.confidence == pytest.approx(0.91)
+
+    def test_document_integrity_confidence_over_100_clamped(self):
+        da = DocumentAnalysis.model_validate({
+            "document_integrity": {**VALID_INTEGRITY, "confidence": 150}
+        })
+        assert da.document_integrity.confidence == pytest.approx(1.0)
 
     def test_json_roundtrip(self):
         s = self._make_sidecar(

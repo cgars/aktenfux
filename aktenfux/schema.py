@@ -91,6 +91,16 @@ class DocumentIntegrity(BaseModel):
     reason: str
     recommended_action: RecommendedIntegrityAction
 
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def normalize_confidence(cls, v: Any) -> Any:
+        """Normalize a percentage confidence value (e.g. 85) to a fraction (0.85)."""
+        if isinstance(v, (int, float)) and v > 1.0:
+            normalized = v / 100.0
+            # Clamp in case the percentage itself is out of range.
+            return min(max(normalized, 0.0), 1.0)
+        return v
+
 
 def default_document_integrity() -> DocumentIntegrity:
     """Return the default single-document integrity assessment for sidecars."""
