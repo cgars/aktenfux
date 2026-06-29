@@ -34,6 +34,13 @@ def _fake_analysis() -> DocumentAnalysis:
         suggested_filename="2026-01-15_Test-GmbH_Invoice_Software-License.pdf",
         suggested_folder="Invoices/Test-GmbH/Software",
         summary_short="Test invoice",
+        document_integrity={
+            "possible_multi_document_scan": False,
+            "suspected_document_count": 1,
+            "confidence": 0.91,
+            "reason": "The document appears to have one consistent sender and topic.",
+            "recommended_action": "none",
+        },
     )
 
 
