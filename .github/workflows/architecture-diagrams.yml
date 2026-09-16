@@ -27,7 +27,7 @@ jobs:
         with:
           node-version: "22"
       - name: Render Mermaid diagrams
-        run: python scripts/render_architecture.py
+        run: python scripts/render_architecture.py --puppeteer-no-sandbox
       - name: Upload SVG diagrams
         uses: actions/upload-artifact@v4
         with:
