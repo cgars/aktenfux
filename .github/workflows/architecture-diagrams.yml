@@ -1,0 +1,35 @@
+name: Architecture diagrams
+
+on:
+  pull_request:
+    paths:
+      - "ARCHITECTURE.md"
+      - "scripts/render_architecture.py"
+      - ".github/workflows/architecture-diagrams.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "ARCHITECTURE.md"
+      - "scripts/render_architecture.py"
+      - ".github/workflows/architecture-diagrams.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Render Mermaid diagrams
+        run: python scripts/render_architecture.py --puppeteer-no-sandbox
+      - name: Upload SVG diagrams
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-diagrams
+          path: build/architecture/*.svg
