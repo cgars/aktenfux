@@ -5,6 +5,8 @@ on:
     paths:
       - "docs/architecture.md"
       - "docs/threat-model.md"
+      - "package.json"
+      - "package-lock.json"
       - "scripts/render_architecture.py"
       - ".github/workflows/architecture-diagrams.yml"
   push:
@@ -13,6 +15,8 @@ on:
     paths:
       - "docs/architecture.md"
       - "docs/threat-model.md"
+      - "package.json"
+      - "package-lock.json"
       - "scripts/render_architecture.py"
       - ".github/workflows/architecture-diagrams.yml"
   workflow_dispatch:
@@ -28,6 +32,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
+          cache: npm
+      - name: Install locked Mermaid dependencies
+        run: npm ci
+      - name: Install Puppeteer browser revision
+        run: npx --no-install puppeteer browsers install chrome-headless-shell
       - name: Render Mermaid diagrams
         run: python scripts/render_architecture.py --puppeteer-no-sandbox
       - name: Upload SVG diagrams

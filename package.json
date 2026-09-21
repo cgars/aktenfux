@@ -1,0 +1,7 @@
+{
+  "name": "aktenfux-documentation-tools",
+  "private": true,
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "11.17.0"
+  }
+}

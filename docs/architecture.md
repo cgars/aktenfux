@@ -257,3 +257,16 @@ Third-party CI actions are pinned to reviewed, immutable commit SHAs. Update
 them only in a scoped dependency pull request that records the corresponding
 upstream release or tag, verifies the selected commit SHA, and successfully
 renders the diagrams before merge.
+
+Mermaid CLI is a development-only CI dependency declared at an exact version in
+`package.json`; `package-lock.json` pins its transitive graph and integrity
+hashes, and CI installs that graph with `npm ci`. The renderer invokes only the
+installed local binary, so rendering does not resolve npm packages dynamically.
+CI installs the Chrome Headless Shell revision selected by the lockfile-pinned
+Puppeteer version before rendering.
+Mermaid launches a browser and parses maintained diagram source, making updates
+security-relevant: each scoped dependency pull request must review the lockfile
+diff and `npm audit`, record the upstream release and security impact, and render
+all diagrams successfully before merge. Version 11.17.0 replaces 11.12.0 because
+the latter's locked Puppeteer graph contained high-severity `extract-zip`
+advisories.

@@ -42,8 +42,8 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=Path("build/architecture"))
     parser.add_argument(
         "--mmdc",
-        default="npx --yes @mermaid-js/mermaid-cli@11.12.0",
-        help="Command used to invoke Mermaid CLI.",
+        default="npx --no-install mmdc",
+        help="Command used to invoke the locally installed, lockfile-pinned Mermaid CLI.",
     )
     parser.add_argument(
         "--puppeteer-no-sandbox",
