@@ -145,7 +145,7 @@ final archive.
 
 | ID | ELI5 | Threat and abuse case | STRIDE | Risk | Required controls | Verification |
 |---|---|---|---|---|---|---|
-| AF-01 | A paper in the inbox is really a sign pointing to a private file somewhere else. | A symlink, junction, special file, or escaped configured directory is opened, parsed, hashed, or given a sibling sidecar before source confinement is checked. A successful analysis can therefore create or replace JSON outside `base_dir` before the later move check. | T/I/E | Critical | Validate configured directories at load; require a regular file; resolve and confine source to the exact inbox before any read or sibling write; reject links and recheck an opened-file identity where supported. | Symlink, junction, absolute-path, `..`, special-file, and platform-specific tests proving parser, hasher, and sidecar writer are never called for an unconfined source. |
+| AF-01 | A paper in the inbox is really a sign pointing to a private file somewhere else. | A symlink, junction, special file, or escaped configured directory is opened, parsed, hashed, or given sibling artifacts before source confinement is checked. A successful analysis can therefore create or replace JSON sidecars and optional Markdown summaries outside `base_dir` before the later move check. | T/I/E | Critical | Validate configured directories at load; require a regular file; resolve and confine source to the exact inbox before any read or sibling write; reject links and recheck an opened-file identity where supported. | Symlink, junction, absolute-path, `..`, special-file, and platform-specific tests proving the parser, hasher, JSON writer, and Markdown writer are never called for an unconfined source. |
 | AF-02 | A deliberately broken or enormous letter jams or harms the machine that tries to read it. | Malformed, compressed, encrypted, or oversized PDFs exploit parser defects or exhaust CPU, memory, disk, or time. | D/E/I | High | Size/page/encryption limits; parse timeout or isolated worker; dependency patching; bounded fallback; preserve input and fail safely. | Malformed corpus, size/page boundary tests, timeout/cancellation tests, dependency scanning. |
 | AF-03 | The letter says, “Ignore your owner and write a different label,” and the clerk obeys. | Hidden or visible OCR prompt injection changes summaries, deadlines, integrity assessment, categories, or warnings. | T/R | High | Delimit OCR as untrusted content; instruction-hierarchy prompts; model output remains advisory; evidence references; prominent uncertainty/conflict display; adversarial tests. | Injection corpus covering hidden OCR, fake system messages, deadline suppression, split suppression, and fabricated actions. |
 | AF-04 | The suggested label secretly contains directions to another drawer. | LLM output or a tampered sidecar supplies absolute paths, separators, traversal, reserved names, or wrong lifecycle roots. | T/I/E | Critical | Ignore model path strings for writes; derive names locally from bounded semantic fields; validate exact destination root; validate sidecars on every use; no overwrite. | Cross-platform malicious-name corpus and tests for every scan/approve/reject/reprocess destination. |
@@ -180,8 +180,8 @@ The current implementation includes useful controls:
 These controls have important limits:
 
 - source paths are not confined before parsing, hashing, or the initial sibling
-  sidecar write; an escaped inbox can therefore cause an out-of-workspace JSON
-  create or overwrite before the move check;
+  artifact writes; an escaped inbox can therefore cause out-of-workspace JSON
+  sidecar and optional Markdown creates or overwrites before the move check;
 - `base_dir` confinement is weaker than exact lifecycle-root confinement;
 - non-empty LLM path suggestions can still influence destinations;
 - paired artifact moves and sidecar writes are not transactional;
