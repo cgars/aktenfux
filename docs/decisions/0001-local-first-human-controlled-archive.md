@@ -1,6 +1,6 @@
 # ADR 0001: Local-first, human-controlled archive with authoritative sidecars
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-09-21  
 **Decision owners:** Aktenfux maintainers
 
@@ -18,13 +18,14 @@ The PDF is the original letter, its JSON sidecar is the index card, and SQLite i
 
 Aktenfux will use the following architectural rules:
 
-1. Processing is local-first. The default inference endpoint must be restricted to the local machine. Remote inference is a separate, explicit capability with its own warnings and security review.
+1. Processing is local-first. The inference endpoint must be restricted to the local machine for the first release. Remote inference is unsupported until a later ADR, explicit opt-in design, and security review permit it.
 2. The user retains authority over the original PDF. Aktenfux does not silently overwrite or delete source material.
 3. The JSON sidecar is the authoritative Aktenfux metadata record. SQLite is a derived, rebuildable search index.
 4. Language-model output is an untrusted proposal. It cannot directly choose filesystem paths, execute commands, or authorize a state change.
-5. Consequential operations use preview and explicit human approval. Low-confidence or incomplete-evidence results go to review.
+5. Consequential operations use preview and explicit human approval. Bulk approval such as `approve --all` displays the exact scope and requires an additional confirmation. Low-confidence or incomplete-evidence results go to review.
 6. CLI, future UI, and future MCP tools call the same typed application services and policy checks.
 7. Mutations of a PDF and its sidecar are designed as recoverable operations, with atomic writes where supported and clear recovery state where a multi-file operation cannot be atomic.
+8. Original PDF bytes remain unchanged by default. PDF metadata rewriting is unsupported for the first release and requires a later ADR before it may be enabled.
 
 ## Consequences
 
@@ -42,7 +43,7 @@ Aktenfux will use the following architectural rules:
 - Human review reduces unattended throughput.
 - Safe paired-file operations need journals, staging, or recovery logic.
 - Restricting model-selected paths requires deterministic mapping code.
-- Remote inference cannot be enabled as a casual endpoint change.
+- Remote inference cannot be enabled as a casual endpoint change and is unsupported for the first release.
 
 ## Alternatives considered
 
@@ -88,4 +89,3 @@ Separate ADRs should cover:
 ## Supersession
 
 If this decision changes, a new ADR must explain the replacement and link back to this record. Do not silently rewrite an accepted architectural decision.
-

@@ -1,6 +1,6 @@
 # Aktenfux architecture
 
-Status: current-state and target-state documentation draft  
+Status: maintained current-state and target-state baseline  
 Last reviewed: 2026-09-21  
 Owner: project maintainers
 
@@ -113,7 +113,7 @@ the PDF plus sidecar as one recoverable document unit.
 |---|---|---|
 | `config.py` | Load configuration and construct workspace paths | Directory names and inference URL require stronger validation. |
 | `pdf_text.py` | Extract embedded text with pypdf and optional pdfplumber | Processes hostile PDFs without explicit size/page/time limits. |
-| `pdf_metadata.py` | Optionally rewrite PDF metadata | Disabled by default; changes file bytes and current hash semantics. |
+| `pdf_metadata.py` | Legacy optional PDF metadata rewriting | Disabled; unsupported for the first release because it changes file bytes and current hash semantics. |
 | `llm.py` | Two-pass summarization and structured extraction | OCR and model output are untrusted; configured HTTP endpoint may be remote. |
 | `ollama_manager.py` | Check, list, pull, and test models | Model downloads require confirmation; network boundary must remain explicit. |
 | `schema.py` | Validate analysis and sidecar models | Validation normalizes shape, not factual correctness. |
@@ -195,8 +195,9 @@ The following architecture invariants apply:
 - LLM output never directly authorizes a write or supplies a trusted path.
 - No document enters `Archive` without an explicit human-approved command.
 - Dry-run never moves or rewrites the original PDF.
-- Optional PDF metadata writing remains off by default and must preserve coherent
-  integrity and recovery semantics when enabled.
+- PDF bytes remain unchanged by default. Metadata rewriting is unsupported for
+  the first release and requires a later ADR with coherent integrity and recovery
+  semantics before it may be enabled.
 - Sidecar updates and paired PDF/sidecar moves are atomic or recoverably journaled.
 - SQLite contains no state that cannot be recovered from authoritative artifacts.
 - Logs exclude OCR text, complete model responses, extracted values, and document
@@ -221,21 +222,25 @@ The following architecture invariants apply:
 2. Fix pre-read source validation, exact-root validation, and deterministic path
    derivation.
 3. Define atomic sidecar writes and recoverable paired moves.
-4. Define integrity semantics for optional PDF metadata rewriting.
-5. Add PDF resource limits and local-only inference enforcement.
+4. Remove or keep disabled PDF metadata rewriting for the first release.
+5. Add PDF resource limits and enforce local-only inference for the first release.
 6. Implement and test SQLite rebuild before calling the index recoverable.
 7. Introduce provider-neutral inference while retaining the local-only default.
 8. Add page-level evidence and hierarchical long-document processing.
 9. Connect the review workbench through application services.
 10. Add MCP read tools, then separately review any proposed write tools.
 
+Remote inference is outside the first-release boundary. Bulk approval, including
+`approve --all`, must display the exact item count and require an additional
+confirmation before any move begins.
+
 Older branches and draft work must be reconciled before new layers are presented
 as current functionality.
 
 ## Diagram maintenance
 
-Named Mermaid blocks in this file are the editable diagram source. The renderer
-must discover each `<!-- diagram: name -->` block, validate it with a pinned
+Named Mermaid blocks in this file and the threat model are the editable diagram
+source. The renderer must discover each `<!-- diagram: name -->` block, validate it with a pinned
 Mermaid version, and publish SVG artifacts in CI. Generated renderings are not
 committed.
 
@@ -243,4 +248,3 @@ Update the relevant diagram whenever a component, trust boundary, persistence
 mechanism, inference provider, interface, data authority, or material data flow
 changes. The same pull request must update this document and the threat model
 when their claims are affected.
-

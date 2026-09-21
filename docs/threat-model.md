@@ -103,6 +103,7 @@ The model is not an authorized actor. It produces untrusted proposals.
 
 ## Trust boundaries
 
+<!-- diagram: threat-boundaries -->
 ```mermaid
 flowchart TD
     U["User and local interfaces"] -->|"commands"| A["Aktenfux application"]
@@ -169,7 +170,7 @@ The current implementation includes useful controls:
 - probable multi-document scans are staged for follow-up rather than split silently;
 - Pydantic validates and normalizes the model response shape;
 - path resolution prevents moves outside `base_dir`;
-- destination collision handling avoids overwriting existing files;
+- destination collision handling protects normal move destinations, but not every write path;
 - SHA-256 is recorded and can support duplicate detection;
 - SQLite statements bind data values;
 - PDF metadata writing is disabled by default;
@@ -182,6 +183,7 @@ These controls have important limits:
 - `base_dir` confinement is weaker than exact lifecycle-root confinement;
 - non-empty LLM path suggestions can still influence destinations;
 - paired artifact moves and sidecar writes are not transactional;
+- dry-run sidecars can overwrite an earlier result when derived names collide;
 - duplicate detection currently depends on optional SQLite;
 - SQLite rebuild is not implemented on `main`;
 - remote inference is not blocked by default;
@@ -241,6 +243,9 @@ The technical lists below define the actual gates.
 - tests for prompt injection, path attacks, interruption, and dry-run invariants.
 
 ### Before allowing remote inference
+
+Remote inference is not supported for the first release. A later release may
+consider it only after a separate ADR and all gates below are satisfied.
 
 - explicit configuration opt-in separate from the endpoint URL;
 - clear user-facing disclosure of which data is transferred;
@@ -346,4 +351,3 @@ functional tests pass.
 - OWASP File Upload Cheat Sheet
 - OWASP Path Traversal guidance
 - OWASP LLM Prompt Injection Prevention Cheat Sheet
-
