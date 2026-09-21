@@ -185,7 +185,8 @@ These controls have important limits:
 - `base_dir` confinement is weaker than exact lifecycle-root confinement;
 - non-empty LLM path suggestions can still influence destinations;
 - paired artifact moves and sidecar writes are not transactional;
-- dry-run sidecars can overwrite an earlier result when derived names collide;
+- dry-run persists sidecars and can overwrite an earlier result when derived
+  names collide, violating the mutation-free target invariant;
 - duplicate detection currently depends on optional SQLite;
 - SQLite rebuild is not implemented on `main`;
 - remote inference is not blocked by default;
@@ -203,7 +204,8 @@ control were already implemented.
 - A destination is derived and validated against the exact root for its command.
 - No command overwrites an existing PDF, sidecar, or Markdown artifact.
 - No document enters `Archive` without explicit human approval.
-- Dry-run does not move or rewrite the original PDF.
+- Dry-run returns a proposal without persisting or mutating any document,
+  sidecar, Markdown, index, or lifecycle state.
 - Original, current, and transformed artifact hashes have explicit meanings.
 - Sidecar authority never permits unique state to live only in SQLite.
 - Consequential state transitions are attributable, idempotent, and recoverable.

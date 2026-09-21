@@ -69,7 +69,7 @@ If only the first part of a long document is shown to the model, that is like as
 
 ## Dry-run
 
-Dry-run is a rehearsal. It does not move the source PDF, but the current MVP does write a JSON result into `_DryRun` and can replace an earlier result when two scans derive the same name. Collision-safe dry-run output is therefore a required fix. Target behavior must show the proposed sidecar, destination, and changes without making anything look like an approved operation.
+Dry-run is a rehearsal. It does not move the source PDF, but the current MVP does write and potentially replace a JSON result in `_DryRun`. That persisted write is itself a release-gate gap, not merely a filename-collision problem. Target behavior must return or display the proposed sidecar, destination, and changes without persisting a PDF, sidecar, Markdown file, database row, or lifecycle state.
 
 ## Planned UI and MCP control
 

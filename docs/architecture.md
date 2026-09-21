@@ -82,9 +82,10 @@ not performed before PDF extraction and hashing. A symlink or other unexpected
 filesystem object in `_Inbox` may therefore be read before the later move check
 rejects it. This is a documented security gap, not the intended target behavior.
 
-Dry-run follows the analysis path without moving the original PDF. It writes a
-sidecar to `_DryRun`. A likely multi-document scan is staged in `_Split` only
-after approval; the current pipeline does not silently split it.
+Dry-run follows the analysis path without moving the original PDF. It currently
+writes a sidecar to `_DryRun`; that persisted state violates the target dry-run
+invariant. A likely multi-document scan is staged in `_Split` only after
+approval; the current pipeline does not silently split it.
 
 ## Intended secure processing flow
 
@@ -105,7 +106,9 @@ flowchart TD
 
 The target flow validates the source before reading it, separates model-proposed
 semantics from trusted path derivation, preserves page-level evidence, and treats
-the PDF plus sidecar as one recoverable document unit.
+the PDF plus sidecar as one recoverable document unit. In dry-run mode it stops
+before staging and returns the proposal and planned changes without persisting
+artifacts, index rows, or lifecycle state.
 
 ## Current components
 
@@ -194,7 +197,8 @@ The following architecture invariants apply:
 - All destination validation uses the exact allowed root for the operation.
 - LLM output never directly authorizes a write or supplies a trusted path.
 - No document enters `Archive` without an explicit human-approved command.
-- Dry-run never moves or rewrites the original PDF.
+- Dry-run returns a proposal without persisting or mutating any document,
+  sidecar, Markdown, index, or lifecycle state.
 - PDF bytes remain unchanged by default. Metadata rewriting is unsupported for
   the first release and requires a later ADR with coherent integrity and recovery
   semantics before it may be enabled.
@@ -248,3 +252,8 @@ Update the relevant diagram whenever a component, trust boundary, persistence
 mechanism, inference provider, interface, data authority, or material data flow
 changes. The same pull request must update this document and the threat model
 when their claims are affected.
+
+Third-party CI actions are pinned to reviewed, immutable commit SHAs. Update
+them only in a scoped dependency pull request that records the corresponding
+upstream release or tag, verifies the selected commit SHA, and successfully
+renders the diagrams before merge.
