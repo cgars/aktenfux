@@ -113,7 +113,7 @@ the PDF plus sidecar as one recoverable document unit.
 |---|---|---|
 | `config.py` | Load configuration and construct workspace paths | Directory names and inference URL require stronger validation. |
 | `pdf_text.py` | Extract embedded text with pypdf and optional pdfplumber | Processes hostile PDFs without explicit size/page/time limits. |
-| `pdf_metadata.py` | Legacy optional PDF metadata rewriting | Disabled; unsupported for the first release because it changes file bytes and current hash semantics. |
+| `pdf_metadata.py` | Configurable PDF metadata rewriting | Disabled by default but currently opt-in through configuration; unsupported for the first release because it changes file bytes without refreshing the stored hash. |
 | `llm.py` | Two-pass summarization and structured extraction | OCR and model output are untrusted; configured HTTP endpoint may be remote. |
 | `ollama_manager.py` | Check, list, pull, and test models | Model downloads require confirmation; network boundary must remain explicit. |
 | `schema.py` | Validate analysis and sidecar models | Validation normalizes shape, not factual correctness. |

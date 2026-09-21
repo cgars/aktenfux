@@ -61,6 +61,8 @@ Sidecars should be written atomically: prepare a complete replacement, flush it 
 
 A cryptographic hash is like a very sensitive wax seal for the PDF bytes. If Aktenfux rewrites PDF metadata, even without changing the visible pages, the bytes and therefore the seal can change. The stored hash must describe the final archived file, while provenance should retain the original input hash when a transformation occurred.
 
+The current MVP has an opt-in configuration switch for metadata rewriting even though the stored hash is not refreshed afterwards. It is disabled by default and unsupported for the first release; preserving the original PDF bytes is the accepted design rule.
+
 ## Truncation and page evidence
 
 If only the first part of a long document is shown to the model, that is like asking the assistant to classify a book after reading its opening pages. The sidecar and review screen must say that evidence was incomplete. Automatic splitting or filing must not pretend that unseen pages were assessed.
