@@ -71,7 +71,7 @@ If only the first part of a long document is shown to the model, that is like as
 
 ## Dry-run
 
-Dry-run is a rehearsal. It does not move the source PDF, but the current MVP does write and potentially replace a JSON result. The write is intended for `_DryRun`, yet its filename comes directly from untrusted model output: an absolute name or `..` can escape that directory and replace a JSON file elsewhere. That unconfined persisted write is a critical release-gate gap, not merely a filename-collision problem. Target behavior must ignore model-supplied path strings, derive safe names locally, validate exact roots, and return or display the proposed sidecar, destination, and changes without persisting a PDF, sidecar, Markdown file, database row, or lifecycle state.
+Dry-run is a rehearsal. It does not move the source PDF, but the current MVP can initialize or update SQLite and query the duplicate index; it also creates `_DryRun` and writes or replaces a JSON result. The JSON filename comes directly from untrusted model output: an absolute name or `..` can escape that directory and replace a file elsewhere. These state changes are critical release-gate gaps, not merely a filename-collision problem. Target behavior must ignore model-supplied path strings, derive safe names locally, validate exact roots, and return or display the proposed sidecar, destination, and changes without creating or accessing a database or persisting a directory, PDF, sidecar, Markdown file, index row, or lifecycle state.
 
 ## Planned UI and MCP control
 

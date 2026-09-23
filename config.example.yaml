@@ -28,6 +28,7 @@ ollama_timeout: 120
 # dry_run is ON by default, but it is not currently a safety boundary.
 # CURRENT MVP WARNING: scanning in dry-run writes a model-named JSON result;
 # traversal or an absolute model filename can escape _DryRun and replace a file.
+# With SQLite enabled it also initializes/updates the schema and reads the index.
 # Use only synthetic, disposable data until mutation-free dry-run is implemented.
 dry_run: true
 

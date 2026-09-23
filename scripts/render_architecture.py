@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -42,8 +43,11 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=Path("build/architecture"))
     parser.add_argument(
         "--mmdc",
-        default="npx --no-install mmdc",
-        help="Command used to invoke the locally installed, lockfile-pinned Mermaid CLI.",
+        default=None,
+        help=(
+            "Explicit Mermaid CLI command override. By default the renderer uses "
+            "only the lockfile-installed node_modules binary and fails if absent."
+        ),
     )
     parser.add_argument(
         "--puppeteer-no-sandbox",
@@ -54,7 +58,16 @@ def main() -> int:
 
     diagrams = discover_diagrams(args.sources)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    command = shlex.split(args.mmdc)
+    if args.mmdc is None:
+        binary_name = "mmdc.cmd" if os.name == "nt" else "mmdc"
+        local_mmdc = Path("node_modules") / ".bin" / binary_name
+        if not local_mmdc.is_file():
+            raise SystemExit(
+                f"Locked Mermaid CLI not found at {local_mmdc}. Run 'npm ci' first."
+            )
+        command = [str(local_mmdc.resolve())]
+    else:
+        command = shlex.split(args.mmdc)
 
     with tempfile.TemporaryDirectory(prefix="architecture-") as temp_dir:
         temp_path = Path(temp_dir)

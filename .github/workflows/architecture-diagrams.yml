@@ -36,7 +36,7 @@ jobs:
       - name: Install locked Mermaid dependencies
         run: npm ci
       - name: Install Puppeteer browser revision
-        run: npx --no-install puppeteer browsers install chrome-headless-shell
+        run: ./node_modules/.bin/puppeteer browsers install chrome-headless-shell
       - name: Render Mermaid diagrams
         run: python scripts/render_architecture.py --puppeteer-no-sandbox
       - name: Upload SVG diagrams

@@ -82,10 +82,12 @@ not performed before PDF extraction and hashing. A symlink or other unexpected
 filesystem object in `_Inbox` may therefore be read before the later move check
 rejects it. This is a documented security gap, not the intended target behavior.
 
-Dry-run follows the analysis path without moving the original PDF. It currently
-writes a sidecar to `_DryRun`; that persisted state violates the target dry-run
-invariant. A likely multi-document scan is staged in `_Split` only after
-approval; the current pipeline does not silently split it.
+Dry-run follows the analysis path without moving the original PDF. When SQLite
+is enabled it currently initializes or updates the schema and performs duplicate
+index access; it also creates `_DryRun` and writes a sidecar there. Those state
+changes violate the target dry-run invariant. A likely multi-document scan is
+staged in `_Split` only after approval; the current pipeline does not silently
+split it.
 
 ## Intended secure processing flow
 
@@ -126,6 +128,27 @@ artifacts, index rows, or lifecycle state.
 | `main.py` | Processing, approve, reject, and reprocess orchestration | Mixes application policy and I/O sequencing. |
 | `review.py` | Resolve and display review records | Sidecar data remains untrusted even when locally stored. |
 | `cli.py` | User commands and terminal presentation | Bulk actions need explicit consequence handling. |
+
+## Current implementation gap inventory
+
+This table groups known gaps by execution surface so fixes and tests cover whole
+classes rather than isolated examples.
+
+| Surface | Current behavior | Required release-gate behavior |
+|---|---|---|
+| Configuration | Lifecycle directory names, `sqlite_path`, and `ollama_url` are not fully constrained. | Validate typed configuration and exact roots; enforce loopback inference for the first release. |
+| Candidate intake | PDF parsing, hashing, and inference occur before exact-inbox confinement. | Validate regular file, link status, exact root, size, and stable identity before any content access or transmission. |
+| Scan dry-run | Can initialize/access SQLite, create `_DryRun`, and write or overwrite an untrusted model-named JSON file. | Return a proposal without directory, artifact, database, index, or lifecycle access/mutation. |
+| Normal scan | Pre-move JSON and optional Markdown writes can overwrite same-stem inbox siblings. | Collision-safe, atomic, no-overwrite staging of the whole document unit. |
+| Review and lifecycle commands | Persisted sidecar validation errors can expose values; model-derived paths and sequential moves remain trusted too broadly. | Redacted diagnostics, strict sidecar schema/lifecycle validation, locally derived destinations, and recoverable transitions. |
+| Logging | INFO can expose complete paths; WARNING/ERROR exceptions can expose values; DEBUG can expose summaries, raw responses, and PDF metadata. | Content-free structured diagnostic codes at every level; sensitive diagnostics require an explicit, bounded export workflow. |
+| SQLite | Even nominal reads use a connection helper that can create parent directories or the database; the configured path is not confined. | Exact-root validation before access; read-only operations cannot create state; tested rebuild and reconciliation. |
+| Schema boundaries | Most model/sidecar strings and collections are unbounded; malformed amounts become zero and other invalid values are silently coerced or dropped. | Strict size/shape limits and explicit invalid/proposed/confirmed states for consequential values. |
+| Terminal output | Untrusted model, sidecar, filename, and endpoint text reaches Rich, logs, and raw output without consistent control-character escaping or bounds. | Escape controls, disable markup for evidence, bound output, and keep trusted prompts visually separate. |
+| PDF metadata | Opt-in rewriting changes bytes after the recorded hash, logs metadata values at DEBUG, and uses a predictable non-exclusive sibling temporary path. | Unsupported and disabled until a later ADR defines coherent integrity, secure temporary-file handling, provenance, logging, and recovery semantics. |
+| Timestamps | Lifecycle timestamps are local and timezone-naive. | Canonical timezone-aware UTC plus explicit legacy migration semantics. |
+| Toolchain | CI actions and npm graph are pinned; renderer fallback must still fail closed when local Mermaid is absent. | Invoke only the lockfile-installed binary and stop before any registry lookup when it is missing. |
+| Python and model supply chain | Runtime/build dependencies have open lower bounds without a lock; model artifacts lack recorded integrity provenance. | Reproducible locked Python graph, vulnerability review, and verified/versioned model provenance. |
 
 ## Data ownership and recoverability
 
@@ -266,7 +289,8 @@ renders the diagrams before merge.
 Mermaid CLI is a development-only CI dependency declared at an exact version in
 `package.json`; `package-lock.json` pins its transitive graph and integrity
 hashes, and CI installs that graph with `npm ci`. The renderer invokes only the
-installed local binary, so rendering does not resolve npm packages dynamically.
+installed local binary by its explicit platform-specific path and fails when it
+is absent, so rendering cannot resolve npm packages dynamically.
 CI installs the Chrome Headless Shell revision selected by the lockfile-pinned
 Puppeteer version before rendering.
 Mermaid launches a browser and parses maintained diagram source, making updates
