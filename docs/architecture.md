@@ -136,13 +136,13 @@ classes rather than isolated examples.
 
 | Surface | Current behavior | Required release-gate behavior |
 |---|---|---|
-| Configuration | Lifecycle directory names, `sqlite_path`, and `ollama_url` are not fully constrained. | Validate typed configuration and exact roots; enforce loopback inference for the first release. |
+| Configuration | Lifecycle directory names, `sqlite_path`, and `ollama_url` are not fully constrained. Roots may be equal, nested, absolute, or filesystem aliases; `_Review` can therefore alias `Archive` and bypass approval. | Validate typed relative configuration before I/O; require lifecycle/index roots to be pairwise distinct, non-overlapping, non-symlink children of `base_dir`; enforce loopback inference for the first release. |
 | Candidate intake | PDF parsing, hashing, and inference occur before exact-inbox confinement. | Validate regular file, link status, exact root, size, and stable identity before any content access or transmission. |
 | Scan dry-run | Can initialize/access SQLite, create `_DryRun`, and write or overwrite an untrusted model-named JSON file. | Return a proposal without directory, artifact, database, index, or lifecycle access/mutation. |
-| Normal scan | Pre-move JSON and optional Markdown writes can overwrite same-stem inbox siblings. | Collision-safe, atomic, no-overwrite staging of the whole document unit. |
-| Review and lifecycle commands | Persisted sidecar validation errors can expose values; model-derived paths and sequential moves remain trusted too broadly. | Redacted diagnostics, strict sidecar schema/lifecycle validation, locally derived destinations, and recoverable transitions. |
+| Normal scan | Pre-move JSON and optional Markdown writes can overwrite same-stem inbox siblings; wrong model extensions can make PDF and companion destinations identical. | Canonical extensions; independently validated, pairwise-distinct artifact paths; collision-safe atomic no-overwrite staging of the whole document unit. |
+| Review and lifecycle commands | Persisted sidecar validation errors can expose values; companion symlinks can escape independently of a confined PDF; model-derived paths and sequential moves remain trusted too broadly. | Redacted diagnostics; strict sidecar schema/lifecycle validation; locally derived destinations; independent exact-root/link/type/identity checks for every artifact; recoverable transitions. |
 | Logging | INFO can expose complete paths; WARNING/ERROR exceptions can expose values; DEBUG can expose summaries, raw responses, and PDF metadata. | Content-free structured diagnostic codes at every level; sensitive diagnostics require an explicit, bounded export workflow. |
-| SQLite | Even nominal reads use a connection helper that can create parent directories or the database; the configured path is not confined. | Exact-root validation before access; read-only operations cannot create state; tested rebuild and reconciliation. |
+| SQLite | Even nominal reads use a connection helper that can create parent directories or the database; the configured path is not confined and can alias a lifecycle root or document artifact. | Dedicated non-overlapping index location and identity validation before access; read-only operations cannot create state; tested rebuild and reconciliation. |
 | Schema boundaries | Most model/sidecar strings and collections are unbounded; malformed amounts become zero and other invalid values are silently coerced or dropped. | Strict size/shape limits and explicit invalid/proposed/confirmed states for consequential values. |
 | Terminal output | Untrusted model, sidecar, filename, and endpoint text reaches Rich, logs, and raw output without consistent control-character escaping or bounds. | Escape controls, disable markup for evidence, bound output, and keep trusted prompts visually separate. |
 | PDF metadata | Opt-in rewriting changes bytes after the recorded hash, logs metadata values at DEBUG, and uses a predictable non-exclusive sibling temporary path. | Unsupported and disabled until a later ADR defines coherent integrity, secure temporary-file handling, provenance, logging, and recovery semantics. |
@@ -218,6 +218,11 @@ The following architecture invariants apply:
 - No input is trusted solely because it is inside `base_dir`.
 - All source validation occurs before opening, parsing, hashing, or transmitting.
 - All destination validation uses the exact allowed root for the operation.
+- All lifecycle and index roots are pairwise distinct, non-overlapping,
+  non-symlink children of `base_dir`, and are validated before any I/O.
+- PDF, JSON, and Markdown paths have canonical extensions, are independently
+  confined and link-checked, and are pairwise distinct by normalized path and
+  filesystem identity before any operation begins.
 - LLM output never directly authorizes a write or supplies a trusted path.
 - No document enters `Archive` without an explicit human-approved command.
 - Dry-run returns a proposal without persisting or mutating any document,

@@ -128,6 +128,8 @@ Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as ne
 | `write_markdown_summary` | `false` | Write `.md` summary next to sidecar JSON |
 | `use_sqlite_index` | `false` | Enable optional SQLite index |
 
+Current MVP warning: keep every lifecycle directory setting simple, relative, unique, and non-overlapping. In particular, `_Review` must not equal, contain, or sit inside `Archive`; this validation is a release gate rather than an implemented guarantee.
+
 ---
 
 ## 5. CLI Reference
@@ -159,6 +161,8 @@ Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as ne
 - Sidecar JSON stays next to each PDF as a transparent audit trail.
 - SHA-256 hashing detects duplicates before re-importing.
 - Normal moves have broad `base_dir` checks, but current pre-read, sibling-write, exact-root, and model-derived-path gaps remain release blockers.
+- Lifecycle roots are not yet checked for equality, nesting, case/Unicode aliases, or shared filesystem identity; an aliased `_Review`/`Archive` can bypass approval.
+- A confined PDF does not make same-stem JSON/Markdown companions safe: companion symlinks and wrong extensions can escape or alias/replace the PDF.
 - **Backup your document folder** – Aktenfux is a tool, not a backup solution.
 
 ---

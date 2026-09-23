@@ -51,6 +51,8 @@ The current MVP does not yet provide that complete guarantee: it may read an inb
 
 Checks must account for `..`, absolute paths, symbolic links, unusual separators, case differences, and configuration that points outside the archive root.
 
+The named areas must also be genuinely different places. `_Review` must not be the same as, inside, or an alias of `Archive`; otherwise scanning could archive a document before approval. The same distinct/non-overlapping rule applies to every lifecycle area and the SQLite index location.
+
 ## Sidecars and recoverability
 
 The sidecar is Aktenfux's authoritative record of what it believes about a document. The searchable database is derived from sidecars. The target design can rebuild the catalogue without rereading every PDF with the model; the current `main` branch does not yet provide that rebuild command.
@@ -58,6 +60,8 @@ The sidecar is Aktenfux's authoritative record of what it believes about a docum
 Sidecars should be written atomically: prepare a complete replacement, flush it safely, and then swap it into place. A half-written card is worse than no new card.
 
 The current normal scan writes a JSON sidecar, and optionally Markdown, beside the inbox PDF before moving it. If a same-stem sibling already exists, that write can silently replace it and the later move can remove the replacement from the inbox. Until collision-safe sibling creation is implemented, use a clean inbox containing PDFs only and retain backups.
+
+Every member of the document unit needs its own checked address. A PDF destination must end in `.pdf`; its JSON and Markdown paths must be different from the PDF and from each other. Each companion must be checked separately for containment, links, type, and filesystem identity—a safe PDF path does not make a symlinked index card safe.
 
 ## Hashes and transformations
 

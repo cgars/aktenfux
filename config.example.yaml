@@ -5,7 +5,10 @@
 # Tilde (~) is expanded to the user's home directory.
 base_dir: "~/Documents/Aktenfux"
 
-# Sub-folder names (relative to base_dir)
+# Sub-folder names (relative to base_dir).
+# CURRENT MVP WARNING: these are not yet validated as distinct/non-overlapping.
+# Keep every value simple, relative, unique, and outside every other lifecycle
+# folder. In particular, never alias or nest review_dir inside archive_dir.
 inbox_dir: "_Inbox"
 review_dir: "_Review"
 imported_dir: "_Imported"
