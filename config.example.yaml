@@ -17,13 +17,18 @@ split_dir: "_Split"
 dry_run_dir: "_DryRun"
 
 # Ollama settings
+# FIRST-RELEASE TARGET: keep this on a loopback address. The current MVP does
+# not enforce loopback-only access; a LAN or internet URL sends OCR text and
+# summaries to that endpoint and may use plaintext HTTP.
 ollama_url: "http://localhost:11434"
 ollama_model: "qwen3:8b"
 # Timeout in seconds for LLM inference calls (increase for slower hardware or larger models).
 ollama_timeout: 120
 
-# Safety: dry_run is ON by default.
-# Set to false only after you have verified the setup.
+# dry_run is ON by default, but it is not currently a safety boundary.
+# CURRENT MVP WARNING: scanning in dry-run writes a model-named JSON result;
+# traversal or an absolute model filename can escape _DryRun and replace a file.
+# Use only synthetic, disposable data until mutation-free dry-run is implemented.
 dry_run: true
 
 # Maximum characters of OCR text sent to the LLM.

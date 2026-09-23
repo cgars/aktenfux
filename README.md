@@ -2,7 +2,7 @@
 
 > A local, privacy-first document assistant for OCR-ready PDFs.
 
-Aktenfux (`afu`) reads OCR text from PDF files, analyzes documents with a **local LLM via Ollama**, creates summaries, extracts metadata, and suggests safe filenames and archive locations. Documents remain on your machine at all times and are only permanently archived after **explicit user review**.
+Aktenfux (`afu`) reads OCR text from PDF files, analyzes documents via an Ollama endpoint, creates summaries, extracts metadata, and suggests filenames and archive locations. The default endpoint is local, but the current MVP does not enforce that boundary: configuring a LAN or internet URL transmits OCR text and summaries to that endpoint. Documents are only permanently archived after **explicit user review**.
 
 ---
 
@@ -10,8 +10,8 @@ Aktenfux (`afu`) reads OCR text from PDF files, analyzes documents with a **loca
 
 - A local tool for analyzing and sorting PDF documents.
 - Uses **existing OCR text** already embedded in the PDF (no cloud OCR).
-- Uses a **local LLM via Ollama** – no API keys, no external services.
-- Documents **never leave your machine**.
+- Defaults to a **local LLM via Ollama** – no API key is required.
+- Documents remain on your machine only while `ollama_url` is a loopback endpoint. The current MVP accepts non-loopback URLs, which send document-derived content to another host.
 - Conservative by default: files are staged in `_Review` first, then approved by you.
 - Works with ScanSnap scans or any OCR-processed PDF.
 - Stores scan results in a human-readable **sidecar JSON** next to each PDF.
@@ -55,13 +55,16 @@ pip install -e .
 # Create config.yaml and working folders
 afu init
 
-# Edit config.yaml if needed (e.g. adjust base_dir)
-# By default, dry_run is ON – safe to explore.
+# Edit config.yaml if needed (e.g. adjust base_dir).
+# Keep ollama_url on loopback; other endpoints receive OCR text and summaries.
+# dry_run is ON by default, but current scan dry-run still writes model-named JSON
+# and is not safe for real documents until the documented release gate is fixed.
 
 # Verify your setup (Ollama, model, folders)
 afu setup
 
-# Test run – shows what would happen, moves nothing
+# Test with synthetic, disposable input only. The PDF is not moved, but the
+# current MVP writes a JSON result whose model-supplied name can escape _DryRun.
 afu scan --dry-run
 
 # Real import – disable dry_run in config.yaml (or pass --no-dry-run) to actually move files
@@ -116,9 +119,9 @@ Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as ne
 | Key | Default | Description |
 |-----|---------|-------------|
 | `base_dir` | `~/Documents/Aktenfux` | Root folder for all working directories |
-| `ollama_url` | `http://localhost:11434` | Ollama API endpoint |
+| `ollama_url` | `http://localhost:11434` | Ollama endpoint. Keep it on loopback; a LAN/internet URL receives OCR text and summaries, potentially over plaintext HTTP. |
 | `ollama_model` | `qwen3:8b` | Model to use for analysis |
-| `dry_run` | `true` | **Safety default** – no files are moved |
+| `dry_run` | `true` | PDFs are not moved, but current scan dry-run persists model-named JSON and is not yet mutation-free. |
 | `split_dir` | `_Split` | Folder for approved documents recommended for split detection |
 | `max_chars_for_llm` | `12000` | OCR text truncation limit |
 | `language` | `de` | Summary language (`de` or `en`) |
@@ -134,7 +137,7 @@ Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as ne
 | `afu init` | Create config.yaml and working folders |
 | `afu setup` | Check Ollama, model, and folder setup |
 | `afu scan` | Process PDFs from `_Inbox` |
-| `afu scan --dry-run` | Preview without moving files |
+| `afu scan --dry-run` | Do not move the PDF; current MVP still writes an unsafe model-named JSON result (synthetic data only). |
 | `afu review` | List documents awaiting approval |
 | `afu approve <id>` | Archive an approved document, or stage it in `_Split` when split detection is recommended |
 | `afu approve --all` | Archive/stage all documents currently in `_Review` |
@@ -147,14 +150,14 @@ Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as ne
 
 ## 6. Security
 
-- Aktenfux works **entirely offline**.
-- Documents are **never sent to external APIs**.
-- Ollama runs **locally** on your machine.
-- The default mode (`dry_run: true`) is conservative – nothing moves until you decide.
+- Aktenfux is **local-first**, not unconditionally offline. The default Ollama endpoint is loopback.
+- The current MVP does not enforce loopback-only inference. A configured LAN or internet endpoint receives OCR text and summaries and may use plaintext HTTP; remote inference is unsupported for the first release.
+- Current scan dry-run does not move the source PDF, but it writes a model-named JSON result that can escape `_DryRun` and replace another file. Use only synthetic, disposable input until mutation-free dry-run is implemented.
+- See the [architecture](docs/architecture.md) and [threat model](docs/threat-model.md) for current gaps and release gates.
 - Documents are only permanently archived **after you approve them**.
 - Sidecar JSON stays next to each PDF as a transparent audit trail.
 - SHA-256 hashing detects duplicates before re-importing.
-- All file moves are validated to stay within `base_dir` (no path traversal).
+- Normal moves have broad `base_dir` checks, but current pre-read, sibling-write, exact-root, and model-derived-path gaps remain release blockers.
 - **Backup your document folder** – Aktenfux is a tool, not a backup solution.
 
 ---

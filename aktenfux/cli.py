@@ -52,7 +52,7 @@ def _load_config(config_path: Optional[Path], dry_run: Optional[bool]):
         cfg.dry_run = dry_run
 
     if cfg.dry_run:
-        console.print("[yellow]⚠  DRY-RUN mode active – no files will be moved.[/yellow]")
+        console.print(\n            "[bold red]⚠  CURRENT DRY-RUN IS NOT MUTATION-FREE:[/bold red] PDFs are not moved, "\n            "but scan dry-run writes a model-named JSON result that can escape _DryRun and "\n            "replace another file. Use synthetic, disposable input only."\n        )
 
     return cfg
 
