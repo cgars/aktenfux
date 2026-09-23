@@ -114,7 +114,7 @@ artifacts, index rows, or lifecycle state.
 
 | Component | Current responsibility | Boundary notes |
 |---|---|---|
-| `config.py` | Load configuration and construct workspace paths | Directory names and inference URL require stronger validation. |
+| `config.py` | Load configuration and construct workspace paths | Directory names, `sqlite_path`, and inference URL require stronger validation; the index path is not currently confined to an exact approved root. |
 | `pdf_text.py` | Extract embedded text with pypdf and optional pdfplumber | Processes hostile PDFs without explicit size/page/time limits. |
 | `pdf_metadata.py` | Configurable PDF metadata rewriting | Disabled by default but currently opt-in through configuration; unsupported for the first release because it changes file bytes without refreshing the stored hash. |
 | `llm.py` | Two-pass summarization and structured extraction | OCR and model output are untrusted; configured HTTP endpoint may be remote. |
@@ -122,7 +122,7 @@ artifacts, index rows, or lifecycle state.
 | `schema.py` | Validate analysis and sidecar models | Validation normalizes shape, not factual correctness. |
 | `filenames.py` | Generate and sanitize names | Must become the sole authority for trusted destination names. |
 | `storage.py` | Hashing, sidecar I/O, path checks, and moves | Writes and paired moves are not currently transactional. |
-| `db.py` | Optional status and duplicate index | Derived in principle; automatic rebuild is not implemented on `main`. |
+| `db.py` | Optional status and duplicate index | Derived in principle; automatic rebuild and pre-access exact-root validation for the configured index path are not implemented on `main`. |
 | `main.py` | Processing, approve, reject, and reprocess orchestration | Mixes application policy and I/O sequencing. |
 | `review.py` | Resolve and display review records | Sidecar data remains untrusted even when locally stored. |
 | `cli.py` | User commands and terminal presentation | Bulk actions need explicit consequence handling. |

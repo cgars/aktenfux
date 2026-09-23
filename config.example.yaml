@@ -49,6 +49,9 @@ write_pdf_metadata: false
 # Optional SQLite index for status, IDs, history, and duplicate detection.
 # Core functionality works without SQLite.
 use_sqlite_index: false
+# CURRENT MVP WARNING: this path is not confined before database access. Keep it
+# as a simple relative filename; absolute paths and traversal can write outside
+# base_dir until exact-root validation is implemented.
 sqlite_path: "aktenfux.db"
 
 # Allowed top-level categories for document classification.

@@ -154,12 +154,13 @@ final archive.
 | AF-07 | The clerk changes the letter after sealing it, so the recorded seal no longer matches. | Optional PDF metadata rewriting changes file bytes after SHA-256 is recorded, leaving the sidecar hash stale and invalidating duplicate/provenance assumptions. | T/R | High | Decide whether hash identifies original bytes or current artifact; preserve original hash plus derivative hash, or rehash atomically; record transformation and tool version; keep feature off until defined. | Round-trip metadata tests, hash assertions, interruption recovery, and sharing/export inspection. |
 | AF-08 | Someone edits the index card and the clerk treats the edit as trusted history. | Sidecar JSON is authoritative but has no authenticity, revision, or provenance mechanism; tampering may change status, paths, model claims, or approval input. | T/R | High | Strict schema and lifecycle validation; locally derived paths; revision history or append-only events for consequential actions; optional integrity manifest; distinguish human edits from model output. | Tampered-sidecar corpus, invalid transition tests, provenance reconstruction, and recovery tests. |
 | AF-09 | The catalogue says a letter exists in one drawer while the letter and card say another. | Optional SQLite drifts from sidecars; failed updates or missing rebuild make status and duplicate detection incomplete or misleading. | T/R | Medium | Sidecar-first reads for authority; transactional projection updates where possible; tested full rebuild and reconciliation; surface stale/degraded index state. | Delete/corrupt/rebuild tests, stale-row removal, folder-wide reconciliation, and duplicate scenarios with SQLite disabled. |
-| AF-10 | Private details are copied onto a noticeboard while someone is troubleshooting. | Sidecars, Markdown, SQLite, raw model output, paths, config, PDF metadata, logs, test fixtures, or runtime folders leak through sharing, sync, backups, telemetry, or Git. | I | High | Sensitive-data classification; safe `.gitignore`; redacted logging by default; explicit debug warning; no production documents in tests/issues; backup/export guidance; secret scanning. | Repository/runtime scanning, log-capture tests, package inspection, and manual export/privacy review. |
+| AF-10 | Private details are copied onto a noticeboard while someone is troubleshooting. | Sidecars, Markdown, SQLite, raw model output, paths, config, PDF metadata, logs, test fixtures, or runtime folders leak through sharing, sync, backups, telemetry, or Git. Pydantic validation exceptions can include offending document-derived `input_value` data at normal WARNING or ERROR levels. | I | High | Sensitive-data classification; safe `.gitignore`; redacted logging and validation errors by default; explicit debug warning; no production documents in tests/issues; backup/export guidance; secret scanning. | Repository/runtime scanning; log-capture tests with invalid structured model output proving values and complete paths are absent; package inspection; manual export/privacy review. |
 | AF-11 | While the clerk reads a letter, another helper silently swaps it for a different one. | Sync software or another process modifies/replaces the PDF between validation, parsing, hashing, sidecar creation, and move (TOCTOU). | T/R | High | Stable file handle or controlled staging copy; pre/post identity checks; settle/lock policy; detect changed size/mtime/hash; retry without overwriting evidence. | Concurrent replacement, rename, and sync-conflict tests with deterministic failure behavior. |
 | AF-12 | The clerk reads only the first pages and misses the payment deadline or the second letter. | Character truncation or weak OCR omits decisive evidence while summaries appear complete and confident. | T/R | High | Page-aware extraction; explicit truncation warning in sidecar/UI; hierarchical long-document analysis; citations; confidence tied to coverage; manual review gate. | Long-document corpus with facts at the end, page boundary cases, poor OCR, and multi-document scans. |
 | AF-13 | One broad command empties the whole review tray before the owner notices. | `--all`, future UI actions, automation, or MCP tools perform large or destructive changes with insufficient preview, scoping, confirmation, or audit. | T/R/E | High | Separate read/write capabilities; count and exact-item preview; explicit confirmation; bounded batches; idempotency; audit event; no arbitrary path/SQL/file tools. | Confirmation and cancellation tests, partial-failure recovery, replay tests, and MCP permission matrix. |
 | AF-14 | A tool used to read letters has been secretly replaced with a harmful one. | Python dependency, package, CI action, model artifact, or build process compromises document confidentiality or integrity. | T/I/E | High | Minimize and pin dependencies/actions; provenance review; dependency/SAST/secret scanning; hashes/signatures where available; documented model provenance. | Clean rebuild, lockfile review, vulnerability gates, action pin checks, and model-change review. |
 | AF-15 | The spare archive is stolen, or restoring it brings back mismatched letters and cards. | Backups or synchronized copies disclose private data or restore incomplete, stale, or internally inconsistent document units. | I/T/D | High | Encrypted restricted backups; integrity manifest; include all authoritative artifacts; documented restore; isolated restore rehearsal; reconciliation before reuse. | Scheduled restore drill covering PDF/sidecar pairs, configuration, permissions, and index rebuild. |
+| AF-16 | The catalogue is secretly placed in a drawer outside the archive. | An absolute or traversing configured `sqlite_path` is resolved without confinement; database initialization and updates can therefore create or modify an SQLite file outside `base_dir` and persist document-derived metadata there. | T/I/E | Critical | Permit only a locally derived relative index name; resolve and validate it against the exact approved index root before opening, creating, or updating; reject absolute paths, traversal, links, and wrong roots. | Absolute-path, `..`, symlink, and platform-specific tests proving database initialization and writes are never called for an unconfined index path. |
 
 ## Implemented controls and known limits
 
@@ -186,6 +187,8 @@ These controls have important limits:
 - non-empty LLM path suggestions can still influence destinations; dry-run uses
   the suggested filename for an immediate, unconfined write that can escape
   `_DryRun` and replace an existing JSON file;
+- an absolute or traversing `sqlite_path` can create or update an index outside
+  `base_dir` because it is not confined before database access;
 - paired artifact moves and sidecar writes are not transactional;
 - dry-run persists sidecars and can overwrite an earlier result when derived
   names collide, violating the mutation-free target invariant;
@@ -194,7 +197,9 @@ These controls have important limits:
 - remote inference is not blocked by default;
 - PDF parsing has no explicit size, page, or execution limits;
 - normal INFO logging records complete source and destination paths during moves
-  and approval, while debug mode may additionally log complete model responses;
+  and approval; invalid structured model output can leak document-derived
+  `input_value` data through Pydantic exceptions at WARNING or ERROR; debug mode
+  may additionally log complete model responses;
 - PDF metadata rewriting can invalidate the recorded hash.
 
 Documentation must never describe a limited control as if the stronger target
@@ -239,13 +244,15 @@ The technical lists below define the actual gates.
 
 - source type, symlink, and exact-root checks before any read;
 - exact destination-root checks for every lifecycle command;
+- exact approved-root checks before creating or updating the SQLite index;
 - deterministic local filename and folder derivation;
 - atomic sidecar writes and tested recovery for paired moves;
 - coherent hash semantics, with PDF metadata writing disabled until satisfied;
 - loopback-only inference enforced by default;
 - PDF size/page/time controls and safe parser failure;
 - runtime/config ignore rules and sensitive-artifact documentation;
-- redacted default logging and an explicit sensitive-debug warning;
+- redacted default logging and validation errors, plus an explicit
+  sensitive-debug warning;
 - backup and restore procedure tested with PDF/sidecar pairs;
 - tests for prompt injection, path attacks, interruption, and dry-run invariants.
 
