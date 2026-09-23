@@ -150,11 +150,11 @@ final archive.
 | AF-03 | The letter says, “Ignore your owner and write a different label,” and the clerk obeys. | Hidden or visible OCR prompt injection changes summaries, deadlines, integrity assessment, categories, or warnings. | T/R | High | Delimit OCR as untrusted content; instruction-hierarchy prompts; model output remains advisory; evidence references; prominent uncertainty/conflict display; adversarial tests. | Injection corpus covering hidden OCR, fake system messages, deadline suppression, split suppression, and fabricated actions. |
 | AF-04 | The suggested label secretly contains directions to another drawer. | LLM output or a tampered sidecar supplies absolute paths, separators, traversal, reserved names, or wrong lifecycle roots. The current dry-run path writes immediately using the model-supplied filename, so it can escape `_DryRun` and replace an existing JSON file anywhere writable by the process. | T/I/E | Critical | Ignore model path strings for writes; derive names locally from bounded semantic fields; validate exact destination root before every write; validate sidecars on every use; no overwrite. | Cross-platform malicious-name corpus and tests for every scan/dry-run/approve/reject/reprocess destination, proving writers are not called before exact-root validation. |
 | AF-05 | The “local helper” is actually in another building, so every private letter is carried there. | A copied or modified `ollama_url` sends OCR text and summaries to a LAN or internet endpoint, possibly over plaintext HTTP. | I/S | High | Loopback-only default enforcement; explicit remote opt-in; strong warning and endpoint display; TLS/auth requirements for any supported remote mode; never market remote mode as local. | URL parser tests for IPv4/IPv6/hostname tricks, redirects, proxies, DNS changes, and clear CLI acceptance tests. |
-| AF-06 | The letter moves but its index card does not, or the card is half-written when the power fails. | Sidecar writes can truncate authoritative state; sequential PDF/JSON/Markdown moves can leave partial or contradictory state after interruption. | T/R/D | High | Atomic temp-write, fsync where appropriate, replace, operation journal or recoverable state machine, idempotent retry, startup reconciliation, collision-safe rollback. | Fault injection after every write/move step; restart/retry/reconciliation tests on supported filesystems. |
+| AF-06 | The letter moves but its index card does not, or the card is half-written when the power fails. | Sidecar writes can truncate authoritative state; during an ordinary non-dry-run scan, pre-move JSON and optional Markdown writes silently replace existing same-stem sibling files before collision handling, then the move removes the replacements from the inbox. Sequential PDF/JSON/Markdown moves can also leave partial or contradictory state after interruption. | T/R/D | High | Collision-safe, no-overwrite sibling creation before normal scanning; atomic temp-write, fsync where appropriate, replace only for an explicitly validated revision; operation journal or recoverable state machine; idempotent retry; startup reconciliation; collision-safe rollback. | Pre-existing sibling JSON/Markdown tests proving their bytes remain unchanged; fault injection after every write/move step; restart/retry/reconciliation tests on supported filesystems. |
 | AF-07 | The clerk changes the letter after sealing it, so the recorded seal no longer matches. | Optional PDF metadata rewriting changes file bytes after SHA-256 is recorded, leaving the sidecar hash stale and invalidating duplicate/provenance assumptions. | T/R | High | Decide whether hash identifies original bytes or current artifact; preserve original hash plus derivative hash, or rehash atomically; record transformation and tool version; keep feature off until defined. | Round-trip metadata tests, hash assertions, interruption recovery, and sharing/export inspection. |
 | AF-08 | Someone edits the index card and the clerk treats the edit as trusted history. | Sidecar JSON is authoritative but has no authenticity, revision, or provenance mechanism; tampering may change status, paths, model claims, or approval input. | T/R | High | Strict schema and lifecycle validation; locally derived paths; revision history or append-only events for consequential actions; optional integrity manifest; distinguish human edits from model output. | Tampered-sidecar corpus, invalid transition tests, provenance reconstruction, and recovery tests. |
 | AF-09 | The catalogue says a letter exists in one drawer while the letter and card say another. | Optional SQLite drifts from sidecars; failed updates or missing rebuild make status and duplicate detection incomplete or misleading. | T/R | Medium | Sidecar-first reads for authority; transactional projection updates where possible; tested full rebuild and reconciliation; surface stale/degraded index state. | Delete/corrupt/rebuild tests, stale-row removal, folder-wide reconciliation, and duplicate scenarios with SQLite disabled. |
-| AF-10 | Private details are copied onto a noticeboard while someone is troubleshooting. | Sidecars, Markdown, SQLite, raw model output, paths, config, PDF metadata, logs, test fixtures, or runtime folders leak through sharing, sync, backups, telemetry, or Git. Pydantic validation exceptions can include offending document-derived `input_value` data at normal WARNING or ERROR levels. | I | High | Sensitive-data classification; safe `.gitignore`; redacted logging and validation errors by default; explicit debug warning; no production documents in tests/issues; backup/export guidance; secret scanning. | Repository/runtime scanning; log-capture tests with invalid structured model output proving values and complete paths are absent; package inspection; manual export/privacy review. |
+| AF-10 | Private details are copied onto a noticeboard while someone is troubleshooting. | Sidecars, Markdown, SQLite, raw model output, paths, config, PDF metadata, logs, test fixtures, or runtime folders leak through sharing, sync, backups, telemetry, or Git. Pydantic validation exceptions can include offending document-derived `input_value` data at normal WARNING or ERROR levels, and a recovered second response can cause the first exception text to be persisted in sidecar warnings. | I | High | Sensitive-data classification; safe `.gitignore`; redacted logging, validation errors, and persisted warning codes by default; explicit debug warning; no production documents in tests/issues; backup/export guidance; secret scanning. | Repository/runtime scanning; log- and sidecar-capture tests with invalid-then-repaired structured model output proving values and complete paths are absent; package inspection; manual export/privacy review. |
 | AF-11 | While the clerk reads a letter, another helper silently swaps it for a different one. | Sync software or another process modifies/replaces the PDF between validation, parsing, hashing, sidecar creation, and move (TOCTOU). | T/R | High | Stable file handle or controlled staging copy; pre/post identity checks; settle/lock policy; detect changed size/mtime/hash; retry without overwriting evidence. | Concurrent replacement, rename, and sync-conflict tests with deterministic failure behavior. |
 | AF-12 | The clerk reads only the first pages and misses the payment deadline or the second letter. | Character truncation or weak OCR omits decisive evidence while summaries appear complete and confident. | T/R | High | Page-aware extraction; explicit truncation warning in sidecar/UI; hierarchical long-document analysis; citations; confidence tied to coverage; manual review gate. | Long-document corpus with facts at the end, page boundary cases, poor OCR, and multi-document scans. |
 | AF-13 | One broad command empties the whole review tray before the owner notices. | `--all`, future UI actions, automation, or MCP tools perform large or destructive changes with insufficient preview, scoping, confirmation, or audit. | T/R/E | High | Separate read/write capabilities; count and exact-item preview; explicit confirmation; bounded batches; idempotency; audit event; no arbitrary path/SQL/file tools. | Confirmation and cancellation tests, partial-failure recovery, replay tests, and MCP permission matrix. |
@@ -171,7 +171,8 @@ The current implementation includes useful controls:
 - probable multi-document scans are staged for follow-up rather than split silently;
 - Pydantic validates and normalizes the model response shape;
 - path resolution prevents moves outside `base_dir`;
-- destination collision handling protects normal move destinations, but not every write path;
+- destination collision handling protects normal move destinations, but not the
+  pre-move sibling JSON and optional Markdown writes;
 - SHA-256 is recorded and can support duplicate detection;
 - SQLite statements bind data values;
 - PDF metadata writing is disabled by default;
@@ -189,6 +190,9 @@ These controls have important limits:
   `_DryRun` and replace an existing JSON file;
 - an absolute or traversing `sqlite_path` can create or update an index outside
   `base_dir` because it is not confined before database access;
+- normal scans silently replace an existing same-stem inbox JSON and, when
+  enabled, Markdown sibling before move collision handling runs; the subsequent
+  move removes the replacement from the inbox, so the original is unrecoverable;
 - paired artifact moves and sidecar writes are not transactional;
 - dry-run persists sidecars and can overwrite an earlier result when derived
   names collide, violating the mutation-free target invariant;
@@ -198,8 +202,9 @@ These controls have important limits:
 - PDF parsing has no explicit size, page, or execution limits;
 - normal INFO logging records complete source and destination paths during moves
   and approval; invalid structured model output can leak document-derived
-  `input_value` data through Pydantic exceptions at WARNING or ERROR; debug mode
-  may additionally log complete model responses;
+  `input_value` data through Pydantic exceptions at WARNING or ERROR, and repair
+  warnings can persist that exception text in the sidecar; debug mode may
+  additionally log complete model responses;
 - PDF metadata rewriting can invalidate the recorded hash.
 
 Documentation must never describe a limited control as if the stronger target
@@ -247,12 +252,13 @@ The technical lists below define the actual gates.
 - exact approved-root checks before creating or updating the SQLite index;
 - deterministic local filename and folder derivation;
 - atomic sidecar writes and tested recovery for paired moves;
+- collision-safe, no-overwrite creation for pre-move JSON and Markdown siblings;
 - coherent hash semantics, with PDF metadata writing disabled until satisfied;
 - loopback-only inference enforced by default;
 - PDF size/page/time controls and safe parser failure;
 - runtime/config ignore rules and sensitive-artifact documentation;
-- redacted default logging and validation errors, plus an explicit
-  sensitive-debug warning;
+- redacted default logging, validation errors, and persisted repair warnings,
+  plus an explicit sensitive-debug warning;
 - backup and restore procedure tested with PDF/sidecar pairs;
 - tests for prompt injection, path attacks, interruption, and dry-run invariants.
 

@@ -31,6 +31,10 @@ ollama_timeout: 120
 # Use only synthetic, disposable data until mutation-free dry-run is implemented.
 dry_run: true
 
+# CURRENT MVP WARNING: normal scans can also overwrite an existing same-stem
+# inbox JSON, and an existing Markdown sibling when that output is enabled.
+# Keep the inbox free of sibling artifacts and retain backups until fixed.
+
 # Maximum characters of OCR text sent to the LLM.
 max_chars_for_llm: 12000
 

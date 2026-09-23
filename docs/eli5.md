@@ -57,6 +57,8 @@ The sidecar is Aktenfux's authoritative record of what it believes about a docum
 
 Sidecars should be written atomically: prepare a complete replacement, flush it safely, and then swap it into place. A half-written card is worse than no new card.
 
+The current normal scan writes a JSON sidecar, and optionally Markdown, beside the inbox PDF before moving it. If a same-stem sibling already exists, that write can silently replace it and the later move can remove the replacement from the inbox. Until collision-safe sibling creation is implemented, use a clean inbox containing PDFs only and retain backups.
+
 ## Hashes and transformations
 
 A cryptographic hash is like a very sensitive wax seal for the PDF bytes. If Aktenfux rewrites PDF metadata, even without changing the visible pages, the bytes and therefore the seal can change. The stored hash must describe the final archived file, while provenance should retain the original input hash when a transformation occurred.

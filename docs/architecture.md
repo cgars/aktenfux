@@ -132,11 +132,11 @@ artifacts, index rows, or lifecycle state.
 | Data | Authority | Rebuildable today? | Sensitivity and notes |
 |---|---|---:|---|
 | Original PDF | User-controlled filesystem | No | Primary private record; immutable by default. |
-| Sidecar JSON | Aktenfux source of truth | No | Contains summaries, entities, paths, amounts, deadlines, and model proposals. |
+| Sidecar JSON | Aktenfux source of truth | No | Contains summaries, entities, paths, amounts, deadlines, model proposals, and warnings; current repair warnings may embed document-derived values from validation exceptions and require redaction. |
 | Markdown summary | Derived presentation | Yes, from sidecar | Optional and sensitive. |
 | SQLite index | Derived index | Not automatically | Must contain no unique state; rebuild capability remains planned. |
 | OCR text in memory | Derived transient data | Yes | Private; not stored in the sidecar by default. |
-| Model response | Untrusted transient data | Yes | Debug logging may persist it when explicitly enabled. |
+| Model response | Untrusted input | Yes | Debug logging can persist the complete response; even without debug, Pydantic exceptions can expose document-derived values in normal logs and can be copied into persistent sidecar repair warnings. Target diagnostics must use redacted codes and bounded context. |
 | PDF metadata | Optional embedded derivative | Only with care | Rewrites PDF bytes and may travel when the PDF is shared. |
 | Archive layout | Human-approved organization | From PDF and sidecar | Wrong moves can still impose significant recovery cost. |
 

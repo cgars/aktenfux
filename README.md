@@ -153,6 +153,7 @@ Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as ne
 - Aktenfux is **local-first**, not unconditionally offline. The default Ollama endpoint is loopback.
 - The current MVP does not enforce loopback-only inference. A configured LAN or internet endpoint receives OCR text and summaries and may use plaintext HTTP; remote inference is unsupported for the first release.
 - Current scan dry-run does not move the source PDF, but it writes a model-named JSON result that can escape `_DryRun` and replace another file. Use only synthetic, disposable input until mutation-free dry-run is implemented.
+- Current normal scans can silently overwrite existing same-stem inbox `.json` and optional `.md` siblings before move collision handling. Keep the inbox free of sibling artifacts and retain backups until fixed.
 - See the [architecture](docs/architecture.md) and [threat model](docs/threat-model.md) for current gaps and release gates.
 - Documents are only permanently archived **after you approve them**.
 - Sidecar JSON stays next to each PDF as a transparent audit trail.
