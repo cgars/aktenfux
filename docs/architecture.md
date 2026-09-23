@@ -132,7 +132,7 @@ artifacts, index rows, or lifecycle state.
 | Data | Authority | Rebuildable today? | Sensitivity and notes |
 |---|---|---:|---|
 | Original PDF | User-controlled filesystem | No | Primary private record; immutable by default. |
-| Sidecar JSON | Aktenfux source of truth | No | Contains summaries, entities, paths, amounts, deadlines, model proposals, and warnings; current repair warnings may embed document-derived values from validation exceptions and require redaction. |
+| Sidecar JSON | Aktenfux source of truth | No | Contains summaries, entities, paths, amounts, deadlines, model proposals, and warnings; current repair warnings may embed document-derived values from validation exceptions and require redaction. Current `processed_at` and `approved_at` values are timezone-naive local timestamps, so their meaning can be ambiguous across hosts and daylight-saving transitions. |
 | Markdown summary | Derived presentation | Yes, from sidecar | Optional and sensitive. |
 | SQLite index | Derived index | Not automatically | Must contain no unique state; rebuild capability remains planned. |
 | OCR text in memory | Derived transient data | Yes | Private; not stored in the sidecar by default. |
@@ -206,6 +206,9 @@ The following architecture invariants apply:
 - SQLite contains no state that cannot be recovered from authoritative artifacts.
 - Logs exclude OCR text, complete model responses, extracted values, and document
   paths by default.
+- New lifecycle timestamps use timezone-aware UTC in one canonical serialized
+  format; legacy naive timestamps remain explicitly timezone-unknown until
+  migrated from reliable external evidence.
 - Planned interfaces do not become alternative sources of business logic.
 
 ## Quality attributes
@@ -233,6 +236,8 @@ The following architecture invariants apply:
 8. Add page-level evidence and hierarchical long-document processing.
 9. Connect the review workbench through application services.
 10. Add MCP read tools, then separately review any proposed write tools.
+11. Introduce canonical timezone-aware UTC lifecycle timestamps and migrate or
+    explicitly mark legacy naive sidecar values without guessing their offset.
 
 Remote inference is outside the first-release boundary. Bulk approval, including
 `approve --all`, must display the exact item count and require an additional
