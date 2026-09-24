@@ -41,6 +41,7 @@ For each item, describe the impact or explain why there is none.
 - [ ] Focused success, failure, adversarial-input, and interruption tests were added or updated.
 - [ ] Dry-run remains free of document-state mutations.
 - [ ] Documentation matches implemented behavior and labels planned behavior clearly.
+- [ ] A fresh full-diff reviewer pass checked absolute current-state claims and alternate execution paths.
 - [ ] Mermaid diagrams render and documentation links resolve.
 - [ ] Threats and mitigations were updated when the attack surface changed.
 - [ ] No real documents, private data, secrets, model payloads, local paths, databases, caches, or generated runtime artifacts were committed.

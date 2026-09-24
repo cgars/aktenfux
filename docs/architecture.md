@@ -1,13 +1,14 @@
 # Aktenfux architecture
 
 Status: maintained current-state and target-state baseline  
-Last reviewed: 2026-09-21  
+Last reviewed: 2026-09-24  
 Owner: project maintainers
 
-Aktenfux is a local-first document processing and review workbench for OCR-ready
-PDFs. It extracts embedded text, asks a configured inference provider for
-structured proposals, validates those proposals, and stages documents for human
-review before archival.
+Aktenfux is intended to be a local-first document processing and review workbench
+for OCR-ready PDFs. It extracts embedded text, asks a configured inference
+provider for structured proposals, and validates those proposals. Human review
+before archival is a target invariant, not a complete current guarantee: lifecycle
+root aliases and model-derived destination paths can both bypass review staging.
 
 This document distinguishes the implementation currently present on `main` from
 planned architecture. A planned box in a diagram is not a claim that the feature
@@ -15,10 +16,11 @@ already exists.
 
 ## ELI5
 
-Aktenfux is like a careful clerk. You place a letter in an inbox. The clerk reads
-it, writes a suggested label on a separate index card, and puts both into a
-review tray. The clerk may suggest where the letter belongs, but only you may
-approve moving it into the archive.
+The target design is like a careful clerk. You place a letter in an inbox. The
+clerk reads it, writes a suggested label on a separate index card, and puts both
+into a review tray. The clerk may suggest where the letter belongs, but only you
+may approve moving it into the archive. The current implementation gaps described
+below mean this analogy is not yet an unconditional behavior guarantee.
 
 The letter is the original PDF. The index card is the sidecar JSON. The optional
 SQLite database is only a catalogue: losing the catalogue must not mean losing
@@ -52,35 +54,41 @@ flowchart TD
     CLI --> CORE["Aktenfux processing core"]
     CORE --> PDF["PDF parser libraries"]
     CORE --> OLLAMA["Configured Ollama endpoint"]
-    CORE --> STORE["Local document workspace"]
-    CORE --> DB[("Optional SQLite index")]
+    CORE --> STORE["Configured document paths — not fully confined"]
+    CORE --> DB[("Configured SQLite path — not fully confined")]
 ```
 
 The CLI is the interface currently present on `main`. A browser workbench exists
 separately as draft work and is not part of the current architecture. The
 configured Ollama URL defaults to loopback, but the implementation currently
-allows other URLs without an explicit remote-inference opt-in.
+allows other URLs without an explicit remote-inference opt-in. Configured
+document and SQLite paths are also not fully confined to distinct workspace roots.
 
 ## Current processing flow
 
 <!-- diagram: current-document-flow -->
 ```mermaid
 flowchart TD
-    IN["PDF discovered in Inbox"] --> TEXT["Extract embedded OCR text"]
+    IN["PDF globbed from configured Inbox path"] --> TEXT["Extract embedded OCR text"]
     TEXT --> HASH["Calculate SHA-256"]
     HASH --> LLM["Two-pass model analysis"]
     LLM --> MODEL["Pydantic validation and coercion"]
     MODEL --> SIDE["Write JSON sidecar"]
-    SIDE --> MOVE["Validate paths during move"]
-    MOVE --> REVIEW["PDF and sidecar in Review"]
+    SIDE --> MOVE["Broad base_dir validation during move"]
+    MOVE -->|"intended nominal path"| REVIEW["PDF and sidecar in Review"]
+    MOVE -->|"current bypass: model path escape or lifecycle-root alias"| BYPASS["Archive before approval — current gap"]
     REVIEW -->|"Approve"| FINAL["Archive or Split staging"]
     REVIEW -->|"Reject"| ERROR["Error folder"]
 ```
 
 This diagram deliberately reflects the current order. Source-path validation is
 not performed before PDF extraction and hashing. A symlink or other unexpected
-filesystem object in `_Inbox` may therefore be read before the later move check
-rejects it. This is a documented security gap, not the intended target behavior.
+filesystem object in the configured `_Inbox` path may therefore be read before
+the later move check rejects it. Even when that broad check passes, a model-derived
+destination can escape `_Review` within `base_dir`, and aliased or overlapping
+lifecycle roots can make the review destination an archive location. The explicit bypass
+diagram edge shows both current approval bypasses. These are documented security
+gaps, not the intended target behavior.
 
 Dry-run follows the analysis path without moving the original PDF. When SQLite
 is enabled it currently initializes or updates the schema and performs duplicate
@@ -139,7 +147,7 @@ classes rather than isolated examples.
 | Configuration | Lifecycle directory names, `sqlite_path`, and `ollama_url` are not fully constrained. Roots may be equal, nested, absolute, or filesystem aliases; `_Review` can therefore alias `Archive` and bypass approval. | Validate typed relative configuration before I/O; require lifecycle/index roots to be pairwise distinct, non-overlapping, non-symlink children of `base_dir`; enforce loopback inference for the first release. |
 | Candidate intake | PDF parsing, hashing, and inference occur before exact-inbox confinement. | Validate regular file, link status, exact root, size, and stable identity before any content access or transmission. |
 | Scan dry-run | Can initialize/access SQLite, create `_DryRun`, and write or overwrite an untrusted model-named JSON file. | Return a proposal without directory, artifact, database, index, or lifecycle access/mutation. |
-| Normal scan | Pre-move JSON and optional Markdown writes can overwrite same-stem inbox siblings; wrong model extensions can make PDF and companion destinations identical. | Canonical extensions; independently validated, pairwise-distinct artifact paths; collision-safe atomic no-overwrite staging of the whole document unit. |
+| Normal scan | Pre-move JSON and optional Markdown writes can overwrite same-stem inbox siblings; wrong model extensions can make PDF and companion destinations identical; model-derived destinations can escape `_Review` within `base_dir` and bypass approval. | Locally derived destinations and canonical extensions; independently validated, pairwise-distinct artifact paths; collision-safe atomic no-overwrite staging of the whole document unit. |
 | Review and lifecycle commands | Persisted sidecar validation errors can expose values; companion symlinks can escape independently of a confined PDF; model-derived paths and sequential moves remain trusted too broadly. | Redacted diagnostics; strict sidecar schema/lifecycle validation; locally derived destinations; independent exact-root/link/type/identity checks for every artifact; recoverable transitions. |
 | Logging | INFO can expose complete paths; WARNING/ERROR exceptions can expose values; DEBUG can expose summaries, raw responses, and PDF metadata. | Content-free structured diagnostic codes at every level; sensitive diagnostics require an explicit, bounded export workflow. |
 | SQLite | Even nominal reads use a connection helper that can create parent directories or the database; the configured path is not confined and can alias a lifecycle root or document artifact. | Dedicated non-overlapping index location and identity validation before access; read-only operations cannot create state; tested rebuild and reconciliation. |
@@ -161,7 +169,7 @@ classes rather than isolated examples.
 | OCR text in memory | Derived transient data | Yes | Private; not stored in the sidecar by default. |
 | Model response | Untrusted input | Yes | Debug logging can persist the complete response; even without debug, Pydantic exceptions can expose document-derived values in normal logs and can be copied into persistent sidecar repair warnings. Target diagnostics must use redacted codes and bounded context. |
 | PDF metadata | Optional embedded derivative | Only with care | Rewrites PDF bytes and may travel when the PDF is shared. |
-| Archive layout | Human-approved organization | From PDF and sidecar | Wrong moves can still impose significant recovery cost. |
+| Archive layout | Target: human-approved organization | From PDF and sidecar | Current lifecycle-root aliases and model-derived path escapes can place documents in `Archive` before approval; wrong moves can impose significant recovery cost. |
 
 "Rebuildable in principle" is not the same as "rebuildable today." Until an
 index rebuild command exists and is tested, loss or drift of SQLite requires

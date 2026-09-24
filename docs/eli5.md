@@ -1,7 +1,7 @@
 # Aktenfux — ELI5 Guide
 
 **Status:** Maintained design guide  
-**Last updated:** 2026-09-21
+**Last updated:** 2026-09-24
 
 This guide explains the design in everyday language. The comparisons clarify the system; they are not security guarantees by themselves.
 
@@ -15,7 +15,7 @@ Imagine Aktenfux as a careful archive clerk:
 - The inbox is the clerk's incoming tray.
 - Review is the desk where a human checks uncertain suggestions.
 - The archive is the labelled cabinet.
-- The error area is a safe holding tray for work that could not be completed.
+- In the target design, the error area is a checked holding tray for work that could not be completed; current root and path gaps mean this is not yet unconditional.
 
 The letter and its index card belong together. The catalogue is useful, but it must be possible to rebuild it from the cards.
 

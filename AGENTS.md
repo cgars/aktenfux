@@ -35,7 +35,9 @@ If a requested change conflicts with an invariant, stop and propose an ADR inste
 3. Add tests for failure, interruption, and adversarial input before or with implementation.
 4. Implement the smallest coherent change through typed application boundaries.
 5. Update architecture, threat model, ELI5, and operational documentation when affected.
-6. Run verification and report what was and was not exercised.
+6. Perform a fresh reviewer pass over the complete diff: trace alternate execution
+   paths and verify every absolute current-state claim against code and tests.
+7. Run verification and report what was and was not exercised.
 
 ## Engineering rules
 

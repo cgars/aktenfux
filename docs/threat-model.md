@@ -1,7 +1,7 @@
 # Aktenfux threat assessment
 
-Status: initial maintained assessment for the local MVP  
-Last reviewed: 2026-09-21  
+Status: maintained assessment for the pre-release MVP  
+Last reviewed: 2026-09-24  
 Owner: project maintainers
 
 ## Executive assessment

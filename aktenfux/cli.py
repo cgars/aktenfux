@@ -110,7 +110,7 @@ def init(
     if cfg.dry_run:
         console.print(
             "[yellow]Reminder:[/yellow] dry_run is ON in config.yaml. "
-            "Set it to false when you are ready for production use."
+            "Disable it only for deliberate pre-release testing with synthetic, disposable input."
         )
 
 

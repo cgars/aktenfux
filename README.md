@@ -14,7 +14,7 @@ Aktenfux (`afu`) reads OCR text from PDF files, analyzes documents via an Ollama
 - Documents remain on your machine only while `ollama_url` is a loopback endpoint. The current MVP accepts non-loopback URLs, which send document-derived content to another host.
 - Target behavior is conservative: files are staged in `_Review` first, then approved by you. Until lifecycle-root validation and locally derived destination paths are implemented, unsafe configuration or a model-derived path can bypass this guarantee.
 - Works with ScanSnap scans or any OCR-processed PDF.
-- Stores scan results in a human-readable **sidecar JSON** next to each PDF.
+- Normally writes scan results to a human-readable **sidecar JSON** beside the PDF; current interrupted or partial operations can separate the pair.
 - Optional **SQLite index** for status tracking and duplicate detection.
 
 ---
@@ -67,10 +67,11 @@ afu setup
 # current MVP writes a JSON result whose model-supplied name can escape _DryRun.
 afu scan --dry-run
 
-# Real import – disable dry_run in config.yaml (or pass --no-dry-run) to actually move files
+# Non-dry-run import moves files. This pre-release path still has documented
+# release blockers; use synthetic, disposable input only.
 afu scan --no-dry-run
 
-# Review imported documents
+# Review documents that reached _Review
 afu review
 
 # Approve a document (moves it to Archive)
@@ -158,8 +159,8 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 - Current normal scans can silently overwrite existing same-stem inbox `.json` and optional `.md` siblings before move collision handling. Keep the inbox free of sibling artifacts and retain backups until fixed.
 - See the [architecture](docs/architecture.md) and [threat model](docs/threat-model.md) for current gaps and release gates.
 - Target behavior permanently archives documents **only after you approve them**; current lifecycle-root aliasing and model-derived path escape gaps can bypass this guarantee.
-- Sidecar JSON stays next to each PDF as a transparent audit trail.
-- SHA-256 hashing detects duplicates before re-importing.
+- Target behavior keeps each PDF and sidecar together as a recoverable audit unit; current sequential writes and moves can leave partial or separated state.
+- When the optional SQLite index is enabled, SHA-256 can flag a potential duplicate, but the current scan still proceeds and the check is not an import-prevention guarantee.
 - Normal moves have broad `base_dir` checks, but current pre-read, sibling-write, exact-root, and model-derived-path gaps remain release blockers.
 - Lifecycle roots are not yet checked for equality, nesting, case/Unicode aliases, or shared filesystem identity; an aliased `_Review`/`Archive` can bypass approval.
 - A confined PDF does not make same-stem JSON/Markdown companions safe: companion symlinks and wrong extensions can escape or alias/replace the PDF.
@@ -169,8 +170,8 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 
 ## 7. Architecture
 
-- **Sidecar JSON** is the source of truth per document (stored alongside the PDF).
-- **SQLite** is an optional index only – the tool works without it.
+- The target data model treats **sidecar JSON** as the source of truth per document and keeps it beside the PDF; current partial operations can separate the pair.
+- **SQLite** is an optional derived index – the tool works without it, but automatic rebuild is not implemented yet.
 - **Core logic is cross-platform** (Windows, macOS, Linux).
 - All paths use `pathlib` – no hard-coded OS-specific separators.
 - OS-specific setup scripts and installers are **intentionally out of scope** for v0.1.
@@ -184,7 +185,7 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 | `pdf_text.py` | Extract OCR text from PDFs |
 | `llm.py` | Build prompts, call Ollama, validate response |
 | `ollama_manager.py` | Check Ollama availability, list/pull/test models |
-| `filenames.py` | Safe filename and archive path generation |
+| `filenames.py` | Filename/path helper generation and sanitization; not yet the sole destination authority |
 | `storage.py` | SHA-256, sidecar I/O, file moves with safety checks |
 | `db.py` | Optional SQLite index |
 | `review.py` | List and display `_Review` documents |
