@@ -147,7 +147,7 @@ classes rather than isolated examples.
 | Terminal output | Untrusted model, sidecar, filename, and endpoint text reaches Rich, logs, and raw output without consistent control-character escaping or bounds. | Escape controls, disable markup for evidence, bound output, and keep trusted prompts visually separate. |
 | PDF metadata | Opt-in rewriting changes bytes after the recorded hash, logs metadata values at DEBUG, and uses a predictable non-exclusive sibling temporary path. | Unsupported and disabled until a later ADR defines coherent integrity, secure temporary-file handling, provenance, logging, and recovery semantics. |
 | Timestamps | Lifecycle timestamps are local and timezone-naive. | Canonical timezone-aware UTC plus explicit legacy migration semantics. |
-| Toolchain | CI actions and npm graph are pinned; renderer fallback must still fail closed when local Mermaid is absent. | Invoke only the lockfile-installed binary and stop before any registry lookup when it is missing. |
+| Toolchain | CI actions and npm graph are pinned; the renderer invokes only the lockfile-installed local Mermaid binary and fails closed when it is absent. | Preserve the fail-closed resolver and cover missing or non-executable local binaries with regression tests; dependency updates remain explicit reviewed changes. |
 | Python and model supply chain | Runtime/build dependencies have open lower bounds without a lock; model artifacts lack recorded integrity provenance. | Reproducible locked Python graph, vulnerability review, and verified/versioned model provenance. |
 
 ## Data ownership and recoverability
