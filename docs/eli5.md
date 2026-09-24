@@ -51,7 +51,7 @@ The current MVP does not yet provide that complete guarantee: it may read an inb
 
 Checks must account for `..`, absolute paths, symbolic links, unusual separators, case differences, and configuration that points outside the archive root.
 
-The named areas must also be genuinely different places. `_Review` must not be the same as, inside, or an alias of `Archive`; otherwise scanning could archive a document before approval. The same distinct/non-overlapping rule applies to every lifecycle area and the SQLite index location.
+The named areas must also be genuinely different places. `_Review` must not be the same as, inside, or an alias of `Archive`; otherwise scanning could archive a document before approval. Distinct roots alone are not enough in the current MVP: a model-suggested filename or folder can also escape `_Review` while staying inside the broader `base_dir`. The target therefore combines distinct/non-overlapping lifecycle and index locations with locally derived destination paths.
 
 ## Sidecars and recoverability
 
