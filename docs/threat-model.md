@@ -171,7 +171,9 @@ final archive.
 The current implementation includes useful controls:
 
 - `dry_run` defaults to true;
-- documents are staged in `_Review` before approval;
+- normal scans intend to stage documents in `_Review` before approval, but this
+  is not a complete implemented guarantee: lifecycle-root aliases and
+  model-supplied filename/folder escapes can both bypass review staging;
 - probable multi-document scans are staged for follow-up rather than split silently;
 - Pydantic validates and normalizes the model response shape;
 - path resolution prevents moves outside `base_dir`;
@@ -193,9 +195,10 @@ These controls have important limits:
 - `base_dir` confinement is weaker than exact lifecycle-root confinement;
 - lifecycle roots are not required to be pairwise distinct or non-overlapping;
   review can therefore alias/nest in archive and bypass the approval boundary;
-- non-empty LLM path suggestions can still influence destinations; dry-run uses
-  the suggested filename for an immediate, unconfined write that can escape
-  `_DryRun` and replace an existing JSON file;
+- non-empty LLM path suggestions can still influence destinations; a normal
+  scan can escape `_Review` (including directly into `Archive`) while remaining
+  inside `base_dir`, and dry-run uses the suggested filename for an immediate,
+  unconfined write that can escape `_DryRun` and replace an existing JSON file;
 - an absolute or traversing `sqlite_path` can create or update an index outside
   `base_dir` because it is not confined before database access;
 - normal scans silently replace an existing same-stem inbox JSON and, when
