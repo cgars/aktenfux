@@ -2,7 +2,7 @@
 
 > A local, privacy-first document assistant for OCR-ready PDFs.
 
-Aktenfux (`afu`) reads OCR text from PDF files, analyzes documents via an Ollama endpoint, creates summaries, extracts metadata, and suggests filenames and archive locations. The default endpoint is local, but the current MVP does not enforce that boundary: configuring a LAN or internet URL transmits OCR text and summaries to that endpoint. The target lifecycle permanently archives documents only after **explicit user review**. The current MVP does not enforce distinct, non-overlapping lifecycle roots, so a misconfigured `_Review`/`Archive` layout can bypass that boundary.
+Aktenfux (`afu`) reads OCR text from PDF files, analyzes documents via an Ollama endpoint, creates summaries, extracts metadata, and suggests filenames and archive locations. The default endpoint is local, but the current MVP does not enforce that boundary: configuring a LAN or internet URL transmits OCR text and summaries to that endpoint. The target lifecycle permanently archives documents only after **explicit user review**. The current MVP neither enforces distinct, non-overlapping lifecycle roots nor prevents model-supplied filenames and folders from escaping `_Review` within `base_dir`; either gap can bypass that boundary.
 
 ---
 
@@ -12,7 +12,7 @@ Aktenfux (`afu`) reads OCR text from PDF files, analyzes documents via an Ollama
 - Uses **existing OCR text** already embedded in the PDF (no cloud OCR).
 - Defaults to a **local LLM via Ollama** – no API key is required.
 - Documents remain on your machine only while `ollama_url` is a loopback endpoint. The current MVP accepts non-loopback URLs, which send document-derived content to another host.
-- Target behavior is conservative: files are staged in `_Review` first, then approved by you. Until lifecycle-root validation is implemented, this guarantee depends on safe configuration.
+- Target behavior is conservative: files are staged in `_Review` first, then approved by you. Until lifecycle-root validation and locally derived destination paths are implemented, unsafe configuration or a model-derived path can bypass this guarantee.
 - Works with ScanSnap scans or any OCR-processed PDF.
 - Stores scan results in a human-readable **sidecar JSON** next to each PDF.
 - Optional **SQLite index** for status tracking and duplicate detection.
@@ -157,7 +157,7 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 - Current scan dry-run does not move the source PDF, but it initializes/accesses SQLite when enabled, creates `_DryRun`, and writes a model-named JSON result that can escape that directory and replace another file. Use only synthetic, disposable input until mutation-free dry-run is implemented.
 - Current normal scans can silently overwrite existing same-stem inbox `.json` and optional `.md` siblings before move collision handling. Keep the inbox free of sibling artifacts and retain backups until fixed.
 - See the [architecture](docs/architecture.md) and [threat model](docs/threat-model.md) for current gaps and release gates.
-- Target behavior permanently archives documents **only after you approve them**; the current lifecycle-root aliasing gap can violate this guarantee under unsafe configuration.
+- Target behavior permanently archives documents **only after you approve them**; current lifecycle-root aliasing and model-derived path escape gaps can bypass this guarantee.
 - Sidecar JSON stays next to each PDF as a transparent audit trail.
 - SHA-256 hashing detects duplicates before re-importing.
 - Normal moves have broad `base_dir` checks, but current pre-read, sibling-write, exact-root, and model-derived-path gaps remain release blockers.
