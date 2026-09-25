@@ -211,6 +211,8 @@ class TestRejectAll:
         assert result.exit_code == 0
         # In dry-run the file must still be in _Review
         assert (review_dir / "doc1.pdf").exists()
+        # A proposal-only rejection must not create the destination directory.
+        assert not cfg.error_path.exists()
         # Dry-run should still report which document would be processed
         assert "ffff000000000006" in result.output
 

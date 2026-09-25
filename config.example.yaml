@@ -5,7 +5,10 @@
 # Tilde (~) is expanded to the user's home directory.
 base_dir: "~/Documents/Aktenfux"
 
-# Sub-folder names (relative to base_dir)
+# Sub-folder names (relative to base_dir).
+# CURRENT MVP WARNING: these are not yet validated as distinct/non-overlapping.
+# Keep every value simple, relative, unique, and outside every other lifecycle
+# folder. In particular, never alias or nest review_dir inside archive_dir.
 inbox_dir: "_Inbox"
 review_dir: "_Review"
 imported_dir: "_Imported"
@@ -13,18 +16,36 @@ error_dir: "_Error"
 archive_dir: "Archive"
 # Folder for approved documents that are likely multi-document scans and need splitting.
 split_dir: "_Split"
-# Folder where sidecar JSON files are written during dry-run scans.
+# Folder where sidecar JSON files are written during scan/reprocess dry-run.
 dry_run_dir: "_DryRun"
 
 # Ollama settings
+# FIRST-RELEASE TARGET: keep this on a loopback address. The current MVP does
+# not enforce loopback-only access; a LAN or internet URL sends OCR text and
+# summaries to that endpoint and may use plaintext HTTP.
+# Every scan contacts this endpoint before inspecting the inbox. When the
+# service is reachable, it lists models; if the configured model is missing,
+# accepting the prompt downloads and persists it even when the inbox is empty
+# or scan dry-run was selected.
 ollama_url: "http://localhost:11434"
 ollama_model: "qwen3:8b"
 # Timeout in seconds for LLM inference calls (increase for slower hardware or larger models).
 ollama_timeout: 120
 
-# Safety: dry_run is ON by default.
-# Set to false only after you have verified the setup.
+# dry_run is ON by default, but it is not currently a safety boundary.
+# CURRENT MVP WARNING: after successful analysis, scan and reprocess dry-run
+# write a model-named JSON result; traversal or an absolute model filename can
+# escape _DryRun and replace a file. With SQLite enabled, scan initializes or
+# updates the schema once a PDF is present; both can create/access database state
+# after usable OCR.
+# Use only synthetic, disposable data until mutation-free dry-run is implemented.
+# Keep boolean values unquoted. The current loader coerces non-empty strings with
+# Python truthiness, so a quoted "false" is incorrectly treated as true.
 dry_run: true
+
+# CURRENT MVP WARNING: normal scans can also overwrite an existing same-stem
+# inbox JSON, and an existing Markdown sibling when that output is enabled.
+# Keep the inbox free of sibling artifacts and retain backups until fixed.
 
 # Maximum characters of OCR text sent to the LLM.
 max_chars_for_llm: 12000
@@ -32,17 +53,23 @@ max_chars_for_llm: 12000
 # Language for summaries (e.g. "de" for German, "en" for English)
 language: "de"
 
-# Write an additional human-readable Markdown summary next to the sidecar JSON.
+# Write an additional sensitive Markdown summary next to the sidecar JSON.
+# CURRENT MVP WARNING: reject and scan-error paths move PDF/JSON to _Error but
+# leave an existing Markdown companion behind in its previous lifecycle area.
 write_markdown_summary: false
 
-# Write descriptive metadata (Title, Author, Subject, Keywords, Creator, Producer)
-# directly into the PDF file.  The existing page content is never modified.
-# Set to true to enable automatic PDF metadata enrichment.
+# UNSUPPORTED FOR THE FIRST RELEASE: keep this false.
+# Enabling it rewrites PDF bytes after the recorded SHA-256 was calculated, so
+# the stored hash becomes stale even though the visible page content is unchanged.
+# A later ADR and implementation change are required before this is safe to use.
 write_pdf_metadata: false
 
 # Optional SQLite index for status, IDs, history, and duplicate detection.
 # Core functionality works without SQLite.
 use_sqlite_index: false
+# CURRENT MVP WARNING: this path is not confined before database access. Keep it
+# as a simple relative filename; absolute paths and traversal can write outside
+# base_dir until exact-root validation is implemented.
 sqlite_path: "aktenfux.db"
 
 # Allowed top-level categories for document classification.
