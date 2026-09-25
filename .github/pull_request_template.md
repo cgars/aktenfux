@@ -39,7 +39,7 @@ For each item, describe the impact or explain why there is none.
 
 - [ ] Full `pytest` suite passes.
 - [ ] Focused success, failure, adversarial-input, and interruption tests were added or updated.
-- [ ] Dry-run remains free of document-state mutations.
+- [ ] Every dry-run-capable command was checked separately against its documented filesystem, database, index, and lifecycle read/write/move contract.
 - [ ] Documentation matches implemented behavior and labels planned behavior clearly.
 - [ ] A fresh full-diff reviewer pass checked absolute current-state claims and alternate execution paths.
 - [ ] Mermaid diagrams render and documentation links resolve.

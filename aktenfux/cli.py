@@ -54,7 +54,7 @@ def _load_config(config_path: Optional[Path], dry_run: Optional[bool]):
     if cfg.dry_run:
         console.print(
             "[bold red]⚠  CURRENT DRY-RUN IS NOT MUTATION-FREE:[/bold red] PDFs are not moved, "
-            "but scan dry-run initializes/accesses SQLite when enabled and writes a model-named "
+            "but scan and reprocess dry-run can create/access SQLite state and write a model-named "
             "JSON result that can escape _DryRun and replace another file. Use synthetic, "
             "disposable input only."
         )
@@ -388,7 +388,13 @@ def reprocess(
 
     try:
         reprocess_document(doc_id, cfg)
-        console.print(f"[green]✓[/green] Reprocessed: {doc_id}")
+        if cfg.dry_run:
+            console.print(
+                f"[yellow]![/yellow] Reprocess dry-run completed with the documented "
+                f"JSON writes and SQLite access: {doc_id}"
+            )
+        else:
+            console.print(f"[green]✓[/green] Reprocessed: {doc_id}")
     except FileNotFoundError as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc

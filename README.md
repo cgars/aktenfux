@@ -57,8 +57,9 @@ afu init
 
 # Edit config.yaml if needed (e.g. adjust base_dir).
 # Keep ollama_url on loopback; other endpoints receive OCR text and summaries.
-# dry_run is ON by default, but current scan dry-run still writes model-named JSON
-# and is not safe for real documents until the documented release gate is fixed.
+# dry_run is ON by default, but current scan and reprocess dry-run still write
+# model-named JSON and may access/create SQLite state. They are not safe for real
+# documents until the documented release gate is fixed.
 
 # Verify your setup (Ollama, model, folders)
 afu setup
@@ -122,14 +123,14 @@ Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as ne
 | `base_dir` | `~/Documents/Aktenfux` | Root folder for all working directories |
 | `ollama_url` | `http://localhost:11434` | Ollama endpoint. Keep it on loopback; a LAN/internet URL receives OCR text and summaries, potentially over plaintext HTTP. |
 | `ollama_model` | `qwen3:8b` | Model to use for analysis |
-| `dry_run` | `true` | PDFs are not moved, but current scan dry-run initializes/accesses SQLite when enabled and persists model-named JSON; it is not mutation-free. |
+| `dry_run` | `true` | PDFs are not moved, but current scan and reprocess dry-run can create/access SQLite state and persist model-named JSON; they are not mutation-free. |
 | `split_dir` | `_Split` | Folder for approved documents recommended for split detection |
 | `max_chars_for_llm` | `12000` | OCR text truncation limit |
 | `language` | `de` | Summary language (`de` or `en`) |
-| `write_markdown_summary` | `false` | Write `.md` summary next to sidecar JSON |
+| `write_markdown_summary` | `false` | Write a sensitive `.md` summary next to sidecar JSON. Current reject/error paths can leave it orphaned in the prior lifecycle area. |
 | `use_sqlite_index` | `false` | Enable optional SQLite index |
 
-Current MVP warning: keep every lifecycle directory setting simple, relative, unique, and non-overlapping. In particular, `_Review` must not equal, contain, or sit inside `Archive`; this validation is a release gate rather than an implemented guarantee.
+Current MVP warning: keep every lifecycle directory setting simple, relative, unique, and non-overlapping. In particular, `_Review` must not equal, contain, or sit inside `Archive`; this validation is a release gate rather than an implemented guarantee. Keep YAML booleans unquoted: the current loose coercion treats a non-empty string such as `"false"` as true and can enable a feature unexpectedly.
 
 ---
 
@@ -147,7 +148,7 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 | `afu reject <id>` | Move a document to `_Error` |
 | `afu reject --all` | Move all documents currently in `_Review` to `_Error` |
 | `afu status` | Show document counts per folder |
-| `afu reprocess <id>` | Re-analyze a document with the LLM |
+| `afu reprocess <id>` | Re-analyze a Review document with the LLM; with dry-run enabled this currently writes unsafe model-named JSON and can create/access SQLite state. |
 
 ---
 
@@ -155,7 +156,7 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 
 - Aktenfux is **local-first**, not unconditionally offline. The default Ollama endpoint is loopback.
 - The current MVP does not enforce loopback-only inference. A configured LAN or internet endpoint receives OCR text and summaries and may use plaintext HTTP; remote inference is unsupported for the first release.
-- Current scan dry-run does not move the source PDF, but it initializes/accesses SQLite when enabled, creates `_DryRun`, and writes a model-named JSON result that can escape that directory and replace another file. Use only synthetic, disposable input until mutation-free dry-run is implemented.
+- Current scan and reprocess dry-run do not move the source PDF, but they can create/access SQLite state, create `_DryRun`, and write a model-named JSON result that can escape that directory and replace another file. Use only synthetic, disposable input until mutation-free dry-run is implemented.
 - Current normal scans can silently overwrite existing same-stem inbox `.json` and optional `.md` siblings before move collision handling. Keep the inbox free of sibling artifacts and retain backups until fixed.
 - See the [architecture](docs/architecture.md) and [threat model](docs/threat-model.md) for current gaps and release gates.
 - Target behavior permanently archives documents **only after you approve them**; current lifecycle-root aliasing and model-derived path escape gaps can bypass this guarantee.
@@ -163,7 +164,7 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 - When the optional SQLite index is enabled, SHA-256 can flag a potential duplicate, but the current scan still proceeds and the check is not an import-prevention guarantee.
 - Normal moves have broad `base_dir` checks, but current pre-read, sibling-write, exact-root, and model-derived-path gaps remain release blockers.
 - Lifecycle roots are not yet checked for equality, nesting, case/Unicode aliases, or shared filesystem identity; an aliased `_Review`/`Archive` can bypass approval.
-- A confined PDF does not make same-stem JSON/Markdown companions safe: companion symlinks and wrong extensions can escape or alias/replace the PDF.
+- A confined PDF does not make same-stem JSON/Markdown companions safe: companion symlinks and wrong extensions can escape or alias/replace the PDF. With Markdown enabled, reject and scan-error paths currently leave the `.md` behind when PDF/JSON move to `_Error`.
 - **Backup your document folder** – Aktenfux is a tool, not a backup solution.
 
 ---

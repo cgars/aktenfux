@@ -63,6 +63,8 @@ The current normal scan writes a JSON sidecar, and optionally Markdown, beside t
 
 Every member of the document unit needs its own checked address. A PDF destination must end in `.pdf`; its JSON and Markdown paths must be different from the PDF and from each other. Each companion must be checked separately for containment, links, type, and filesystem identity—a safe PDF path does not make a symlinked index card safe.
 
+The complete unit must also change trays together. Today, when Markdown summaries are enabled, rejection and some scan-error paths move the PDF and JSON to `_Error` but leave the sensitive `.md` summary behind in its previous tray. That deterministic orphan is a current gap, not merely a rare interruption case.
+
 ## Hashes and transformations
 
 A cryptographic hash is like a very sensitive wax seal for the PDF bytes. If Aktenfux rewrites PDF metadata, even without changing the visible pages, the bytes and therefore the seal can change. The stored hash must describe the final archived file, while provenance should retain the original input hash when a transformation occurred.
@@ -75,7 +77,7 @@ If only the first part of a long document is shown to the model, that is like as
 
 ## Dry-run
 
-Dry-run is a rehearsal. It does not move the source PDF, but the current MVP can initialize or update SQLite and query the duplicate index; it also creates `_DryRun` and writes or replaces a JSON result. The JSON filename comes directly from untrusted model output: an absolute name or `..` can escape that directory and replace a file elsewhere. These state changes are critical release-gate gaps, not merely a filename-collision problem. Target behavior must ignore model-supplied path strings, derive safe names locally, validate exact roots, and return or display the proposed sidecar, destination, and changes without creating or accessing a database or persisting a directory, PDF, sidecar, Markdown file, index row, or lifecycle state.
+Dry-run is a rehearsal. Both scan and reprocess dry-run enter the same unsafe analysis branch. They do not move the source PDF, but the current MVP can create or access SQLite state and query the duplicate index; it also creates `_DryRun` and writes or replaces a JSON result. The JSON filename comes directly from untrusted model output: an absolute name or `..` can escape that directory and replace a file elsewhere. These state changes are critical release-gate gaps, not merely a filename-collision problem. Target behavior must ignore model-supplied path strings, derive safe names locally, validate exact roots, and return or display the proposed sidecar, destination, and changes without creating or accessing a database or persisting a directory, PDF, sidecar, Markdown file, index row, or lifecycle state.
 
 ## Planned UI and MCP control
 

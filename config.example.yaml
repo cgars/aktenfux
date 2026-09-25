@@ -16,7 +16,7 @@ error_dir: "_Error"
 archive_dir: "Archive"
 # Folder for approved documents that are likely multi-document scans and need splitting.
 split_dir: "_Split"
-# Folder where sidecar JSON files are written during dry-run scans.
+# Folder where sidecar JSON files are written during scan/reprocess dry-run.
 dry_run_dir: "_DryRun"
 
 # Ollama settings
@@ -29,10 +29,13 @@ ollama_model: "qwen3:8b"
 ollama_timeout: 120
 
 # dry_run is ON by default, but it is not currently a safety boundary.
-# CURRENT MVP WARNING: scanning in dry-run writes a model-named JSON result;
-# traversal or an absolute model filename can escape _DryRun and replace a file.
-# With SQLite enabled it also initializes/updates the schema and reads the index.
+# CURRENT MVP WARNING: scan and reprocess dry-run write a model-named JSON
+# result; traversal or an absolute model filename can escape _DryRun and replace
+# a file. With SQLite enabled both can create/access database state; scan also
+# initializes or updates the schema.
 # Use only synthetic, disposable data until mutation-free dry-run is implemented.
+# Keep boolean values unquoted. The current loader coerces non-empty strings with
+# Python truthiness, so a quoted "false" is incorrectly treated as true.
 dry_run: true
 
 # CURRENT MVP WARNING: normal scans can also overwrite an existing same-stem
@@ -45,7 +48,9 @@ max_chars_for_llm: 12000
 # Language for summaries (e.g. "de" for German, "en" for English)
 language: "de"
 
-# Write an additional human-readable Markdown summary next to the sidecar JSON.
+# Write an additional sensitive Markdown summary next to the sidecar JSON.
+# CURRENT MVP WARNING: reject and scan-error paths move PDF/JSON to _Error but
+# leave an existing Markdown companion behind in its previous lifecycle area.
 write_markdown_summary: false
 
 # UNSUPPORTED FOR THE FIRST RELEASE: keep this false.
