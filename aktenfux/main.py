@@ -344,13 +344,13 @@ def reject_document(doc_id: str, config: AktenfuxConfig) -> None:
 
     pdf_path, sidecar = result
 
-    config.error_path.mkdir(parents=True, exist_ok=True)
     dest_pdf = resolve_collision(config.error_path / pdf_path.name)
 
     if config.dry_run:
         logger.info("[DRY-RUN] Would reject %s → _Error", pdf_path.name)
         return
 
+    config.error_path.mkdir(parents=True, exist_ok=True)
     move_file_with_sidecar(
         pdf_path,
         dest_pdf,

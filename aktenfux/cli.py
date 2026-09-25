@@ -390,11 +390,16 @@ def reprocess(
         reprocess_document(doc_id, cfg)
         if cfg.dry_run:
             console.print(
-                f"[yellow]![/yellow] Reprocess dry-run completed with the documented "
-                f"JSON writes and SQLite access: {doc_id}"
+                f"[yellow]![/yellow] Reprocess dry-run finished. Depending on the "
+                f"processing outcome and configuration, it may have written JSON and "
+                f"accessed or created SQLite state: {doc_id}"
             )
         else:
-            console.print(f"[green]✓[/green] Reprocessed: {doc_id}")
+            console.print(
+                f"[yellow]![/yellow] Reprocess command finished. The current pipeline "
+                f"does not return an outcome receipt; check _Review, _Error, and the "
+                f"logs before treating it as successful: {doc_id}"
+            )
     except FileNotFoundError as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc

@@ -39,7 +39,10 @@ For each item, describe the impact or explain why there is none.
 
 - [ ] Full `pytest` suite passes.
 - [ ] Focused success, failure, adversarial-input, and interruption tests were added or updated.
-- [ ] Every dry-run-capable command was checked separately against its documented filesystem, database, index, and lifecycle read/write/move contract.
+- [ ] A path-sensitive effect ledger traces every changed CLI path through preflight calls, helper calls, conditionals, confirmations, exceptions, and early returns.
+- [ ] The reverse effect inventory maps every changed filesystem writer, database connector, network client, external-service write, and subprocess boundary back to all reachable commands.
+- [ ] Every dry-run-capable command was checked separately against its documented filesystem, database, network, external-service, index, and lifecycle read/write/move contract.
+- [ ] User-visible completion messages distinguish observed effects from conditional or merely possible effects.
 - [ ] Documentation matches implemented behavior and labels planned behavior clearly.
 - [ ] A fresh full-diff reviewer pass checked absolute current-state claims and alternate execution paths.
 - [ ] Mermaid diagrams render and documentation links resolve.

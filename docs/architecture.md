@@ -1,7 +1,8 @@
 # Aktenfux architecture
 
 Status: maintained current-state and target-state baseline  
-Last reviewed: 2026-09-24  
+Last reviewed: 2026-09-25
+
 Owner: project maintainers
 
 Aktenfux is intended to be a local-first document processing and review workbench
@@ -92,12 +93,13 @@ gaps, not the intended target behavior.
 
 Scan dry-run follows the analysis path without moving the original PDF.
 `reprocess --dry-run` calls the same processing function for a PDF already in
-`_Review`. With SQLite enabled, scan initializes or updates the schema and both
-paths perform duplicate-index access that can create or access the configured
-database; both create `_DryRun` and write a model-named sidecar there. Those
-state changes violate the target dry-run invariant. A likely multi-document scan is
-staged in `_Split` only after approval; the current pipeline does not silently
-split it.
+`_Review`. With SQLite enabled, scan initializes or updates the schema once a
+PDF is present, and either path can query the duplicate index after usable OCR;
+those operations can create or access the configured database. Only a successful
+analysis creates `_DryRun` and writes a model-named sidecar there. Those
+conditional state changes violate the target dry-run invariant. A likely
+multi-document scan is staged in `_Split` only after approval; the current
+pipeline does not silently split it.
 
 ## Intended secure processing flow
 
@@ -141,22 +143,29 @@ artifacts, index rows, or lifecycle state.
 
 ## Current command and artifact behavior
 
-This matrix is an implementation inventory, not a target guarantee. It prevents
-one command variant from being mistaken for the behavior of every command.
+This matrix is an implementation inventory, not a target guarantee. Each row
+traces the CLI entry point through helper calls, including preflight work,
+conditional branches, and early returns. "Possible" means configuration or
+runtime outcome controls the effect; it must not be reported as an effect that
+definitely occurred. Configuration-dependent commands can stop during config
+loading before their downstream row applies. This prevents one command variant
+from being mistaken for the behavior of every command.
 
 | Command path | Current reads or external calls | Current writes or moves | Important current gap |
 |---|---|---|---|
+| `afu version` | Package version | Terminal output only | No document or external-system effect. |
 | `afu init` | Configuration template and any existing config | Config file and every configured working directory | Directory settings are used before pairwise root, traversal, link, or overlap validation. |
-| `afu setup` | Configured paths; configured Ollama endpoint; model list/test | No document artifact by design | A successful setup check does not validate lifecycle-root safety or prove release readiness, and a non-loopback endpoint is contacted as configured. |
-| `afu scan --dry-run` | Inbox PDF, parser, hash, inference, optional duplicate index | `_DryRun`, model-named JSON, and possible SQLite directory/database/schema access | Not mutation-free; untrusted names can escape `_DryRun` and overwrite another JSON file. |
-| `afu scan --no-dry-run` | Inbox PDF, companions, parser, inference, optional index | Pre-move JSON/Markdown; PDF/companions to Review or Error; optional metadata/index | Pre-read confinement, sibling overwrite, destination alias, approval-bypass, and partial-transition gaps remain. |
-| `afu review` | Review PDFs and sidecars | Terminal output only by design | Untrusted sidecar values and validation failures can expose or spoof terminal content. |
-| `afu approve` | Review PDF/sidecar and optional Markdown | Sequential move to Archive or Split, sidecar rewrite, optional metadata/index | Sidecar/model paths and companions are trusted too broadly; interruption can split the document unit. |
-| `afu reject` and scan error handling | Review or inbox PDF/sidecar | PDF and JSON move to Error; sidecar rewrite for explicit rejection | With Markdown output enabled, the sensitive `.md` companion is deterministically left behind; transitions are sequential. |
+| `afu setup` | Configured paths; Ollama reachability; when reachable, model-list and generation-test calls | No Aktenfux document artifact; effects internal to the configured service are not observed by the CLI | A successful setup check does not validate lifecycle-root safety or prove release readiness, and a non-loopback endpoint is contacted as configured. |
+| `afu scan --dry-run` | Before inbox inspection: Ollama reachability; when reachable, model list and, if absent, an interactive optional model pull. With any PDF: optional SQLite initialization, then parsing. After usable OCR: hash, optional duplicate-index query, and inference. | A confirmed pull persists model data at the configured Ollama service even if the inbox is empty. With any PDF and indexing enabled: SQLite directory/database/schema access. After successful analysis: `_DryRun` and model-named JSON. | Not mutation-free; untrusted names can escape `_DryRun` and overwrite another JSON file. The preflight can also cause a separately confirmed external model download before Aktenfux knows whether work exists. |
+| `afu scan --no-dry-run` | Same Ollama preflight as scan dry-run, then inbox PDF, companions, parser, inference, and optional index when work exists | Possible confirmed Ollama model download; pre-move JSON/Markdown; PDF/companions to Review or Error; optional metadata/index | Pre-read confinement, sibling overwrite, destination alias, approval-bypass, and partial-transition gaps remain. Model preflight occurs before inbox inspection. |
+| `afu review` | Review directory entries and sidecars | Terminal output only by design | Untrusted sidecar values and validation failures can expose or spoof terminal content. |
+| `afu approve --no-dry-run` | Review PDF/sidecar and optional Markdown | Sequential move to Archive or Split, sidecar rewrite, optional metadata/index | Sidecar/model paths and companions are trusted too broadly; interruption can split the document unit. |
+| `afu reject --no-dry-run` and non-dry-run scan error handling | Review or inbox PDF/sidecar | Error directory creation; PDF and JSON move to Error; sidecar rewrite for explicit rejection | With Markdown output enabled, the sensitive `.md` companion is deterministically left behind; transitions are sequential. |
 | `afu status` | Lifecycle paths and existing optional SQLite index | Terminal output only by design | Configured roots/index identity are not validated before access; untrusted paths reach terminal output. |
-| `afu reprocess --dry-run` | Review PDF/sidecar, parser, hash, inference, optional duplicate index | `_DryRun`, model-named JSON, and possible SQLite directory/database access | Same escape/overwrite and mutation hazards as scan dry-run. |
-| `afu reprocess --no-dry-run` | Review PDF/sidecar, parser, inference, optional index | Sidecar/optional Markdown rewrite and a second move from Review | Re-enters the scan pipeline; model paths can bypass Review and sequential writes/moves can leave partial state. |
-| `approve/reject --dry-run` | Review PDF/sidecar | Terminal/log proposal only by design | Still depends on untrusted sidecars and broad path checks; all dry-run variants require explicit regression coverage. |
+| `afu reprocess --dry-run` | Ollama reachability, then Review directory/sidecar lookup and PDF parsing. After usable OCR: hash, optional duplicate-index query, and inference. | With usable OCR and indexing enabled: possible SQLite directory/database access. On early no-OCR or inference failure: no JSON. After successful analysis: `_DryRun` and model-named JSON. | Same successful-analysis escape/overwrite and mutation hazards as scan dry-run. The CLI cannot currently return an observed-effect receipt, so it must describe these as possible rather than completed effects. |
+| `afu reprocess --no-dry-run` | Ollama reachability, then Review PDF/sidecar, parser, inference, and optional index | On successful analysis: sidecar/optional Markdown rewrite and a second move from Review; optional metadata/index. On no-OCR or inference failure: move to Error. | Re-enters the scan pipeline; model paths can bypass Review and sequential writes/moves can leave partial state. The application returns no structured outcome receipt, so the CLI cannot safely claim success and directs the user to Review, Error, and logs. |
+| `afu approve --dry-run` | Review PDF/sidecar and destination existence checks | Terminal/log proposal only | Still depends on untrusted sidecars and broad path checks; requires its own no-mutation regression coverage. |
+| `afu reject --dry-run` | Review PDF/sidecar and destination existence checks | Terminal/log proposal only; the current implementation returns before creating `_Error` | Still depends on untrusted sidecars; regression coverage must prove the destination directory and artifacts remain absent. |
 
 ## Current implementation gap inventory
 
@@ -167,7 +176,7 @@ classes rather than isolated examples.
 |---|---|---|
 | Configuration | Lifecycle directory names, `sqlite_path`, and `ollama_url` are not fully constrained. Roots may be equal, nested, absolute, or filesystem aliases; `_Review` can therefore alias `Archive` and bypass approval. Boolean/numeric values are loosely coerced; for example, quoted `"false"` is truthy and can enable a feature. | Validate a strict typed schema before I/O; reject wrong scalar/collection types; require lifecycle/index roots to be pairwise distinct, non-overlapping, non-symlink relative children of `base_dir`; enforce loopback inference for the first release. |
 | Candidate intake | PDF parsing, hashing, and inference occur before exact-inbox confinement. | Validate regular file, link status, exact root, size, and stable identity before any content access or transmission. |
-| Scan and reprocess dry-run | Both can create/access SQLite state, create `_DryRun`, and write or overwrite an untrusted model-named JSON file; reprocess does so from a document already in `_Review`. | Every dry-run-capable command performs only its documented reads and no persistent write or move. Scan/reprocess additionally avoid database/index access and directory/artifact creation; cover scan, reprocess, approve, and reject separately in tests. |
+| Scan and reprocess dry-run | With indexing enabled, scan initializes SQLite once any PDF is present; reprocess can create/access it after usable OCR. Both create `_DryRun` and write or overwrite an untrusted model-named JSON file only after successful analysis; reprocess does so from a document already in `_Review`. Scan additionally performs Ollama reachability preflight and, when reachable, model listing before inbox inspection; after confirmation it can persist a missing model even when the inbox is empty. | Every dry-run-capable command performs only its documented reads and no persistent document, sidecar, index, or lifecycle write or move. Treat any separately confirmed model acquisition as an explicit precondition rather than an invisible scan effect; cover scan, reprocess, approve, and reject separately in tests. |
 | Normal scan | Pre-move JSON and optional Markdown writes can overwrite same-stem inbox siblings; wrong model extensions can make PDF and companion destinations identical; model-derived destinations can escape `_Review` within `base_dir` and bypass approval. | Locally derived destinations and canonical extensions; independently validated, pairwise-distinct artifact paths; collision-safe atomic no-overwrite staging of the whole document unit. |
 | Review and lifecycle commands | Persisted sidecar validation errors can expose values; companion symlinks can escape independently of a confined PDF; model-derived paths and sequential moves remain trusted too broadly. With Markdown enabled, rejection and scan error handling move PDF/JSON but deterministically leave the sensitive `.md` companion in its prior lifecycle area. | Redacted diagnostics; strict sidecar schema/lifecycle validation; locally derived destinations; independent exact-root/link/type/identity checks for every artifact; every transition moves or recoverably accounts for the complete PDF/JSON/Markdown unit. |
 | Logging | INFO can expose complete paths; WARNING/ERROR exceptions can expose values; DEBUG can expose summaries, raw responses, and PDF metadata. | Content-free structured diagnostic codes at every level; sensitive diagnostics require an explicit, bounded export workflow. |

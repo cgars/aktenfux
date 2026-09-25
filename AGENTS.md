@@ -39,6 +39,29 @@ If a requested change conflicts with an invariant, stop and propose an ADR inste
    paths and verify every absolute current-state claim against code and tests.
 7. Run verification and report what was and was not exercised.
 
+### Path-sensitive effect review
+
+Before claiming that a command is read-only, mutation-free, offline, or that an
+effect occurred, build an effect ledger from the implementation rather than
+from the command's intended purpose:
+
+1. Start at each CLI entry point and follow every helper it can call.
+2. Record filesystem reads, existence checks, directory creation, writes,
+   moves, database connections, network calls, external-service storage, and
+   terminal/log output in execution order.
+3. Split the ledger at configuration branches, confirmations, exceptions, and
+   every early return; do not merge `--dry-run` and normal paths or commands
+   that merely share a helper.
+4. Mark each effect as unconditional, conditional, or impossible on that path.
+5. Verify claims against focused tests. A completion message may say an effect
+   happened only when the application returns or observes evidence for it;
+   otherwise describe it as a possible hazard.
+
+Perform the same exercise once from the opposite direction: select each writer,
+database connector, network client, and subprocess boundary and identify every
+entry point that can reach it. Reconcile that reverse inventory with the
+command ledger before pushing.
+
 ## Engineering rules
 
 - Use `pathlib` and resolve paths deliberately; test traversal, absolute paths, symlinks, case behavior, and cross-platform separators.
@@ -79,4 +102,3 @@ MCP work begins with read-only inspection tools. Write tools require a dedicated
 ## Pull requests
 
 Use the repository template. Explicitly report architecture, threat-model, diagram, data-lifecycle, privacy, release-gate, and ADR impact. “No impact” requires a short explanation, not an unchecked assumption.
-

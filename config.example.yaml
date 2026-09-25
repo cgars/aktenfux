@@ -23,16 +23,21 @@ dry_run_dir: "_DryRun"
 # FIRST-RELEASE TARGET: keep this on a loopback address. The current MVP does
 # not enforce loopback-only access; a LAN or internet URL sends OCR text and
 # summaries to that endpoint and may use plaintext HTTP.
+# Every scan contacts this endpoint before inspecting the inbox. When the
+# service is reachable, it lists models; if the configured model is missing,
+# accepting the prompt downloads and persists it even when the inbox is empty
+# or scan dry-run was selected.
 ollama_url: "http://localhost:11434"
 ollama_model: "qwen3:8b"
 # Timeout in seconds for LLM inference calls (increase for slower hardware or larger models).
 ollama_timeout: 120
 
 # dry_run is ON by default, but it is not currently a safety boundary.
-# CURRENT MVP WARNING: scan and reprocess dry-run write a model-named JSON
-# result; traversal or an absolute model filename can escape _DryRun and replace
-# a file. With SQLite enabled both can create/access database state; scan also
-# initializes or updates the schema.
+# CURRENT MVP WARNING: after successful analysis, scan and reprocess dry-run
+# write a model-named JSON result; traversal or an absolute model filename can
+# escape _DryRun and replace a file. With SQLite enabled, scan initializes or
+# updates the schema once a PDF is present; both can create/access database state
+# after usable OCR.
 # Use only synthetic, disposable data until mutation-free dry-run is implemented.
 # Keep boolean values unquoted. The current loader coerces non-empty strings with
 # Python truthiness, so a quoted "false" is incorrectly treated as true.
