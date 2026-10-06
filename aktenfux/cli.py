@@ -154,24 +154,31 @@ def setup(
 
     if running:
         models = om.list_models(cfg.ollama_url)
-        model_installed = any(
-            m == cfg.ollama_model or m.startswith(cfg.ollama_model + ":")
-            for m in models
-        )
-        if model_installed:
-            console.print(f"[green]✓[/green] Model '{cfg.ollama_model}' is installed.")
-        else:
+        if models is None:
             console.print(
-                f"[yellow]![/yellow] Model '{cfg.ollama_model}' is not installed. "
-                "Run 'afu scan' once and you will be prompted to download it."
+                "[red]✗[/red] Could not determine which models are installed; "
+                "model discovery failed."
             )
-
-        console.print("Running quick model test …")
-        if om.test_model(cfg.ollama_model, cfg.ollama_url):
-            console.print("[green]✓[/green] Model test passed.")
-        else:
-            console.print("[red]✗[/red] Model test failed.")
             ok = False
+        else:
+            model_installed = any(
+                m == cfg.ollama_model or m.startswith(cfg.ollama_model + ":")
+                for m in models
+            )
+            if model_installed:
+                console.print(f"[green]✓[/green] Model '{cfg.ollama_model}' is installed.")
+            else:
+                console.print(
+                    f"[yellow]![/yellow] Model '{cfg.ollama_model}' is not installed. "
+                    "Run 'afu scan' once and you will be prompted to download it."
+                )
+
+            console.print("Running quick model test …")
+            if om.test_model(cfg.ollama_model, cfg.ollama_url):
+                console.print("[green]✓[/green] Model test passed.")
+            else:
+                console.print("[red]✗[/red] Model test failed.")
+                ok = False
 
     if ok:
         console.print("[green]Setup check passed.[/green]")

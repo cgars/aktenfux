@@ -65,8 +65,8 @@ afu init
 afu setup
 
 # Test with synthetic, disposable input only. Before checking the inbox, scan
-# contacts Ollama and, when reachable, lists models and can prompt for a
-# persistent model download.
+# contacts Ollama and, when reachable, discovers models. Discovery failure now
+# stops safely; a genuinely missing model can prompt for a persistent download.
 # The PDF is not moved, but after successful analysis the current MVP writes a
 # JSON result whose model-supplied name can escape _DryRun.
 afu scan --dry-run
@@ -144,7 +144,7 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 | `afu init` | Create config.yaml and working folders |
 | `afu setup` | Check Ollama, model, and folder setup |
 | `afu scan` | Process PDFs from `_Inbox` |
-| `afu scan --dry-run` | Before inbox inspection, contact Ollama and, when reachable, list models, optionally prompting for a confirmed persistent model download. With any PDF and indexing enabled, the current MVP initializes/accesses SQLite; after successful analysis it writes unsafe model-named JSON (synthetic data only). |
+| `afu scan --dry-run` | Before inbox inspection, contact Ollama and discover models. Discovery failure or a declined pull stops. An accepted pull can fail with partial external state; its stream must report explicit success, after which the model is re-listed and must be verified. With any PDF and indexing enabled, the current MVP initializes/accesses SQLite; after successful analysis it writes unsafe model-named JSON (synthetic data only). |
 | `afu review` | List documents awaiting approval |
 | `afu approve <id>` | Archive an approved document, or stage it in `_Split` when split detection is recommended |
 | `afu approve --all` | Archive/stage all documents currently in `_Review` |
@@ -159,7 +159,7 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 
 - Aktenfux is **local-first**, not unconditionally offline. The default Ollama endpoint is loopback.
 - The current MVP does not enforce loopback-only inference. A configured LAN or internet endpoint receives OCR text and summaries and may use plaintext HTTP; remote inference is unsupported for the first release.
-- Every scan contacts the configured Ollama endpoint before checking whether the inbox contains a PDF. When reachable, it lists models; if the configured model is absent, an accepted prompt downloads and persists it even for an empty inbox or scan dry-run.
+- Every scan contacts the configured Ollama endpoint before checking whether the inbox contains a PDF. Discovery failure now stops without offering a pull. If discovery succeeds and the model is absent, declining stops; an accepted pull can fail and leave partial external state. Its stream must report explicit success, after which the model is re-listed and must be verified. A verified pull persists the model even for an empty inbox or scan dry-run.
 - Current scan and reprocess dry-run do not move the source PDF, but they can create/access SQLite state, create `_DryRun`, and write a model-named JSON result that can escape that directory and replace another file. Use only synthetic, disposable input until mutation-free dry-run is implemented.
 - Current normal scans can silently overwrite existing same-stem inbox `.json` and optional `.md` siblings before move collision handling. Keep the inbox free of sibling artifacts and retain backups until fixed.
 - See the [architecture](docs/architecture.md) and [threat model](docs/threat-model.md) for current gaps and release gates.

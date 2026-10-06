@@ -1,7 +1,7 @@
 # Aktenfux threat assessment
 
 Status: maintained assessment for the pre-release MVP  
-Last reviewed: 2026-09-25
+Last reviewed: 2026-10-06
 
 Owner: project maintainers
 
@@ -159,7 +159,7 @@ final archive.
 | AF-11 | While the clerk reads a letter, another helper silently swaps it for a different one. | Sync software or another process modifies/replaces the PDF between validation, parsing, hashing, sidecar creation, and move (TOCTOU). Collision resolution and destination existence checks also happen separately from creation/move, so another process can claim or replace the chosen path in between. | T/R | High | Stable file handle or controlled staging copy; pre/post identity checks; settle/lock policy; atomic no-overwrite destination reservation/rename; detect changed size/mtime/hash; retry without overwriting evidence. | Concurrent source replacement, destination creation, rename, symlink, and sync-conflict tests with deterministic no-overwrite failure behavior. |
 | AF-12 | The clerk reads only the first pages and misses the payment deadline or the second letter. | Character truncation or weak OCR omits decisive evidence while summaries appear complete and confident. | T/R | High | Page-aware extraction; explicit truncation warning in sidecar/UI; hierarchical long-document analysis; citations; confidence tied to coverage; manual review gate. | Long-document corpus with facts at the end, page boundary cases, poor OCR, and multi-document scans. |
 | AF-13 | One broad command empties the whole review tray before the owner notices. | `--all`, future UI actions, automation, or MCP tools perform large or destructive changes with insufficient preview, scoping, confirmation, or audit. | T/R/E | High | Separate read/write capabilities; count and exact-item preview; explicit confirmation; bounded batches; idempotency; audit event; no arbitrary path/SQL/file tools. | Confirmation and cancellation tests, partial-failure recovery, replay tests, and MCP permission matrix. |
-| AF-14 | A tool used to read letters has been secretly replaced with a harmful one. | Python dependency, package, CI action, model artifact, browser download, or build process compromises document confidentiality or integrity. The npm graph and CI actions are pinned, but Python runtime/build dependencies currently use open lower bounds without a lock, and model artifacts lack recorded hashes/signatures. Every scan performs a reachability check before inspecting the inbox; when Ollama is reachable, it discovers models and can, after interactive confirmation, download and persist one at the configured endpoint even when no PDF is waiting or scan dry-run is selected. | T/I/E | High | Minimize and pin complete runtime/build graphs and actions; provenance review; dependency/SAST/secret scanning; hashes/signatures where available; documented browser and model provenance; fail closed without local locked tools; separate explicit model acquisition from document-processing and dry-run commands. | Clean offline rebuild, Python/npm lockfile review, vulnerability gates, action pin checks, empty-inbox and scan-dry-run preflight tests, declined/accepted model-download tests, missing-tool no-network tests, and browser/model-change review. |
+| AF-14 | A tool used to read letters has been secretly replaced with a harmful one. | Python dependency, package, CI action, model artifact, browser download, or build process compromises document confidentiality or integrity. The npm graph and CI actions are pinned, but Python runtime/build dependencies currently use open lower bounds without a lock, and model artifacts lack recorded hashes/signatures. Every scan performs a reachability check before inspecting the inbox. When Ollama is reachable, discovery failure now stops rather than masquerading as an empty model list. A genuinely missing model can, after interactive confirmation, be pulled even when no PDF is waiting or scan dry-run is selected; a failed or incomplete stream may leave partial external state. The stream must explicitly report success, after which the model is re-listed and must be verified before processing continues. | T/I/E | High | Minimize and pin complete runtime/build graphs and actions; provenance review; dependency/SAST/secret scanning; hashes/signatures where available; documented browser and model provenance; fail closed without local locked tools; separate explicit model acquisition from document-processing and dry-run commands; provide recovery for partial model state. | Clean offline rebuild, Python/npm lockfile review, vulnerability gates, action pin checks, empty-inbox and scan-dry-run preflight tests covering discovery failure, installed model, declined pull, failed/partial or incomplete pull, success-without-verification, and verified pull; missing-tool no-network tests; browser/model-change review. |
 | AF-15 | The spare archive is stolen, or restoring it brings back mismatched letters and cards. | Backups or synchronized copies disclose private data or restore incomplete, stale, or internally inconsistent document units. | I/T/D | High | Encrypted restricted backups; integrity manifest; include all authoritative artifacts; documented restore; isolated restore rehearsal; reconciliation before reuse. | Scheduled restore drill covering PDF/sidecar pairs, configuration, permissions, and index rebuild. |
 | AF-16 | The catalogue is secretly placed in another drawer—or on top of a letter. | An absolute or traversing configured `sqlite_path` is resolved without confinement; it may also alias a lifecycle root or PDF/JSON/Markdown artifact. Database initialization and nominal reads can create directories or a database, corrupt an aliased artifact, and persist document-derived metadata outside the intended index location. | T/I/E | Critical | Permit only a locally derived relative index name in a dedicated non-overlapping index location; resolve and validate it before every access; require a regular non-symlink database file when present; reject absolute paths, traversal, links, wrong roots, and identity/path aliases with lifecycle roots or document artifacts. | Absolute-path, `..`, symlink, hard-link, artifact-alias, root-alias, nominal-read creation, and platform case/Unicode tests proving database access is never attempted for an invalid or aliased index path. |
 | AF-17 | Two catalogue entries say “three o'clock,” but mean different moments. | Sidecars currently serialize `processed_at` and `approved_at` from timezone-naive local `datetime.now()`. Events become ambiguous across hosts, timezone changes, and daylight-saving folds, weakening ordering, correlation, provenance, and audit evidence. | T/R | Medium | Use timezone-aware UTC for new lifecycle events; serialize one canonical offset-bearing format; version timestamp semantics; migrate or explicitly mark legacy naive values as timezone-unknown without inventing an offset. | Cross-timezone and daylight-saving-fold tests, schema round trips requiring offsets, deterministic ordering tests, and migration fixtures for legacy naive sidecars. |
@@ -184,8 +184,9 @@ The current implementation includes useful controls:
 - SQLite statements bind data values;
 - PDF metadata writing is disabled by default;
 - full OCR text is not stored in sidecars by default;
-- model downloads require confirmation, although scan performs reachability and,
-  when reachable, model discovery before checking whether the inbox contains work.
+- model downloads require confirmation; discovery failure is distinct from an
+  empty model list and stops without a pull; pull streams require an explicit
+  success event and are then re-listed and verified before processing.
 
 These controls have important limits:
 
@@ -212,8 +213,10 @@ These controls have important limits:
   extension can make PDF and companion destinations alias each other;
 - paired artifact moves and sidecar writes are not transactional;
 - every scan contacts the configured Ollama service before inbox inspection;
-  when reachable it lists models, and if the configured model is absent, an
-  accepted prompt persists a model there even for an empty inbox or scan dry-run;
+  when reachable it discovers models. Discovery failure and declined pulls stop
+  without requesting a model-store write; a failed or incomplete pull can leave
+  partial external state; explicit stream success is re-listed and verified,
+  and a verified pull persists a model even for an empty inbox or scan dry-run;
 - with indexing enabled, scan dry-run initializes or updates the schema once any
   PDF is present, while scan/reprocess query the duplicate index after usable
   OCR; only successful analysis creates `_DryRun` and persists a model-named
@@ -316,9 +319,11 @@ The technical lists below define the actual gates.
   command performs only its documented reads and no persistent write or move;
   scan/reprocess must not access databases/indexes or create directories/artifacts,
   while approve/reject may read the selected sidecar but cannot mutate it;
-- scan preflight tests for empty and populated inboxes, installed, declined, and
-  accepted missing-model paths, with every network and external model-store
-  effect disclosed separately from document-processing results;
+- scan preflight tests for empty and populated inboxes, discovery failure,
+  installed model, declined pull, failed/partial or incomplete pull,
+  success-without-verification, and verified pull, with every network and
+  external model-store effect disclosed separately from document-processing
+  results;
 
 ### Before allowing remote inference
 

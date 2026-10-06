@@ -12,6 +12,22 @@ from aktenfux.config import AktenfuxConfig
 runner = CliRunner()
 
 
+def test_setup_stops_cleanly_when_model_discovery_fails(tmp_path):
+    cfg = AktenfuxConfig({"base_dir": str(tmp_path)})
+
+    with (
+        patch("aktenfux.config.load_config", return_value=cfg),
+        patch("aktenfux.ollama_manager.is_ollama_running", return_value=True),
+        patch("aktenfux.ollama_manager.list_models", return_value=None),
+        patch("aktenfux.ollama_manager.test_model") as test_model,
+    ):
+        result = runner.invoke(app, ["setup"])
+
+    assert result.exit_code == 1, result.output
+    assert "model discovery failed" in result.output
+    test_model.assert_not_called()
+
+
 def test_reprocess_dry_run_reports_conditional_effects_as_possible(tmp_path):
     cfg = AktenfuxConfig(
         {

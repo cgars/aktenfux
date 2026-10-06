@@ -23,10 +23,11 @@ dry_run_dir: "_DryRun"
 # FIRST-RELEASE TARGET: keep this on a loopback address. The current MVP does
 # not enforce loopback-only access; a LAN or internet URL sends OCR text and
 # summaries to that endpoint and may use plaintext HTTP.
-# Every scan contacts this endpoint before inspecting the inbox. When the
-# service is reachable, it lists models; if the configured model is missing,
-# accepting the prompt downloads and persists it even when the inbox is empty
-# or scan dry-run was selected.
+# Every scan contacts this endpoint before inspecting the inbox. Model discovery
+# failure stops without a pull. If discovery succeeds and the model is missing,
+# declining stops; an accepted pull may fail with partial external state. Its
+# stream must report explicit success; the model is then re-listed and verified,
+# but a verified pull persists even for an empty inbox or scan dry-run.
 ollama_url: "http://localhost:11434"
 ollama_model: "qwen3:8b"
 # Timeout in seconds for LLM inference calls (increase for slower hardware or larger models).

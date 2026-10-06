@@ -39,7 +39,7 @@ For each item, describe the impact or explain why there is none.
 
 - [ ] Full `pytest` suite passes.
 - [ ] Focused success, failure, adversarial-input, and interruption tests were added or updated.
-- [ ] A path-sensitive effect ledger traces every changed CLI path through preflight calls, helper calls, conditionals, confirmations, exceptions, and early returns.
+- [ ] A path-sensitive effect ledger traces every changed CLI path through preflight calls, helper calls, conditionals, confirmations, exceptions, catch-and-default behavior, and early returns; unknown/error is not conflated with empty, absent, false, or successful.
 - [ ] The reverse effect inventory maps every changed filesystem writer, database connector, network client, external-service write, and subprocess boundary back to all reachable commands.
 - [ ] Every dry-run-capable command was checked separately against its documented filesystem, database, network, external-service, index, and lifecycle read/write/move contract.
 - [ ] User-visible completion messages distinguish observed effects from conditional or merely possible effects.

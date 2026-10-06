@@ -49,9 +49,10 @@ from the command's intended purpose:
 2. Record filesystem reads, existence checks, directory creation, writes,
    moves, database connections, network calls, external-service storage, and
    terminal/log output in execution order.
-3. Split the ledger at configuration branches, confirmations, exceptions, and
-   every early return; do not merge `--dry-run` and normal paths or commands
-   that merely share a helper.
+3. Split the ledger at configuration branches, confirmations, exceptions,
+   caught exceptions that return defaults, and every early return. Never treat
+   unknown/error as empty, absent, false, or successful. Do not merge
+   `--dry-run` and normal paths or commands that merely share a helper.
 4. Mark each effect as unconditional, conditional, or impossible on that path.
 5. Verify claims against focused tests. A completion message may say an effect
    happened only when the application returns or observes evidence for it;

@@ -1,7 +1,7 @@
 # Aktenfux — ELI5 Guide
 
 **Status:** Maintained design guide  
-**Last updated:** 2026-09-25
+**Last updated:** 2026-10-06
 
 This guide explains the design in everyday language. The comparisons clarify the system; they are not security guarantees by themselves.
 
@@ -79,7 +79,7 @@ If only the first part of a long document is shown to the model, that is like as
 
 Dry-run is a rehearsal. Both scan and reprocess dry-run enter the same unsafe analysis branch. They do not move the source PDF. With indexing enabled, scan can create or update SQLite as soon as at least one PDF is present; reprocess can create or access it after finding usable text. Only a successful analysis creates `_DryRun` and writes or replaces a JSON result. Early no-text or model-failure returns therefore do not perform all of the same effects, so the CLI must describe them as possible hazards rather than claim they happened.
 
-Scan also checks the configured Ollama service before it even looks for PDFs. When the service is reachable, it lists the installed models; if the configured model is missing, Aktenfux can ask permission to download and persist several gigabytes there even when the inbox is empty or scan dry-run was selected. The prompt is an important control, but model acquisition should be an explicit setup action rather than a hidden part of document rehearsal.
+Scan also checks the configured Ollama service before it even looks for PDFs. When model discovery fails, Aktenfux now stops instead of pretending the model list was empty. If discovery succeeds and the configured model is genuinely missing, Aktenfux can ask permission to download several gigabytes even when the inbox is empty or scan dry-run was selected. Declining stops without a pull. A failed or incomplete pull stops but may leave partial data at Ollama. Even after the stream explicitly reports success, Aktenfux checks a fresh model list before document processing continues. The prompt and verification are useful controls, but model acquisition should be an explicit setup action rather than a hidden part of document rehearsal.
 
 The JSON filename comes directly from untrusted model output: an absolute name or `..` can escape `_DryRun` and replace a file elsewhere. These state changes are critical release-gate gaps, not merely a filename-collision problem. Target behavior must ignore model-supplied path strings, derive safe names locally, validate exact roots, and return or display the proposed sidecar, destination, and changes without creating or accessing a database or persisting a directory, PDF, sidecar, Markdown file, index row, or lifecycle state.
 
