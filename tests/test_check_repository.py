@@ -1,13 +1,19 @@
 """Focused tests for repository verification helpers."""
+
+import subprocess
 from pathlib import Path
 
+import pytest
+
 from scripts.check_repository import (
+    check_git_artifacts,
     check_named_diagrams,
     check_markdown_links,
     check_markdown_tables,
     check_runtime_artifacts,
     markdown_files,
 )
+from scripts.render_architecture import discover_diagrams
 
 
 def test_markdown_links_accept_existing_relative_target(tmp_path, monkeypatch):
@@ -123,7 +129,7 @@ def test_named_diagrams_reject_unmarked_mermaid_block(tmp_path, monkeypatch):
     source = tmp_path / "architecture.md"
     source.write_text(
         "<!-- diagram: named -->\n```mermaid\nflowchart TD\nA --> B\n```\n\n"
-        "```mermaid\nflowchart TD\nC --> D\n```\n",
+        "~~~mermaid\nflowchart TD\nC --> D\n~~~\n",
         encoding="utf-8",
     )
     monkeypatch.setattr("scripts.check_repository.REPO_ROOT", tmp_path)
@@ -132,3 +138,43 @@ def test_named_diagrams_reject_unmarked_mermaid_block(tmp_path, monkeypatch):
 
     assert len(errors) == 1
     assert "lacks" in errors[0]
+
+
+def test_renderer_discovers_named_tilde_fence(tmp_path):
+    source = tmp_path / "architecture.md"
+    source.write_text(
+        "<!-- diagram: tilde -->\n~~~mermaid\nflowchart TD\nA --> B\n~~~\n",
+        encoding="utf-8",
+    )
+
+    assert discover_diagrams([source]) == [("tilde", "flowchart TD\nA --> B\n")]
+
+
+def test_git_artifacts_inspect_staged_blob_not_replacement(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    candidate = tmp_path / "private.data"
+    candidate.write_bytes(b"SQLite format 3\x00" + b"synthetic")
+    subprocess.run(["git", "add", "private.data"], cwd=tmp_path, check=True)
+    candidate.write_text("safe replacement", encoding="utf-8")
+
+    errors = check_git_artifacts(root=tmp_path)
+
+    assert len(errors) == 1
+    assert "index artifact: private.data" in errors[0]
+
+
+def test_git_artifacts_inspect_staged_symlink_mode_not_replacement(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    candidate = tmp_path / "pointer.md"
+    try:
+        candidate.symlink_to("outside.md")
+    except OSError:
+        pytest.skip("symlinks are unavailable on this platform")
+    subprocess.run(["git", "add", "pointer.md"], cwd=tmp_path, check=True)
+    candidate.unlink()
+    candidate.write_text("safe replacement", encoding="utf-8")
+
+    errors = check_git_artifacts(root=tmp_path)
+
+    assert len(errors) == 1
+    assert "index artifact: pointer.md" in errors[0]

@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
@@ -24,7 +25,11 @@ LINK_PATTERN = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 REFERENCE_DEFINITION_PATTERN = re.compile(
     r"^\s{0,3}\[[^\]]+\]:\s*(?:<([^>]+)>|(\S+))", re.MULTILINE
 )
-MERMAID_FENCE_PATTERN = re.compile(r"```mermaid\s*\n.*?```", re.DOTALL)
+MERMAID_FENCE_PATTERN = re.compile(
+    r"(?P<fence>`{3,}|~{3,})mermaid[^\n]*\n"
+    r".*?(?P=fence)[ \t]*(?:\n|$)",
+    re.DOTALL,
+)
 TABLE_DIVIDER = re.compile(r":?-{3,}:?")
 SQLITE_HEADER = b"SQLite format 3\x00"
 SQLITE_SUFFIXES = (
@@ -50,6 +55,14 @@ RUNTIME_ROOTS = {
     "_DryRun",
     "Archive",
 }
+
+
+@dataclass(frozen=True)
+class GitEntry:
+    path: str
+    mode: str
+    sha: str
+    source: str
 
 
 def markdown_files(root: Path, repository_paths: list[str]) -> list[Path]:
@@ -188,6 +201,72 @@ def _repository_paths(root: Path = REPO_ROOT) -> list[str]:
     ]
 
 
+def _parse_git_entries(raw: bytes, source: str) -> list[GitEntry]:
+    entries: list[GitEntry] = []
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        metadata, raw_path = record.split(b"\t", maxsplit=1)
+        fields = metadata.decode("ascii").split()
+        if source == "index":
+            mode, sha, stage = fields
+            if stage != "0":
+                raise RuntimeError(f"unmerged Git index entry: {raw_path!r}")
+        else:
+            mode, object_type, sha = fields
+            if object_type != "blob":
+                continue
+        entries.append(
+            GitEntry(
+                path=raw_path.decode("utf-8"),
+                mode=mode,
+                sha=sha,
+                source=source,
+            )
+        )
+    return entries
+
+
+def _git_object_entries(root: Path = REPO_ROOT) -> list[GitEntry]:
+    entries: list[GitEntry] = []
+    if subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "HEAD"],
+        cwd=root,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0:
+        head = subprocess.run(
+            ["git", "ls-tree", "-rz", "--full-tree", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+        entries.extend(_parse_git_entries(head.stdout, "HEAD"))
+    index = subprocess.run(
+        ["git", "ls-files", "--stage", "-z"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    entries.extend(_parse_git_entries(index.stdout, "index"))
+    return entries
+
+
+def _git_blob_header(sha: str, root: Path) -> bytes:
+    process = subprocess.Popen(
+        ["git", "cat-file", "blob", sha],
+        cwd=root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    assert process.stdout is not None
+    header = process.stdout.read(len(SQLITE_HEADER))
+    process.stdout.close()
+    process.wait()
+    return header
+
+
 def _is_sqlite_file(path: PurePosixPath, root: Path) -> bool:
     if path.name.lower().endswith(SQLITE_SUFFIXES):
         return True
@@ -229,6 +308,45 @@ def check_runtime_artifacts(
     return errors
 
 
+def check_git_artifacts(
+    entries: list[GitEntry] | None = None, root: Path = REPO_ROOT
+) -> list[str]:
+    errors: list[str] = []
+    seen: set[tuple[str, str, str]] = set()
+    headers: dict[str, bytes] = {}
+    for entry in entries if entries is not None else _git_object_entries(root):
+        identity = (entry.path, entry.mode, entry.sha)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        path = PurePosixPath(entry.path)
+        if entry.sha not in headers:
+            headers[entry.sha] = _git_blob_header(entry.sha, root)
+        forbidden = (
+            entry.mode == "120000"
+            or path.name == "config.yaml"
+            or path.name == ".env"
+            or (path.name.startswith(".env.") and path.name != ".env.example")
+            or path.suffix == ".pyc"
+            or path.name.lower().endswith(SQLITE_SUFFIXES)
+            or path.name.lower().endswith(("-journal", "-wal", "-shm"))
+            or "__pycache__" in path.parts
+            or "node_modules" in path.parts
+            or (path.parts and path.parts[0] in RUNTIME_ROOTS)
+            or (
+                len(path.parts) >= 3
+                and path.parts[:2] == ("build", "architecture")
+                and path.suffix == ".svg"
+            )
+            or headers[entry.sha] == SQLITE_HEADER
+        )
+        if forbidden:
+            errors.append(
+                f"forbidden {entry.source} artifact: {entry.path} ({entry.sha[:12]})"
+            )
+    return errors
+
+
 def check_named_diagrams(sources: list[Path] | None = None) -> list[str]:
     sources = sources or [REPO_ROOT / source for source in DEFAULT_SOURCES]
     try:
@@ -255,6 +373,7 @@ def main() -> int:
     artifact_errors = check_runtime_artifacts(repository_paths)
     errors = [
         *artifact_errors,
+        *check_git_artifacts(),
         *check_markdown_links(paths),
         *check_markdown_tables(paths),
         *check_named_diagrams(),

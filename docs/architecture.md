@@ -349,16 +349,20 @@ advisories.
 `scripts/verify.py` is the canonical cross-platform pre-push and CI entry point.
 It runs the full Python tests, compiles Python sources, invokes repository checks,
 and checks unstaged, staged, and committed branch diffs for whitespace errors.
-`scripts/check_repository.py` validates relative Markdown links, table column
-counts, named Mermaid source discovery, and tracked or unignored runtime
-artifacts. The optional `make verify` target only delegates to the Python entry
-point. Running the harness reads repository sources, documentation, and Git
-metadata; its compilation and test subprocesses may write ignored
-`__pycache__`, `.pyc`, and `.pytest_cache` developer artifacts. Tests also create,
-write, move, and remove synthetic PDFs, sidecars, SQLite databases, and lifecycle
-directories inside pytest-managed temporary roots. They do not contact the
-user's configured Ollama endpoint or access the user's configured lifecycle
-directories.
+`scripts/check_repository.py` validates inline and reference-style relative
+Markdown links, table column counts with optional edge pipes, named Mermaid
+source discovery for backtick and tilde fences, and runtime artifacts. It
+examines committed and staged Git blob bytes and modes independently from
+unignored working files, so replacing or deleting a staged database or symlink
+in the worktree cannot hide the object that would be pushed. The optional
+`make verify` target only delegates to the Python entry point. Running the
+harness reads repository sources, documentation, Git metadata, and the first
+bytes of proposed Git objects; its compilation and test subprocesses may write
+ignored `__pycache__`, `.pyc`, and `.pytest_cache` developer artifacts. Tests
+also create, write, move, and remove synthetic PDFs, sidecars, SQLite databases,
+and lifecycle directories inside pytest-managed temporary roots. They do not
+contact the user's configured Ollama endpoint or access the user's configured
+lifecycle directories.
 
 `.github/workflows/verification.yml` runs the same command for every pull
 request and push to `main`. Its checkout and Python setup actions are pinned to

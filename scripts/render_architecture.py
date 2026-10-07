@@ -12,8 +12,9 @@ import tempfile
 from pathlib import Path
 
 DIAGRAM_PATTERN = re.compile(
-    r"<!--\s*diagram:\s*([a-z0-9-]+)\s*-->\s*"
-    + r"\x60\x60\x60mermaid\s*\n(.*?)\x60\x60\x60",
+    r"<!--\s*diagram:\s*(?P<name>[a-z0-9-]+)\s*-->\s*"
+    r"(?P<fence>`{3,}|~{3,})mermaid[^\n]*\n"
+    r"(?P<body>.*?)(?P=fence)[ \t]*(?:\n|$)",
     re.DOTALL,
 )
 
@@ -24,7 +25,10 @@ def discover_diagrams(sources: list[Path]) -> list[tuple[str, str]]:
     diagrams: list[tuple[str, str]] = []
     for source in sources:
         content = source.read_text(encoding="utf-8")
-        diagrams.extend(DIAGRAM_PATTERN.findall(content))
+        diagrams.extend(
+            (match.group("name"), match.group("body"))
+            for match in DIAGRAM_PATTERN.finditer(content)
+        )
 
     if not diagrams:
         raise SystemExit("No named Mermaid diagrams found")
