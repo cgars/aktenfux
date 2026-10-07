@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Callable
 from urllib.parse import unquote, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,19 +18,16 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.render_architecture import (  # noqa: E402
     DEFAULT_SOURCES,
-    DIAGRAM_PATTERN,
     discover_diagrams,
+    discover_diagrams_from_texts,
+    find_mermaid_blocks,
+    named_mermaid_blocks,
 )
 
 
 LINK_PATTERN = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 REFERENCE_DEFINITION_PATTERN = re.compile(
     r"^\s{0,3}\[[^\]]+\]:\s*(?:<([^>]+)>|(\S+))", re.MULTILINE
-)
-MERMAID_FENCE_PATTERN = re.compile(
-    r"(?P<fence>`{3,}|~{3,})mermaid[^\n]*\n"
-    r".*?(?P=fence)[ \t]*(?:\n|$)",
-    re.DOTALL,
 )
 TABLE_DIVIDER = re.compile(r":?-{3,}:?")
 SQLITE_HEADER = b"SQLite format 3\x00"
@@ -83,36 +82,49 @@ def _link_destination(raw: str) -> str:
     return raw.split(maxsplit=1)[0]
 
 
+def _check_markdown_links_text(
+    label: str,
+    content: str,
+    target_exists: Callable[[str], bool],
+) -> list[str]:
+    errors: list[str] = []
+    for line_number, line in enumerate(content.splitlines(), start=1):
+        for raw_target in LINK_PATTERN.findall(line):
+            target = _link_destination(raw_target)
+            parsed = urlsplit(target)
+            if not target or target.startswith("#") or parsed.scheme or parsed.netloc:
+                continue
+            relative = unquote(parsed.path)
+            if relative and not target_exists(relative):
+                errors.append(
+                    f"{label}:{line_number}: "
+                    f"missing relative link target {relative!r}"
+                )
+    for match in REFERENCE_DEFINITION_PATTERN.finditer(content):
+        target = match.group(1) or match.group(2)
+        parsed = urlsplit(target)
+        if target.startswith("#") or parsed.scheme or parsed.netloc:
+            continue
+        relative = unquote(parsed.path)
+        if relative and not target_exists(relative):
+            line_number = content.count("\n", 0, match.start()) + 1
+            errors.append(
+                f"{label}:{line_number}: missing relative link target {relative!r}"
+            )
+    return errors
+
+
 def check_markdown_links(paths: list[Path]) -> list[str]:
     errors: list[str] = []
     for source in paths:
-        for line_number, line in enumerate(
-            source.read_text(encoding="utf-8").splitlines(), start=1
-        ):
-            for raw_target in LINK_PATTERN.findall(line):
-                target = _link_destination(raw_target)
-                parsed = urlsplit(target)
-                if not target or target.startswith("#") or parsed.scheme or parsed.netloc:
-                    continue
-                relative = unquote(parsed.path)
-                if relative and not (source.parent / relative).exists():
-                    errors.append(
-                        f"{source.relative_to(REPO_ROOT)}:{line_number}: "
-                        f"missing relative link target {relative!r}"
-                    )
         content = source.read_text(encoding="utf-8")
-        for match in REFERENCE_DEFINITION_PATTERN.finditer(content):
-            target = match.group(1) or match.group(2)
-            parsed = urlsplit(target)
-            if target.startswith("#") or parsed.scheme or parsed.netloc:
-                continue
-            relative = unquote(parsed.path)
-            if relative and not (source.parent / relative).exists():
-                line_number = content.count("\n", 0, match.start()) + 1
-                errors.append(
-                    f"{source.relative_to(REPO_ROOT)}:{line_number}: "
-                    f"missing relative link target {relative!r}"
-                )
+        errors.extend(
+            _check_markdown_links_text(
+                str(source.relative_to(REPO_ROOT)),
+                content,
+                lambda relative, parent=source.parent: (parent / relative).exists(),
+            )
+        )
     return errors
 
 
@@ -140,41 +152,52 @@ def _table_cells(line: str) -> list[str]:
     return cells
 
 
+def _check_markdown_tables_text(label: str, content: str) -> list[str]:
+    errors: list[str] = []
+    lines = content.splitlines()
+    index = 0
+    while index + 1 < len(lines):
+        header = lines[index]
+        divider = lines[index + 1]
+        if "|" not in header or "|" not in divider:
+            index += 1
+            continue
+        header_cells = _table_cells(header)
+        divider_cells = _table_cells(divider)
+        if not divider_cells or not all(
+            TABLE_DIVIDER.fullmatch(cell.replace(" ", ""))
+            for cell in divider_cells
+        ):
+            index += 1
+            continue
+        expected = len(header_cells)
+        if len(divider_cells) != expected:
+            errors.append(
+                f"{label}:{index + 2}: "
+                f"table has {len(divider_cells)} columns; expected {expected}"
+            )
+        row = index + 2
+        while row < len(lines) and "|" in lines[row]:
+            actual = len(_table_cells(lines[row]))
+            if actual != expected:
+                errors.append(
+                    f"{label}:{row + 1}: "
+                    f"table has {actual} columns; expected {expected}"
+                )
+            row += 1
+        index = row
+    return errors
+
+
 def check_markdown_tables(paths: list[Path]) -> list[str]:
     errors: list[str] = []
     for source in paths:
-        lines = source.read_text(encoding="utf-8").splitlines()
-        index = 0
-        while index + 1 < len(lines):
-            header = lines[index]
-            divider = lines[index + 1]
-            if "|" not in header or "|" not in divider:
-                index += 1
-                continue
-            header_cells = _table_cells(header)
-            divider_cells = _table_cells(divider)
-            if not divider_cells or not all(
-                TABLE_DIVIDER.fullmatch(cell.replace(" ", ""))
-                for cell in divider_cells
-            ):
-                index += 1
-                continue
-            expected = len(header_cells)
-            if len(divider_cells) != expected:
-                errors.append(
-                    f"{source.relative_to(REPO_ROOT)}:{index + 2}: "
-                    f"table has {len(divider_cells)} columns; expected {expected}"
-                )
-            row = index + 2
-            while row < len(lines) and "|" in lines[row]:
-                actual = len(_table_cells(lines[row]))
-                if actual != expected:
-                    errors.append(
-                        f"{source.relative_to(REPO_ROOT)}:{row + 1}: "
-                        f"table has {actual} columns; expected {expected}"
-                    )
-                row += 1
-            index = row
+        errors.extend(
+            _check_markdown_tables_text(
+                str(source.relative_to(REPO_ROOT)),
+                source.read_text(encoding="utf-8"),
+            )
+        )
     return errors
 
 
@@ -267,6 +290,15 @@ def _git_blob_header(sha: str, root: Path) -> bytes:
     return header
 
 
+def _git_blob(sha: str, root: Path) -> bytes:
+    return subprocess.run(
+        ["git", "cat-file", "blob", sha],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
 def _is_sqlite_file(path: PurePosixPath, root: Path) -> bool:
     if path.name.lower().endswith(SQLITE_SUFFIXES):
         return True
@@ -296,7 +328,7 @@ def check_runtime_artifacts(
             or path.name.lower().endswith(("-journal", "-wal", "-shm"))
             or "__pycache__" in path.parts
             or "node_modules" in path.parts
-            or (path.parts and path.parts[0] in RUNTIME_ROOTS)
+            or any(part in RUNTIME_ROOTS for part in path.parts)
             or (
                 len(path.parts) >= 3
                 and path.parts[:2] == ("build", "architecture")
@@ -332,7 +364,7 @@ def check_git_artifacts(
             or path.name.lower().endswith(("-journal", "-wal", "-shm"))
             or "__pycache__" in path.parts
             or "node_modules" in path.parts
-            or (path.parts and path.parts[0] in RUNTIME_ROOTS)
+            or any(part in RUNTIME_ROOTS for part in path.parts)
             or (
                 len(path.parts) >= 3
                 and path.parts[:2] == ("build", "architecture")
@@ -347,33 +379,100 @@ def check_git_artifacts(
     return errors
 
 
-def check_named_diagrams(sources: list[Path] | None = None) -> list[str]:
-    sources = sources or [REPO_ROOT / source for source in DEFAULT_SOURCES]
+def _snapshot_target_exists(
+    source: PurePosixPath, relative: str, paths: set[str]
+) -> bool:
+    target = posixpath.normpath(str(source.parent / relative))
+    if target == ".." or target.startswith("../") or target.startswith("/"):
+        return False
+    prefix = target.rstrip("/") + "/"
+    return target in paths or any(path.startswith(prefix) for path in paths)
+
+
+def _check_named_diagram_texts(sources: list[tuple[str, str]]) -> list[str]:
     try:
-        discover_diagrams(sources)
+        discover_diagrams_from_texts(sources)
     except SystemExit as exc:
         return [f"Mermaid source check failed: {exc}"]
     errors: list[str] = []
-    for source in sources:
-        content = source.read_text(encoding="utf-8")
-        named_spans = [match.span() for match in DIAGRAM_PATTERN.finditer(content)]
-        for fence in MERMAID_FENCE_PATTERN.finditer(content):
-            if not any(start <= fence.start() and fence.end() <= end for start, end in named_spans):
-                line_number = content.count("\n", 0, fence.start()) + 1
+    for label, content in sources:
+        named_blocks = {block for _, block in named_mermaid_blocks(content)}
+        for block in find_mermaid_blocks(content):
+            line_number = content.count("\n", 0, block.start) + 1
+            if not block.closed:
+                errors.append(f"{label}:{line_number}: unclosed Mermaid fence")
+            if block not in named_blocks:
                 errors.append(
-                    f"{source.relative_to(REPO_ROOT)}:{line_number}: "
+                    f"{label}:{line_number}: "
                     "Mermaid block lacks a <!-- diagram: name --> marker"
                 )
     return errors
+
+
+def check_git_markdown(
+    entries: list[GitEntry] | None = None, root: Path = REPO_ROOT
+) -> list[str]:
+    """Check Markdown exactly as stored in committed and staged Git snapshots."""
+    entries = entries if entries is not None else _git_object_entries(root)
+    errors: list[str] = []
+    blob_cache: dict[str, bytes] = {}
+    default_sources = {source.as_posix() for source in DEFAULT_SOURCES}
+    for snapshot in ("HEAD", "index"):
+        snapshot_entries = [entry for entry in entries if entry.source == snapshot]
+        paths = {entry.path for entry in snapshot_entries}
+        markdown: list[tuple[GitEntry, str]] = []
+        for entry in snapshot_entries:
+            if not entry.path.endswith(".md") or entry.mode == "120000":
+                continue
+            if entry.sha not in blob_cache:
+                blob_cache[entry.sha] = _git_blob(entry.sha, root)
+            try:
+                content = blob_cache[entry.sha].decode("utf-8")
+            except UnicodeDecodeError:
+                errors.append(f"{snapshot} {entry.path}: Markdown is not UTF-8")
+                continue
+            markdown.append((entry, content))
+            label = f"{snapshot} {entry.path}"
+            source = PurePosixPath(entry.path)
+            errors.extend(
+                _check_markdown_links_text(
+                    label,
+                    content,
+                    lambda relative, source=source, paths=paths: _snapshot_target_exists(
+                        source, relative, paths
+                    ),
+                )
+            )
+            errors.extend(_check_markdown_tables_text(label, content))
+        diagram_sources = [
+            (f"{snapshot} {entry.path}", content)
+            for entry, content in markdown
+            if entry.path in default_sources
+        ]
+        if diagram_sources:
+            errors.extend(_check_named_diagram_texts(diagram_sources))
+    return errors
+
+
+def check_named_diagrams(sources: list[Path] | None = None) -> list[str]:
+    sources = sources or [REPO_ROOT / source for source in DEFAULT_SOURCES]
+    return _check_named_diagram_texts(
+        [
+            (str(source.relative_to(REPO_ROOT)), source.read_text(encoding="utf-8"))
+            for source in sources
+        ]
+    )
 
 
 def main() -> int:
     repository_paths = _repository_paths()
     paths = markdown_files(REPO_ROOT, repository_paths)
     artifact_errors = check_runtime_artifacts(repository_paths)
+    git_entries = _git_object_entries()
     errors = [
         *artifact_errors,
-        *check_git_artifacts(),
+        *check_git_artifacts(git_entries),
+        *check_git_markdown(git_entries),
         *check_markdown_links(paths),
         *check_markdown_tables(paths),
         *check_named_diagrams(),

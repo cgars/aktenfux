@@ -351,13 +351,15 @@ It runs the full Python tests, compiles Python sources, invokes repository check
 and checks unstaged, staged, and committed branch diffs for whitespace errors.
 `scripts/check_repository.py` validates inline and reference-style relative
 Markdown links, table column counts with optional edge pipes, named Mermaid
-source discovery for backtick and tilde fences, and runtime artifacts. It
-examines committed and staged Git blob bytes and modes independently from
-unignored working files, so replacing or deleting a staged database or symlink
-in the worktree cannot hide the object that would be pushed. The optional
-`make verify` target only delegates to the Python entry point. Running the
-harness reads repository sources, documentation, Git metadata, and the first
-bytes of proposed Git objects; its compilation and test subprocesses may write
+source discovery for CommonMark-compatible backtick and tilde fences, and
+runtime artifacts at any nested lifecycle depth. It examines committed and
+staged Git blob bytes and modes independently from unignored working files, so
+replacing or deleting a staged database, symlink, or invalid Markdown document
+in the worktree cannot hide the object that would be pushed. The optional `make
+verify` target only delegates to the Python entry point. Running the harness
+reads repository sources, documentation, Git metadata, complete proposed
+Markdown blobs, and the first bytes of other proposed Git objects; its
+compilation and test subprocesses may write
 ignored `__pycache__`, `.pyc`, and `.pytest_cache` developer artifacts. Tests
 also create, write, move, and remove synthetic PDFs, sidecars, SQLite databases,
 and lifecycle directories inside pytest-managed temporary roots. They do not

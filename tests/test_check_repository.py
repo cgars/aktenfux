@@ -7,6 +7,7 @@ import pytest
 
 from scripts.check_repository import (
     check_git_artifacts,
+    check_git_markdown,
     check_named_diagrams,
     check_markdown_links,
     check_markdown_tables,
@@ -97,6 +98,7 @@ def test_runtime_artifacts_reject_sensitive_generated_paths(tmp_path):
         [
             "config.yaml",
             "_Inbox/private.pdf",
+            "workspace/_Review/private.json",
             "archive.db",
             "index.sqlite3",
             "index.db-wal",
@@ -106,7 +108,7 @@ def test_runtime_artifacts_reject_sensitive_generated_paths(tmp_path):
         root=tmp_path,
     )
 
-    assert len(errors) == 7
+    assert len(errors) == 8
 
 
 def test_runtime_artifacts_allow_synthetic_test_files():
@@ -143,11 +145,92 @@ def test_named_diagrams_reject_unmarked_mermaid_block(tmp_path, monkeypatch):
 def test_renderer_discovers_named_tilde_fence(tmp_path):
     source = tmp_path / "architecture.md"
     source.write_text(
-        "<!-- diagram: tilde -->\n~~~mermaid\nflowchart TD\nA --> B\n~~~\n",
+        "<!-- diagram: tilde -->\n~~~mermaid\nflowchart TD\nA --> B\n~~~~\n",
         encoding="utf-8",
     )
 
     assert discover_diagrams([source]) == [("tilde", "flowchart TD\nA --> B\n")]
+
+
+def test_git_markdown_inspects_staged_blobs_not_worktree_replacements(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    readme = tmp_path / "README.md"
+    architecture = tmp_path / "docs" / "architecture.md"
+    architecture.parent.mkdir()
+    readme.write_text(
+        "[Missing](missing.md)\n\nFirst | Second\n---|---\nonly one |\n",
+        encoding="utf-8",
+    )
+    architecture.write_text(
+        "<!-- diagram: named -->\n```mermaid\nflowchart TD\nA --> B\n```\n\n"
+        "~~~mermaid\nflowchart TD\nC --> D\n~~~~\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "add", "README.md", "docs/architecture.md"],
+        cwd=tmp_path,
+        check=True,
+    )
+    readme.write_text("# Safe replacement\n", encoding="utf-8")
+    architecture.write_text(
+        "<!-- diagram: named -->\n```mermaid\nflowchart TD\nA --> B\n```\n",
+        encoding="utf-8",
+    )
+
+    errors = check_git_markdown(root=tmp_path)
+
+    assert any(
+        "index README.md" in error and "missing relative link" in error
+        for error in errors
+    )
+    assert any("index README.md" in error and "table has" in error for error in errors)
+    assert any(
+        "index docs/architecture.md" in error and "lacks" in error
+        for error in errors
+    )
+
+
+def test_git_markdown_inspects_committed_blob_not_staged_repair(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    readme = tmp_path / "README.md"
+    readme.write_text("[Missing](missing.md)\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Harness Test",
+            "-c",
+            "user.email=harness@example.invalid",
+            "commit",
+            "-qm",
+            "broken docs",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    readme.write_text("# Safe staged replacement\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+
+    errors = check_git_markdown(root=tmp_path)
+
+    assert any("HEAD README.md" in error and "missing relative link" in error for error in errors)
+    assert not any("index README.md" in error for error in errors)
+
+
+def test_git_artifacts_reject_nested_lifecycle_path(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    candidate = tmp_path / "workspace" / "_Inbox" / "private.pdf"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text("synthetic sensitive content", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "workspace/_Inbox/private.pdf"], cwd=tmp_path, check=True
+    )
+
+    errors = check_git_artifacts(root=tmp_path)
+
+    assert len(errors) == 1
+    assert "index artifact: workspace/_Inbox/private.pdf" in errors[0]
 
 
 def test_git_artifacts_inspect_staged_blob_not_replacement(tmp_path):
