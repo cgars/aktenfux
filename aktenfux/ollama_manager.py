@@ -1,6 +1,7 @@
 """Ollama availability and model management helpers."""
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import sys
@@ -45,17 +46,32 @@ def is_ollama_running(base_url: str = "http://localhost:11434") -> bool:
         return False
 
 
-def list_models(base_url: str = "http://localhost:11434") -> list[str]:
-    """Return the names of locally installed Ollama models."""
+def list_models(base_url: str = "http://localhost:11434") -> list[str] | None:
+    """Return installed model names, or ``None`` when discovery failed.
+
+    An empty list means discovery succeeded and no models were returned.  It
+    must remain distinct from an unavailable, unauthorized, timed-out, or
+    malformed discovery response so callers do not offer a download based on
+    unknown state.
+    """
     logger.debug("Listing Ollama models: url=%s timeout=%.0fs", base_url, _TIMEOUT)
     try:
         data = _get(f"{base_url}/api/tags")
-        models = [m["name"] for m in data.get("models", [])]
+        if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+            raise ValueError("Ollama model response must contain a models list")
+        models: list[str] = []
+        for item in data["models"]:
+            if not isinstance(item, dict):
+                raise ValueError("Ollama model entry must be an object")
+            name = item.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("Ollama model name must be a non-empty string")
+            models.append(name)
         logger.debug("Ollama models available: %s", models)
         return models
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not list Ollama models: %s", exc)
-        return []
+        return None
 
 
 def ensure_model(model_name: str, base_url: str = "http://localhost:11434") -> bool:
@@ -65,8 +81,15 @@ def ensure_model(model_name: str, base_url: str = "http://localhost:11434") -> b
     downloading it (models can be several GB).
     """
     installed = list_models(base_url)
+    if installed is None:
+        logger.error(
+            "Could not determine whether model '%s' is installed; refusing to offer a pull.",
+            model_name,
+        )
+        return False
+
     # Ollama model names may include a tag; match on name prefix too.
-    if any(m == model_name or m.startswith(model_name + ":") for m in installed):
+    if _model_is_listed(installed, model_name):
         logger.debug("Model '%s' is already installed locally.", model_name)
         return True
 
@@ -82,7 +105,28 @@ def ensure_model(model_name: str, base_url: str = "http://localhost:11434") -> b
         logger.info("Model download cancelled by user.")
         return False
 
-    return pull_model(model_name, base_url)
+    if not pull_model(model_name, base_url):
+        return False
+
+    refreshed = list_models(base_url)
+    if refreshed is None:
+        logger.error(
+            "Model pull completed, but installed models could not be verified; "
+            "refusing to continue."
+        )
+        return False
+    if not _model_is_listed(refreshed, model_name):
+        logger.error(
+            "Model pull completed, but '%s' was not reported as installed; "
+            "refusing to continue.",
+            model_name,
+        )
+        return False
+    return True
+
+
+def _model_is_listed(installed: list[str], model_name: str) -> bool:
+    return any(m == model_name or m.startswith(model_name + ":") for m in installed)
 
 
 def pull_model(model_name: str, base_url: str = "http://localhost:11434") -> bool:
@@ -98,12 +142,36 @@ def pull_model(model_name: str, base_url: str = "http://localhost:11434") -> boo
                 json={"name": model_name},
             ) as response:
                 response.raise_for_status()
+                completed = False
                 for line in response.iter_lines():
                     if line:
                         print(line)
+                        try:
+                            event = json.loads(line)
+                        except (TypeError, json.JSONDecodeError) as exc:
+                            raise RuntimeError(
+                                "Ollama pull stream returned malformed progress data"
+                            ) from exc
+                        if not isinstance(event, dict):
+                            raise RuntimeError(
+                                "Ollama pull stream returned a non-object event"
+                            )
+                        if "error" in event:
+                            raise RuntimeError("Ollama pull stream reported an error")
+                        if event.get("status") == "success":
+                            completed = True
+                if not completed:
+                    raise RuntimeError(
+                        "Ollama pull stream ended without a success event"
+                    )
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.error("Failed to pull model %s: %s", model_name, exc)
+        logger.error(
+            "Failed to pull model %s: %s. Ollama may retain partial model data; "
+            "inspect the configured endpoint before retrying.",
+            model_name,
+            exc,
+        )
         return False
 
 

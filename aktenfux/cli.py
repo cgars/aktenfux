@@ -52,7 +52,12 @@ def _load_config(config_path: Optional[Path], dry_run: Optional[bool]):
         cfg.dry_run = dry_run
 
     if cfg.dry_run:
-        console.print("[yellow]⚠  DRY-RUN mode active – no files will be moved.[/yellow]")
+        console.print(
+            "[bold red]⚠  CURRENT DRY-RUN IS NOT MUTATION-FREE:[/bold red] PDFs are not moved, "
+            "but scan and reprocess dry-run can create/access SQLite state and write a model-named "
+            "JSON result that can escape _DryRun and replace another file. Use synthetic, "
+            "disposable input only."
+        )
 
     return cfg
 
@@ -105,7 +110,7 @@ def init(
     if cfg.dry_run:
         console.print(
             "[yellow]Reminder:[/yellow] dry_run is ON in config.yaml. "
-            "Set it to false when you are ready for production use."
+            "Disable it only for deliberate pre-release testing with synthetic, disposable input."
         )
 
 
@@ -149,24 +154,31 @@ def setup(
 
     if running:
         models = om.list_models(cfg.ollama_url)
-        model_installed = any(
-            m == cfg.ollama_model or m.startswith(cfg.ollama_model + ":")
-            for m in models
-        )
-        if model_installed:
-            console.print(f"[green]✓[/green] Model '{cfg.ollama_model}' is installed.")
-        else:
+        if models is None:
             console.print(
-                f"[yellow]![/yellow] Model '{cfg.ollama_model}' is not installed. "
-                "Run 'afu scan' once and you will be prompted to download it."
+                "[red]✗[/red] Could not determine which models are installed; "
+                "model discovery failed."
             )
-
-        console.print("Running quick model test …")
-        if om.test_model(cfg.ollama_model, cfg.ollama_url):
-            console.print("[green]✓[/green] Model test passed.")
-        else:
-            console.print("[red]✗[/red] Model test failed.")
             ok = False
+        else:
+            model_installed = any(
+                m == cfg.ollama_model or m.startswith(cfg.ollama_model + ":")
+                for m in models
+            )
+            if model_installed:
+                console.print(f"[green]✓[/green] Model '{cfg.ollama_model}' is installed.")
+            else:
+                console.print(
+                    f"[yellow]![/yellow] Model '{cfg.ollama_model}' is not installed. "
+                    "Run 'afu scan' once and you will be prompted to download it."
+                )
+
+            console.print("Running quick model test …")
+            if om.test_model(cfg.ollama_model, cfg.ollama_url):
+                console.print("[green]✓[/green] Model test passed.")
+            else:
+                console.print("[red]✗[/red] Model test failed.")
+                ok = False
 
     if ok:
         console.print("[green]Setup check passed.[/green]")
@@ -383,7 +395,18 @@ def reprocess(
 
     try:
         reprocess_document(doc_id, cfg)
-        console.print(f"[green]✓[/green] Reprocessed: {doc_id}")
+        if cfg.dry_run:
+            console.print(
+                f"[yellow]![/yellow] Reprocess dry-run finished. Depending on the "
+                f"processing outcome and configuration, it may have written JSON and "
+                f"accessed or created SQLite state: {doc_id}"
+            )
+        else:
+            console.print(
+                f"[yellow]![/yellow] Reprocess command finished. The current pipeline "
+                f"does not return an outcome receipt; check _Review, _Error, and the "
+                f"logs before treating it as successful: {doc_id}"
+            )
     except FileNotFoundError as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
