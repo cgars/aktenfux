@@ -354,8 +354,11 @@ counts, named Mermaid source discovery, and tracked or unignored runtime
 artifacts. The optional `make verify` target only delegates to the Python entry
 point. Running the harness reads repository sources, documentation, and Git
 metadata; its compilation and test subprocesses may write ignored
-`__pycache__`, `.pyc`, and `.pytest_cache` developer artifacts. It does not
-contact configured Ollama endpoints or access Aktenfux lifecycle directories.
+`__pycache__`, `.pyc`, and `.pytest_cache` developer artifacts. Tests also create,
+write, move, and remove synthetic PDFs, sidecars, SQLite databases, and lifecycle
+directories inside pytest-managed temporary roots. They do not contact the
+user's configured Ollama endpoint or access the user's configured lifecycle
+directories.
 
 `.github/workflows/verification.yml` runs the same command for every pull
 request and push to `main`. Its checkout and Python setup actions are pinned to

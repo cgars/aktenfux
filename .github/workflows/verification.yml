@@ -25,4 +25,6 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -e ".[dev]"
       - name: Run repository verification
-        run: python scripts/verify.py
+        env:
+          VERIFY_BASE_REF: ${{ github.event.before || github.event.pull_request.base.sha || 'HEAD^' }}
+        run: python scripts/verify.py --base-ref "$VERIFY_BASE_REF"

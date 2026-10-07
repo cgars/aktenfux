@@ -224,8 +224,10 @@ validates relative Markdown links and table structure, checks named Mermaid
 sources, and rejects tracked or unignored runtime artifacts. Actual Mermaid
 rendering remains a separate CI gate because it requires the lockfile-selected
 headless browser. The harness does not access Aktenfux document directories or
-network services, but Python compilation and test execution may create ignored
-`__pycache__` and `.pytest_cache` developer caches.
+network services configured by the user. Python compilation and test execution
+may create ignored `__pycache__` and `.pytest_cache` developer caches; tests also
+create and mutate synthetic PDFs, sidecars, SQLite databases, and lifecycle
+directories under pytest-managed temporary roots.
 
 ---
 

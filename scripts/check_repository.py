@@ -2,6 +2,7 @@
 """Check repository documentation and tracked-artifact hygiene."""
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -12,12 +13,34 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.render_architecture import DEFAULT_SOURCES, discover_diagrams  # noqa: E402
+from scripts.render_architecture import (  # noqa: E402
+    DEFAULT_SOURCES,
+    DIAGRAM_PATTERN,
+    discover_diagrams,
+)
 
 
 LINK_PATTERN = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+REFERENCE_DEFINITION_PATTERN = re.compile(
+    r"^\s{0,3}\[[^\]]+\]:\s*(?:<([^>]+)>|(\S+))", re.MULTILINE
+)
+MERMAID_FENCE_PATTERN = re.compile(r"```mermaid\s*\n.*?```", re.DOTALL)
 TABLE_DIVIDER = re.compile(r":?-{3,}:?")
-IGNORED_PARTS = {".git", ".venv", "build", "node_modules"}
+SQLITE_HEADER = b"SQLite format 3\x00"
+SQLITE_SUFFIXES = (
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".db-journal",
+    ".db-wal",
+    ".db-shm",
+    ".sqlite-journal",
+    ".sqlite-wal",
+    ".sqlite-shm",
+    ".sqlite3-journal",
+    ".sqlite3-wal",
+    ".sqlite3-shm",
+)
 RUNTIME_ROOTS = {
     "_Inbox",
     "_Review",
@@ -29,11 +52,14 @@ RUNTIME_ROOTS = {
 }
 
 
-def markdown_files(root: Path) -> list[Path]:
+def markdown_files(root: Path, repository_paths: list[str]) -> list[Path]:
+    """Return tracked and proposed Markdown, excluding Git-ignored environments."""
     return sorted(
-        path
-        for path in root.rglob("*.md")
-        if not any(part in IGNORED_PARTS for part in path.relative_to(root).parts)
+        root / path
+        for path in repository_paths
+        if path.endswith(".md")
+        and (root / path).is_file()
+        and not (root / path).is_symlink()
     )
 
 
@@ -61,6 +87,19 @@ def check_markdown_links(paths: list[Path]) -> list[str]:
                         f"{source.relative_to(REPO_ROOT)}:{line_number}: "
                         f"missing relative link target {relative!r}"
                     )
+        content = source.read_text(encoding="utf-8")
+        for match in REFERENCE_DEFINITION_PATTERN.finditer(content):
+            target = match.group(1) or match.group(2)
+            parsed = urlsplit(target)
+            if target.startswith("#") or parsed.scheme or parsed.netloc:
+                continue
+            relative = unquote(parsed.path)
+            if relative and not (source.parent / relative).exists():
+                line_number = content.count("\n", 0, match.start()) + 1
+                errors.append(
+                    f"{source.relative_to(REPO_ROOT)}:{line_number}: "
+                    f"missing relative link target {relative!r}"
+                )
     return errors
 
 
@@ -96,7 +135,7 @@ def check_markdown_tables(paths: list[Path]) -> list[str]:
         while index + 1 < len(lines):
             header = lines[index]
             divider = lines[index + 1]
-            if not (header.strip().startswith("|") and divider.strip().startswith("|")):
+            if "|" not in header or "|" not in divider:
                 index += 1
                 continue
             header_cells = _table_cells(header)
@@ -114,7 +153,7 @@ def check_markdown_tables(paths: list[Path]) -> list[str]:
                     f"table has {len(divider_cells)} columns; expected {expected}"
                 )
             row = index + 2
-            while row < len(lines) and lines[row].strip().startswith("|"):
+            while row < len(lines) and "|" in lines[row]:
                 actual = len(_table_cells(lines[row]))
                 if actual != expected:
                     errors.append(
@@ -126,7 +165,7 @@ def check_markdown_tables(paths: list[Path]) -> list[str]:
     return errors
 
 
-def _repository_paths() -> list[str]:
+def _repository_paths(root: Path = REPO_ROOT) -> list[str]:
     result = subprocess.run(
         [
             "git",
@@ -136,23 +175,46 @@ def _repository_paths() -> list[str]:
             "--exclude-standard",
             "-z",
         ],
-        cwd=REPO_ROOT,
+        cwd=root,
         check=True,
         capture_output=True,
     )
-    return [entry.decode("utf-8") for entry in result.stdout.split(b"\0") if entry]
+    return [
+        decoded
+        for entry in result.stdout.split(b"\0")
+        if entry
+        if (decoded := entry.decode("utf-8"))
+        and os.path.lexists(root / decoded)
+    ]
 
 
-def check_runtime_artifacts(paths: list[str]) -> list[str]:
+def _is_sqlite_file(path: PurePosixPath, root: Path) -> bool:
+    if path.name.lower().endswith(SQLITE_SUFFIXES):
+        return True
+    candidate = root / path
+    if candidate.is_symlink() or not candidate.is_file():
+        return False
+    try:
+        with candidate.open("rb") as handle:
+            return handle.read(len(SQLITE_HEADER)) == SQLITE_HEADER
+    except OSError:
+        return False
+
+
+def check_runtime_artifacts(
+    paths: list[str], root: Path = REPO_ROOT
+) -> list[str]:
     errors: list[str] = []
     for raw_path in paths:
         path = PurePosixPath(raw_path)
         forbidden = (
-            path.name == "config.yaml"
+            (root / path).is_symlink()
+            or path.name == "config.yaml"
             or path.name == ".env"
             or (path.name.startswith(".env.") and path.name != ".env.example")
             or path.suffix == ".pyc"
-            or path.name.endswith((".db", ".db-journal"))
+            or _is_sqlite_file(path, root)
+            or path.name.lower().endswith(("-journal", "-wal", "-shm"))
             or "__pycache__" in path.parts
             or "node_modules" in path.parts
             or (path.parts and path.parts[0] in RUNTIME_ROOTS)
@@ -167,21 +229,35 @@ def check_runtime_artifacts(paths: list[str]) -> list[str]:
     return errors
 
 
-def check_named_diagrams() -> list[str]:
+def check_named_diagrams(sources: list[Path] | None = None) -> list[str]:
+    sources = sources or [REPO_ROOT / source for source in DEFAULT_SOURCES]
     try:
-        discover_diagrams([REPO_ROOT / source for source in DEFAULT_SOURCES])
+        discover_diagrams(sources)
     except SystemExit as exc:
         return [f"Mermaid source check failed: {exc}"]
-    return []
+    errors: list[str] = []
+    for source in sources:
+        content = source.read_text(encoding="utf-8")
+        named_spans = [match.span() for match in DIAGRAM_PATTERN.finditer(content)]
+        for fence in MERMAID_FENCE_PATTERN.finditer(content):
+            if not any(start <= fence.start() and fence.end() <= end for start, end in named_spans):
+                line_number = content.count("\n", 0, fence.start()) + 1
+                errors.append(
+                    f"{source.relative_to(REPO_ROOT)}:{line_number}: "
+                    "Mermaid block lacks a <!-- diagram: name --> marker"
+                )
+    return errors
 
 
 def main() -> int:
-    paths = markdown_files(REPO_ROOT)
+    repository_paths = _repository_paths()
+    paths = markdown_files(REPO_ROOT, repository_paths)
+    artifact_errors = check_runtime_artifacts(repository_paths)
     errors = [
+        *artifact_errors,
         *check_markdown_links(paths),
         *check_markdown_tables(paths),
         *check_named_diagrams(),
-        *check_runtime_artifacts(_repository_paths()),
     ]
     if errors:
         for error in errors:
