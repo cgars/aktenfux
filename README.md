@@ -210,7 +210,22 @@ pytest
 
 # Run tests with coverage
 pytest --cov=aktenfux --cov-report=term-missing
+
+# Run the complete pre-push verification harness
+python scripts/verify.py
+
+# Optional convenience wrapper on systems with make
+make verify
 ```
+
+The verification harness runs the complete Python test suite, compiles the
+Python sources, checks working-tree and branch diffs for whitespace errors,
+validates relative Markdown links and table structure, checks named Mermaid
+sources, and rejects tracked or unignored runtime artifacts. Actual Mermaid
+rendering remains a separate CI gate because it requires the lockfile-selected
+headless browser. The harness does not access Aktenfux document directories or
+network services, but Python compilation and test execution may create ignored
+`__pycache__` and `.pytest_cache` developer caches.
 
 ---
 

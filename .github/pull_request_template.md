@@ -37,6 +37,7 @@ For each item, describe the impact or explain why there is none.
 
 ## Verification
 
+- [ ] The canonical `python scripts/verify.py` harness passes before the first push.
 - [ ] Full `pytest` suite passes.
 - [ ] Focused success, failure, adversarial-input, and interruption tests were added or updated.
 - [ ] A path-sensitive effect ledger traces every changed CLI path through preflight calls, helper calls, conditionals, confirmations, exceptions, catch-and-default behavior, and early returns; unknown/error is not conflated with empty, absent, false, or successful.

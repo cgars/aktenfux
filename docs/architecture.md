@@ -1,7 +1,7 @@
 # Aktenfux architecture
 
 Status: maintained current-state and target-state baseline  
-Last reviewed: 2026-10-06
+Last reviewed: 2026-10-07
 
 Owner: project maintainers
 
@@ -343,3 +343,26 @@ diff and `npm audit`, record the upstream release and security impact, and rende
 all diagrams successfully before merge. Version 11.17.0 replaces 11.12.0 because
 the latter's locked Puppeteer graph contained high-severity `extract-zip`
 advisories.
+
+## Change-verification harness
+
+`scripts/verify.py` is the canonical cross-platform pre-push and CI entry point.
+It runs the full Python tests, compiles Python sources, invokes repository checks,
+and checks unstaged, staged, and committed branch diffs for whitespace errors.
+`scripts/check_repository.py` validates relative Markdown links, table column
+counts, named Mermaid source discovery, and tracked or unignored runtime
+artifacts. The optional `make verify` target only delegates to the Python entry
+point. Running the harness reads repository sources, documentation, and Git
+metadata; its compilation and test subprocesses may write ignored
+`__pycache__`, `.pyc`, and `.pytest_cache` developer artifacts. It does not
+contact configured Ollama endpoints or access Aktenfux lifecycle directories.
+
+`.github/workflows/verification.yml` runs the same command for every pull
+request and push to `main`. Its checkout and Python setup actions are pinned to
+immutable reviewed commits; the newly introduced setup action is the commit
+published as `actions/setup-python` v5.6.0. Python dependencies are still
+resolved from the project's open version ranges, so this improves repeatability
+of the checks but does not provide a reproducible or offline dependency
+installation. The preceding CI installation step downloads packages and writes
+only to the ephemeral runner environment; no dependency cache is configured.
+Actual Mermaid rendering remains in the separately gated architecture workflow.
