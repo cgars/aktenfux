@@ -221,7 +221,7 @@ make verify
 The verification harness runs the complete Python test suite, compiles the
 Python sources, checks working-tree and branch diffs for whitespace errors,
 validates relative Markdown links and table structure, checks named Mermaid
-sources using CommonMark-compatible backtick or tilde fences, and rejects
+sources using top-level backtick or tilde fences, and rejects
 runtime artifacts found in nested lifecycle directories as well as at the
 repository root. Documentation checks read the exact committed and staged Git
 blobs independently from the unignored working files, so a worktree replacement

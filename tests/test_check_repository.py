@@ -91,9 +91,18 @@ def test_markdown_tables_reject_bad_row_without_leading_pipe(tmp_path, monkeypat
     assert "expected 2" in errors[0]
 
 
-def test_runtime_artifacts_reject_sensitive_generated_paths(tmp_path):
+def test_runtime_artifacts_reject_sensitive_generated_paths(tmp_path, monkeypatch):
     disguised = tmp_path / "private.data"
     disguised.write_bytes(b"SQLite format 3\x00" + b"synthetic")
+    probed: list[str] = []
+
+    def record_sqlite_probe(path, root):
+        probed.append(str(path))
+        return path.name == "private.data"
+
+    monkeypatch.setattr(
+        "scripts.check_repository._is_sqlite_file", record_sqlite_probe
+    )
     errors = check_runtime_artifacts(
         [
             "config.yaml",
@@ -109,6 +118,8 @@ def test_runtime_artifacts_reject_sensitive_generated_paths(tmp_path):
     )
 
     assert len(errors) == 8
+    assert "workspace/_Review/private.json" not in probed
+    assert "private.data" in probed
 
 
 def test_runtime_artifacts_allow_synthetic_test_files():
@@ -218,13 +229,17 @@ def test_git_markdown_inspects_committed_blob_not_staged_repair(tmp_path):
     assert not any("index README.md" in error for error in errors)
 
 
-def test_git_artifacts_reject_nested_lifecycle_path(tmp_path):
+def test_git_artifacts_reject_nested_lifecycle_path(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     candidate = tmp_path / "workspace" / "_Inbox" / "private.pdf"
     candidate.parent.mkdir(parents=True)
     candidate.write_text("synthetic sensitive content", encoding="utf-8")
     subprocess.run(
         ["git", "add", "workspace/_Inbox/private.pdf"], cwd=tmp_path, check=True
+    )
+    monkeypatch.setattr(
+        "scripts.check_repository._git_blob_header",
+        lambda sha, root: pytest.fail("lifecycle Git blob content was probed"),
     )
 
     errors = check_git_artifacts(root=tmp_path)

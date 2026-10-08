@@ -351,7 +351,7 @@ It runs the full Python tests, compiles Python sources, invokes repository check
 and checks unstaged, staged, and committed branch diffs for whitespace errors.
 `scripts/check_repository.py` validates inline and reference-style relative
 Markdown links, table column counts with optional edge pipes, named Mermaid
-source discovery for CommonMark-compatible backtick and tilde fences, and
+source discovery for top-level backtick and tilde fences, and
 runtime artifacts at any nested lifecycle depth. It examines committed and
 staged Git blob bytes and modes independently from unignored working files, so
 replacing or deleting a staged database, symlink, or invalid Markdown document

@@ -312,6 +312,25 @@ def _is_sqlite_file(path: PurePosixPath, root: Path) -> bool:
         return False
 
 
+def _is_forbidden_artifact_path(path: PurePosixPath) -> bool:
+    return (
+        path.name == "config.yaml"
+        or path.name == ".env"
+        or (path.name.startswith(".env.") and path.name != ".env.example")
+        or path.suffix == ".pyc"
+        or path.name.lower().endswith(SQLITE_SUFFIXES)
+        or path.name.lower().endswith(("-journal", "-wal", "-shm"))
+        or "__pycache__" in path.parts
+        or "node_modules" in path.parts
+        or any(part in RUNTIME_ROOTS for part in path.parts)
+        or (
+            len(path.parts) >= 3
+            and path.parts[:2] == ("build", "architecture")
+            and path.suffix == ".svg"
+        )
+    )
+
+
 def check_runtime_artifacts(
     paths: list[str], root: Path = REPO_ROOT
 ) -> list[str]:
@@ -320,20 +339,8 @@ def check_runtime_artifacts(
         path = PurePosixPath(raw_path)
         forbidden = (
             (root / path).is_symlink()
-            or path.name == "config.yaml"
-            or path.name == ".env"
-            or (path.name.startswith(".env.") and path.name != ".env.example")
-            or path.suffix == ".pyc"
+            or _is_forbidden_artifact_path(path)
             or _is_sqlite_file(path, root)
-            or path.name.lower().endswith(("-journal", "-wal", "-shm"))
-            or "__pycache__" in path.parts
-            or "node_modules" in path.parts
-            or any(part in RUNTIME_ROOTS for part in path.parts)
-            or (
-                len(path.parts) >= 3
-                and path.parts[:2] == ("build", "architecture")
-                and path.suffix == ".svg"
-            )
         )
         if forbidden:
             errors.append(f"tracked or unignored runtime artifact: {raw_path}")
@@ -352,26 +359,11 @@ def check_git_artifacts(
             continue
         seen.add(identity)
         path = PurePosixPath(entry.path)
-        if entry.sha not in headers:
-            headers[entry.sha] = _git_blob_header(entry.sha, root)
-        forbidden = (
-            entry.mode == "120000"
-            or path.name == "config.yaml"
-            or path.name == ".env"
-            or (path.name.startswith(".env.") and path.name != ".env.example")
-            or path.suffix == ".pyc"
-            or path.name.lower().endswith(SQLITE_SUFFIXES)
-            or path.name.lower().endswith(("-journal", "-wal", "-shm"))
-            or "__pycache__" in path.parts
-            or "node_modules" in path.parts
-            or any(part in RUNTIME_ROOTS for part in path.parts)
-            or (
-                len(path.parts) >= 3
-                and path.parts[:2] == ("build", "architecture")
-                and path.suffix == ".svg"
-            )
-            or headers[entry.sha] == SQLITE_HEADER
-        )
+        forbidden = entry.mode == "120000" or _is_forbidden_artifact_path(path)
+        if not forbidden:
+            if entry.sha not in headers:
+                headers[entry.sha] = _git_blob_header(entry.sha, root)
+            forbidden = headers[entry.sha] == SQLITE_HEADER
         if forbidden:
             errors.append(
                 f"forbidden {entry.source} artifact: {entry.path} ({entry.sha[:12]})"
