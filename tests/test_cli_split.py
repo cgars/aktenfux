@@ -1,60 +1,21 @@
 """CLI tests for `afu split`."""
 from __future__ import annotations
 
-import io
-from pathlib import Path
 from unittest.mock import patch
 
-from pypdf import PdfWriter
 from typer.testing import CliRunner
 
 from aktenfux.cli import app
-from aktenfux.config import AktenfuxConfig
-from aktenfux.schema import SidecarDocument
-from aktenfux.storage import read_sidecar, sha256_file
+from aktenfux.storage import read_sidecar
+from tests.split_helpers import make_config, write_split_doc
 
 runner = CliRunner()
 
 
-def _make_config(base_dir: Path) -> AktenfuxConfig:
-    return AktenfuxConfig(
-        {
-            "base_dir": str(base_dir),
-            "dry_run": False,
-            "use_sqlite_index": False,
-        }
-    )
-
-
-def _pdf_bytes(page_count: int) -> bytes:
-    writer = PdfWriter()
-    for _ in range(page_count):
-        writer.add_blank_page(width=72, height=72)
-    buf = io.BytesIO()
-    writer.write(buf)
-    return buf.getvalue()
-
-
-def _write_split_doc(split_dir: Path, name: str, doc_id: str, pages: int) -> Path:
-    split_dir.mkdir(parents=True, exist_ok=True)
-    pdf = split_dir / name
-    pdf.write_bytes(_pdf_bytes(pages))
-    sidecar = SidecarDocument(
-        id=doc_id,
-        original_path=str(pdf),
-        current_path=str(pdf),
-        sha256=sha256_file(pdf),
-        suggested_filename=name,
-        status="approved",
-    )
-    pdf.with_suffix(".json").write_text(sidecar.model_dump_json(indent=2), encoding="utf-8")
-    return pdf
-
-
 def test_split_dry_run_previews_only(tmp_path):
-    cfg = _make_config(tmp_path)
+    cfg = make_config(tmp_path)
     cfg.dry_run = True
-    _write_split_doc(cfg.split_path, "dry.pdf", "docsplitcli000001", pages=5)
+    write_split_doc(cfg.split_path, "dry.pdf", "docsplitcli000001", pages=5)
 
     with patch("aktenfux.cli._load_config", return_value=cfg):
         result = runner.invoke(
@@ -69,8 +30,8 @@ def test_split_dry_run_previews_only(tmp_path):
 
 
 def test_split_cancel_keeps_state_unchanged(tmp_path):
-    cfg = _make_config(tmp_path)
-    source = _write_split_doc(cfg.split_path, "cancel.pdf", "docsplitcli000002", pages=5)
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "cancel.pdf", "docsplitcli000002", pages=5)
 
     with patch("aktenfux.cli._load_config", return_value=cfg):
         result = runner.invoke(
@@ -88,8 +49,8 @@ def test_split_cancel_keeps_state_unchanged(tmp_path):
 
 
 def test_split_execute_after_confirmation(tmp_path):
-    cfg = _make_config(tmp_path)
-    _write_split_doc(cfg.split_path, "run.pdf", "docsplitcli000003", pages=6)
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "run.pdf", "docsplitcli000003", pages=6)
 
     with patch("aktenfux.cli._load_config", return_value=cfg):
         result = runner.invoke(

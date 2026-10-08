@@ -306,6 +306,22 @@ DocumentStatus = Literal["review", "approved", "rejected", "error", "dry_run"]
 SplitOperationState = Literal["in_progress", "completed"]
 
 
+def _validate_boundary_list(value: list[int]) -> list[int]:
+    normalized = sorted(set(value))
+    if not normalized:
+        raise ValueError("At least one boundary is required.")
+    if normalized != value:
+        raise ValueError("boundaries must be sorted and unique.")
+    if normalized[0] < 2:
+        raise ValueError("boundary values must be >= 2.")
+    return value
+
+
+def _validate_page_range(start_page: int, end_page: int) -> None:
+    if start_page > end_page:
+        raise ValueError("start_page must be less than or equal to end_page.")
+
+
 class SplitPartPlan(BaseModel):
     """Planned output part for a split operation."""
 
@@ -316,8 +332,7 @@ class SplitPartPlan(BaseModel):
 
     @model_validator(mode="after")
     def validate_page_range(self) -> "SplitPartPlan":
-        if self.start_page > self.end_page:
-            raise ValueError("start_page must be less than or equal to end_page.")
+        _validate_page_range(self.start_page, self.end_page)
         return self
 
 
@@ -332,8 +347,7 @@ class SplitOutputRecord(BaseModel):
 
     @model_validator(mode="after")
     def validate_page_range(self) -> "SplitOutputRecord":
-        if self.start_page > self.end_page:
-            raise ValueError("start_page must be less than or equal to end_page.")
+        _validate_page_range(self.start_page, self.end_page)
         return self
 
 
@@ -353,12 +367,7 @@ class SplitProvenanceRecord(BaseModel):
     @field_validator("boundaries")
     @classmethod
     def validate_boundaries(cls, value: list[int]) -> list[int]:
-        normalized = sorted(set(value))
-        if normalized != value:
-            raise ValueError("boundaries must be sorted and unique.")
-        if normalized[0] < 2:
-            raise ValueError("boundary values must be >= 2.")
-        return value
+        return _validate_boundary_list(value)
 
 
 class SplitPlan(BaseModel):
@@ -375,12 +384,7 @@ class SplitPlan(BaseModel):
     @field_validator("boundaries")
     @classmethod
     def validate_boundaries(cls, value: list[int]) -> list[int]:
-        normalized = sorted(set(value))
-        if normalized != value:
-            raise ValueError("boundaries must be sorted and unique.")
-        if normalized[0] < 2:
-            raise ValueError("boundary values must be >= 2.")
-        return value
+        return _validate_boundary_list(value)
 
 
 class SplitPartResult(BaseModel):
@@ -394,8 +398,7 @@ class SplitPartResult(BaseModel):
 
     @model_validator(mode="after")
     def validate_page_range(self) -> "SplitPartResult":
-        if self.start_page > self.end_page:
-            raise ValueError("start_page must be less than or equal to end_page.")
+        _validate_page_range(self.start_page, self.end_page)
         return self
 
 

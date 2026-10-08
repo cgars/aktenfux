@@ -178,11 +178,15 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
     if planned_parts != plan.parts:
         raise RuntimeError("Split plan no longer matches deterministic output naming.")
 
-    operation = next(
-        (candidate for candidate in sidecar.split_operations if candidate.operation_id == plan.operation_id),
+    operation_index = next(
+        (
+            idx
+            for idx, candidate in enumerate(sidecar.split_operations)
+            if candidate.operation_id == plan.operation_id
+        ),
         None,
     )
-    if operation is None:
+    if operation_index is None:
         operation = SplitProvenanceRecord(
             operation_id=plan.operation_id,
             source_sha256=plan.source_sha256,
@@ -201,7 +205,9 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
             created_at_utc=_utc_now(),
         )
         sidecar.split_operations.append(operation)
+        operation_index = len(sidecar.split_operations) - 1
         _write_sidecar_atomic(sidecar, pdf_path)
+    operation = sidecar.split_operations[operation_index]
 
     if operation.source_sha256 != plan.source_sha256 or operation.boundaries != plan.boundaries:
         raise RuntimeError("Existing split operation metadata does not match this plan.")
@@ -209,7 +215,7 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
     reader = PdfReader(str(pdf_path))
     config.inbox_path.mkdir(parents=True, exist_ok=True)
 
-    for output in operation.outputs:
+    for output_index, output in enumerate(operation.outputs):
         dest = config.inbox_path / output.filename
         _validate_direct_destination_path(dest, root=config.inbox_path)
         if dest.exists():
@@ -230,13 +236,40 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
             fh.write(part_bytes)
         written_hash = sha256_file(dest)
         if written_hash != part_hash:
+            try:
+                dest.unlink()
+            except OSError:
+                logger.warning("Could not remove inconsistent split output '%s'.", output.filename)
             raise RuntimeError(f"Hash verification failed for {output.filename}.")
-        output.sha256 = part_hash
+        updated_outputs = list(operation.outputs)
+        updated_outputs[output_index] = output.model_copy(update={"sha256": part_hash})
+        operation = operation.model_copy(update={"outputs": updated_outputs})
+        sidecar.split_operations[operation_index] = operation
         _write_sidecar_atomic(sidecar, pdf_path)
 
-    operation.state = "completed"
-    operation.completed_at_utc = _utc_now()
-    _write_sidecar_atomic(sidecar, pdf_path)
+    if operation.state != "completed":
+        operation = operation.model_copy(
+            update={
+                "state": "completed",
+                "completed_at_utc": _utc_now(),
+            }
+        )
+        sidecar.split_operations[operation_index] = operation
+        _write_sidecar_atomic(sidecar, pdf_path)
+
+    outputs: list[SplitPartResult] = []
+    for output in operation.outputs:
+        if output.sha256 is None:
+            raise RuntimeError(f"Incomplete split provenance for {output.filename}.")
+        outputs.append(
+            SplitPartResult(
+                part_number=output.part_number,
+                start_page=output.start_page,
+                end_page=output.end_page,
+                filename=output.filename,
+                sha256=output.sha256,
+            )
+        )
 
     return SplitResult(
         operation_id=plan.operation_id,
@@ -245,15 +278,6 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
         source_sha256=plan.source_sha256,
         source_page_count=plan.source_page_count,
         boundaries=plan.boundaries,
-        outputs=[
-            SplitPartResult(
-                part_number=output.part_number,
-                start_page=output.start_page,
-                end_page=output.end_page,
-                filename=output.filename,
-                sha256=output.sha256 or "",
-            )
-            for output in operation.outputs
-        ],
+        outputs=outputs,
         completed_at_utc=operation.completed_at_utc or _utc_now(),
     )
