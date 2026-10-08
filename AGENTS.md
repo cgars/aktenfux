@@ -79,7 +79,11 @@ command ledger before pushing.
 
 ## Required verification
 
-Run the repository's complete test suite, currently `pytest`, plus focused tests for changed behavior. For documentation changes:
+Run `python scripts/verify.py` before the first push. This is the canonical
+cross-platform verification entry point and includes the complete test suite,
+Python compilation, repository documentation checks, runtime-artifact hygiene,
+and diff whitespace checks. `make verify` is an optional convenience wrapper.
+Also run focused tests for changed behavior. For documentation changes:
 
 - render or lint Mermaid diagrams;
 - verify relative links;

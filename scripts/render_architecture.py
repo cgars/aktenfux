@@ -9,22 +9,104 @@ import os
 import re
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
-DIAGRAM_PATTERN = re.compile(
-    r"<!--\s*diagram:\s*([a-z0-9-]+)\s*-->\s*"
-    + r"\x60\x60\x60mermaid\s*\n(.*?)\x60\x60\x60",
-    re.DOTALL,
+DIAGRAM_MARKER_PATTERN = re.compile(
+    r"<!--\s*diagram:\s*(?P<name>[a-z0-9-]+)\s*-->\s*$"
+)
+FENCE_OPEN_PATTERN = re.compile(
+    r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>[^\r\n]*)\r?\n?$"
 )
 
 DEFAULT_SOURCES = [Path("docs/architecture.md"), Path("docs/threat-model.md")]
 
 
-def discover_diagrams(sources: list[Path]) -> list[tuple[str, str]]:
+@dataclass(frozen=True)
+class MermaidBlock:
+    """One Mermaid fenced block and its exact source span."""
+
+    start: int
+    end: int
+    body: str
+    closed: bool
+
+
+def find_mermaid_blocks(content: str) -> list[MermaidBlock]:
+    """Find CommonMark Mermaid fences, including longer valid closing fences."""
+    lines = content.splitlines(keepends=True)
+    offsets: list[int] = []
+    offset = 0
+    for line in lines:
+        offsets.append(offset)
+        offset += len(line)
+
+    blocks: list[MermaidBlock] = []
+    index = 0
+    while index < len(lines):
+        opener = FENCE_OPEN_PATTERN.fullmatch(lines[index])
+        if not opener:
+            index += 1
+            continue
+        fence = opener.group("fence")
+        info = opener.group("info").strip()
+        fence_char = fence[0]
+        closing_pattern = re.compile(
+            rf"^ {{0,3}}{re.escape(fence_char)}{{{len(fence)},}}[ \t]*\r?\n?$"
+        )
+        closing_index = index + 1
+        while closing_index < len(lines) and not closing_pattern.fullmatch(
+            lines[closing_index]
+        ):
+            closing_index += 1
+
+        is_mermaid = bool(re.match(r"^mermaid(?:\s|$)", info))
+        body_start = offsets[index] + len(lines[index])
+        if closing_index < len(lines):
+            if is_mermaid:
+                blocks.append(
+                    MermaidBlock(
+                        start=offsets[index],
+                        end=offsets[closing_index] + len(lines[closing_index]),
+                        body=content[body_start : offsets[closing_index]],
+                        closed=True,
+                    )
+                )
+            index = closing_index + 1
+        else:
+            if is_mermaid:
+                blocks.append(
+                    MermaidBlock(
+                        start=offsets[index],
+                        end=len(content),
+                        body=content[body_start:],
+                        closed=False,
+                    )
+                )
+            break
+    return blocks
+
+
+def named_mermaid_blocks(content: str) -> list[tuple[str, MermaidBlock]]:
+    """Return Mermaid blocks with an immediately preceding diagram marker."""
+    named: list[tuple[str, MermaidBlock]] = []
+    for block in find_mermaid_blocks(content):
+        marker = DIAGRAM_MARKER_PATTERN.search(content[: block.start])
+        if marker:
+            named.append((marker.group("name"), block))
+    return named
+
+
+def discover_diagrams_from_texts(
+    sources: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Discover named diagrams from labeled in-memory source snapshots."""
     diagrams: list[tuple[str, str]] = []
-    for source in sources:
-        content = source.read_text(encoding="utf-8")
-        diagrams.extend(DIAGRAM_PATTERN.findall(content))
+    for source, content in sources:
+        for name, block in named_mermaid_blocks(content):
+            if not block.closed:
+                raise SystemExit(f"Unclosed Mermaid fence in {source}")
+            diagrams.append((name, block.body))
 
     if not diagrams:
         raise SystemExit("No named Mermaid diagrams found")
@@ -34,6 +116,12 @@ def discover_diagrams(sources: list[Path]) -> list[tuple[str, str]]:
     if duplicates:
         raise SystemExit("Diagram names must be unique: {}".format(", ".join(duplicates)))
     return diagrams
+
+
+def discover_diagrams(sources: list[Path]) -> list[tuple[str, str]]:
+    return discover_diagrams_from_texts(
+        [(str(source), source.read_text(encoding="utf-8")) for source in sources]
+    )
 
 
 def main() -> int:
