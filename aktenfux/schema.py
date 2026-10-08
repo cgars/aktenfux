@@ -303,6 +303,113 @@ class DocumentAnalysis(BaseModel):
 
 
 DocumentStatus = Literal["review", "approved", "rejected", "error", "dry_run"]
+SplitOperationState = Literal["in_progress", "completed"]
+
+
+class SplitPartPlan(BaseModel):
+    """Planned output part for a split operation."""
+
+    part_number: int = Field(ge=1, le=999)
+    start_page: int = Field(ge=1)
+    end_page: int = Field(ge=1)
+    destination_filename: str = Field(min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_page_range(self) -> "SplitPartPlan":
+        if self.start_page > self.end_page:
+            raise ValueError("start_page must be less than or equal to end_page.")
+        return self
+
+
+class SplitOutputRecord(BaseModel):
+    """Recorded output for split provenance."""
+
+    part_number: int = Field(ge=1, le=999)
+    start_page: int = Field(ge=1)
+    end_page: int = Field(ge=1)
+    filename: str = Field(min_length=1, max_length=255)
+    sha256: str | None = Field(default=None, min_length=64, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_page_range(self) -> "SplitOutputRecord":
+        if self.start_page > self.end_page:
+            raise ValueError("start_page must be less than or equal to end_page.")
+        return self
+
+
+class SplitProvenanceRecord(BaseModel):
+    """Versioned provenance for a split operation on a source document."""
+
+    schema_version: int = Field(default=1, ge=1, le=1)
+    operation_id: str = Field(min_length=8, max_length=64)
+    source_sha256: str = Field(min_length=64, max_length=64)
+    source_page_count: int = Field(ge=2)
+    boundaries: list[int] = Field(min_length=1)
+    outputs: list[SplitOutputRecord] = Field(min_length=1)
+    state: SplitOperationState
+    created_at_utc: str = Field(min_length=20, max_length=40)
+    completed_at_utc: str | None = Field(default=None, min_length=20, max_length=40)
+
+    @field_validator("boundaries")
+    @classmethod
+    def validate_boundaries(cls, value: list[int]) -> list[int]:
+        normalized = sorted(set(value))
+        if normalized != value:
+            raise ValueError("boundaries must be sorted and unique.")
+        if normalized[0] < 2:
+            raise ValueError("boundary values must be >= 2.")
+        return value
+
+
+class SplitPlan(BaseModel):
+    """Read-only split preview bound to an exact source identity."""
+
+    operation_id: str = Field(min_length=8, max_length=64)
+    document_id: str = Field(min_length=1, max_length=128)
+    source_filename: str = Field(min_length=1, max_length=255)
+    source_sha256: str = Field(min_length=64, max_length=64)
+    source_page_count: int = Field(ge=2)
+    boundaries: list[int] = Field(min_length=1)
+    parts: list[SplitPartPlan] = Field(min_length=2)
+
+    @field_validator("boundaries")
+    @classmethod
+    def validate_boundaries(cls, value: list[int]) -> list[int]:
+        normalized = sorted(set(value))
+        if normalized != value:
+            raise ValueError("boundaries must be sorted and unique.")
+        if normalized[0] < 2:
+            raise ValueError("boundary values must be >= 2.")
+        return value
+
+
+class SplitPartResult(BaseModel):
+    """Executed split output details."""
+
+    part_number: int = Field(ge=1, le=999)
+    start_page: int = Field(ge=1)
+    end_page: int = Field(ge=1)
+    filename: str = Field(min_length=1, max_length=255)
+    sha256: str = Field(min_length=64, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_page_range(self) -> "SplitPartResult":
+        if self.start_page > self.end_page:
+            raise ValueError("start_page must be less than or equal to end_page.")
+        return self
+
+
+class SplitResult(BaseModel):
+    """Result of executing a split plan."""
+
+    operation_id: str = Field(min_length=8, max_length=64)
+    document_id: str = Field(min_length=1, max_length=128)
+    source_filename: str = Field(min_length=1, max_length=255)
+    source_sha256: str = Field(min_length=64, max_length=64)
+    source_page_count: int = Field(ge=2)
+    boundaries: list[int] = Field(min_length=1)
+    outputs: list[SplitPartResult] = Field(min_length=2)
+    completed_at_utc: str = Field(min_length=20, max_length=40)
 
 
 class SidecarDocument(BaseModel):
@@ -350,6 +457,7 @@ class SidecarDocument(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     approved_at: str | None = None
     error_message: str | None = None
+    split_operations: list[SplitProvenanceRecord] = Field(default_factory=list)
 
     @classmethod
     def from_analysis(

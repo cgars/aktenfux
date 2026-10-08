@@ -11,7 +11,7 @@ from aktenfux.filenames import make_suggested_filename, make_suggested_folder, r
 from aktenfux.llm import analyze_document
 from aktenfux.pdf_metadata import write_pdf_metadata
 from aktenfux.pdf_text import extract_text, has_usable_text, is_ignored_file, truncate_text
-from aktenfux.schema import SidecarDocument
+from aktenfux.schema import SidecarDocument, SplitPlan, SplitResult
 from aktenfux.storage import (
     assert_within_base,
     move_file_with_sidecar,
@@ -389,3 +389,17 @@ def reprocess_document(doc_id: str, config: AktenfuxConfig) -> None:
     pdf_path, _old_sidecar = result
     logger.info("Reprocessing %s …", pdf_path.name)
     _process_single(pdf_path, config)
+
+
+def plan_split(document_id: str, boundaries: list[int], config: AktenfuxConfig) -> SplitPlan:
+    """Create a split plan for a document staged in _Split."""
+    from aktenfux.split import plan_split as _plan_split  # noqa: PLC0415
+
+    return _plan_split(document_id, boundaries, config)
+
+
+def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
+    """Execute a previously previewed split plan."""
+    from aktenfux.split import execute_split as _execute_split  # noqa: PLC0415
+
+    return _execute_split(plan, config)

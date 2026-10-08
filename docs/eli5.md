@@ -19,6 +19,11 @@ Imagine Aktenfux as a careful archive clerk:
 
 The letter and its index card belong together. The catalogue is useful, but it must be possible to rebuild it from the cards.
 
+For probable multi-document scans, Aktenfux now provides an explicit split step:
+you preview boundaries first, confirm the exact page ranges and output filenames,
+then Aktenfux writes new part PDFs to `_Inbox` while keeping the original PDF and
+index card in `_Split`.
+
 ## Local-first processing
 
 By default, the reading assistant should work on the same computer, like a helper sitting in the next room. Sending text to a remote model is more like mailing a copy outside the building. That changes the privacy boundary and therefore requires explicit configuration, warning, documentation, and a separate security decision.

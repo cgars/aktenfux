@@ -99,7 +99,8 @@ those operations can create or access the configured database. Only a successful
 analysis creates `_DryRun` and writes a model-named sidecar there. Those
 conditional state changes violate the target dry-run invariant. A likely
 multi-document scan is staged in `_Split` only after approval; the current
-pipeline does not silently split it.
+pipeline does not silently split it. A dedicated `afu split` command now previews
+typed split plans and executes them only after explicit confirmation.
 
 ## Intended secure processing flow
 
@@ -166,6 +167,8 @@ from being mistaken for the behavior of every command.
 | `afu reprocess --no-dry-run` | Ollama reachability, then Review PDF/sidecar, parser, inference, and optional index | On successful analysis: sidecar/optional Markdown rewrite and a second move from Review; optional metadata/index. On no-OCR or inference failure: move to Error. | Re-enters the scan pipeline; model paths can bypass Review and sequential writes/moves can leave partial state. The application returns no structured outcome receipt, so the CLI cannot safely claim success and directs the user to Review, Error, and logs. |
 | `afu approve --dry-run` | Review PDF/sidecar and destination existence checks | Terminal/log proposal only | Still depends on untrusted sidecars and broad path checks; requires its own no-mutation regression coverage. |
 | `afu reject --dry-run` | Review PDF/sidecar and destination existence checks | Terminal/log proposal only; the current implementation returns before creating `_Error` | Still depends on untrusted sidecars; regression coverage must prove the destination directory and artifacts remain absent. |
+| `afu split --dry-run` | `_Split` PDF + sidecar lookup by document ID, page count read, source hash, boundary normalization | Terminal preview only | No split outputs or provenance writes are allowed in dry-run. |
+| `afu split --no-dry-run` | Same reads as split dry-run plus revalidation of source identity before write | Split-provenance sidecar updates and collision-safe part-PDF creation in `_Inbox` | Direct-root constraints currently require `_Split` and `_Inbox` direct children; cross-directory split batching remains out of scope. |
 
 ## Current implementation gap inventory
 
