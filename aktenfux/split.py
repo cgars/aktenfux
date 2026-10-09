@@ -92,10 +92,6 @@ def _build_parts(source_stem: str, page_count: int, boundaries: list[int]) -> li
     return parts
 
 
-def _safe_io(message: str, exc: OSError) -> SplitError:
-    return SplitError(message)
-
-
 def _validate_direct_regular_file(path: Path, *, root: Path, suffix: str) -> None:
     try:
         assert_within_base(path, root)
@@ -143,10 +139,14 @@ def _find_source_by_document_id(split_root: Path, document_id: str) -> tuple[Pat
     prefix_matches: list[tuple[Path, Path, SidecarDocument]] = []
 
     for pdf_path in sorted(split_root.glob("*.pdf")):
-        _validate_direct_regular_file(pdf_path, root=split_root, suffix=".pdf")
-        sidecar_path = sidecar_path_for(pdf_path)
-        _validate_direct_regular_file(sidecar_path, root=split_root, suffix=".json")
-        sidecar = _read_sidecar_validated(sidecar_path)
+        try:
+            _validate_direct_regular_file(pdf_path, root=split_root, suffix=".pdf")
+            sidecar_path = sidecar_path_for(pdf_path)
+            _validate_direct_regular_file(sidecar_path, root=split_root, suffix=".json")
+            sidecar = _read_sidecar_validated(sidecar_path)
+        except SplitError as exc:
+            logger.warning("Skipping invalid _Split candidate '%s': %s", pdf_path.name, exc)
+            continue
 
         if sidecar.id == document_id:
             exact = (pdf_path, sidecar_path, sidecar)
@@ -169,7 +169,7 @@ def _read_snapshot(config: AktenfuxConfig, document_id: str) -> SourceSnapshot:
         with pdf_path.open("rb") as fh:
             source_bytes = fh.read()
     except OSError as exc:
-        raise _safe_io(f"Could not read source PDF '{pdf_path.name}'.", exc) from exc
+        raise SplitError(f"Could not read source PDF '{pdf_path.name}'.") from exc
 
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     try:
@@ -202,7 +202,7 @@ def _write_text_atomic(path: Path, text: str) -> None:
             os.fsync(fh.fileno())
         tmp_path.replace(path)
     except OSError as exc:
-        raise _safe_io(f"Could not persist split metadata for '{path.name}'.", exc) from exc
+        raise SplitError(f"Could not persist split metadata for '{path.name}'.") from exc
     finally:
         if fd is not None:
             os.close(fd)
@@ -232,13 +232,11 @@ def _write_bytes_exclusive_atomic(path: Path, data: bytes) -> None:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        with path.open("xb") as dest:
-            dest.write(tmp_path.read_bytes())
-            dest.flush()
-            os.fsync(dest.fileno())
-        tmp_path.unlink()
+        if path.exists():
+            raise SplitError(f"Output collision for {path.name}.")
+        tmp_path.replace(path)
     except OSError as exc:
-        raise _safe_io(f"Could not write split output '{path.name}'.", exc) from exc
+        raise SplitError(f"Could not write split output '{path.name}'.") from exc
     finally:
         if fd is not None:
             os.close(fd)
@@ -383,8 +381,10 @@ def _ensure_staged_output(
         raise SplitError(f"Split staging hash verification failed for '{output_name}'.")
 
 
-def _publish_output_from_stage(staged_path: Path, final_path: Path, *, expected_hash: str) -> None:
-    _validate_direct_destination_path(final_path, root=final_path.parent)
+def _publish_output_from_stage(
+    staged_path: Path, final_path: Path, *, expected_hash: str, inbox_root: Path
+) -> None:
+    _validate_direct_destination_path(final_path, root=inbox_root)
     if final_path.exists():
         if sha256_file(final_path) != expected_hash:
             raise SplitError(f"Destination collision for {final_path.name}.")
@@ -393,7 +393,7 @@ def _publish_output_from_stage(staged_path: Path, final_path: Path, *, expected_
     try:
         data = staged_path.read_bytes()
     except OSError as exc:
-        raise _safe_io(f"Could not read staged output '{staged_path.name}'.", exc) from exc
+        raise SplitError(f"Could not read staged output '{staged_path.name}'.") from exc
     _write_bytes_exclusive_atomic(final_path, data)
     if sha256_file(final_path) != expected_hash:
         raise SplitError(f"Split output hash verification failed for '{final_path.name}'.")
@@ -554,14 +554,19 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
                 raise SplitError(f"Published split output '{output.filename}' no longer matches provenance.")
             continue
 
-        _publish_output_from_stage(staged_path, final_path, expected_hash=output.sha256)
+        _publish_output_from_stage(
+            staged_path,
+            final_path,
+            expected_hash=output.sha256,
+            inbox_root=config.inbox_path,
+        )
         published.add(output.filename)
         _write_publish_journal(publish_journal_path, published)
 
     operation = operation.model_copy(
         update={
             "state": "completed",
-            "completed_at_utc": _utc_now(),
+            "completed_at_utc": operation.completed_at_utc or _utc_now(),
         }
     )
     sidecar.split_operations[operation_index] = operation

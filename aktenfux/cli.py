@@ -377,7 +377,7 @@ def split(
 
     try:
         result = execute_split(plan, cfg)
-    except (FileNotFoundError, ValueError, RuntimeError, FileExistsError, SplitError) as exc:
+    except (FileNotFoundError, ValueError, RuntimeError, FileExistsError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 

@@ -174,8 +174,34 @@ def test_plan_split_rejects_symlink_source(tmp_path):
     }
     symlink_pdf.with_suffix(".json").write_text(json.dumps(sidecar_payload), encoding="utf-8")
 
-    with pytest.raises(SplitError, match="outside the expected lifecycle root|symbolic link"):
+    with pytest.raises(SplitError, match="not found in _Split"):
         plan_split("docsplit000000010", [2], cfg)
+
+
+def test_plan_split_skips_unrelated_invalid_split_candidate(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "good.pdf", "docsplit000000010a", pages=4)
+    outside = tmp_path / "outside-invalid.pdf"
+    outside.write_bytes(pdf_bytes(2))
+    invalid_pdf = cfg.split_path / "invalid-link.pdf"
+    try:
+        invalid_pdf.symlink_to(outside)
+    except (NotImplementedError, OSError):
+        pytest.skip("Symlinks are not available on this platform.")
+    invalid_pdf.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "id": "docsplit000000010b",
+                "original_path": str(invalid_pdf),
+                "current_path": str(invalid_pdf),
+                "sha256": "a" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plan = plan_split("docsplit000000010a", [3], cfg)
+    assert plan.source_filename == "good.pdf"
 
 
 def test_execute_split_recovers_after_hash_provenance_write_failure(tmp_path, monkeypatch):
