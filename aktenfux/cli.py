@@ -351,10 +351,11 @@ def split(
     cfg = _load_config(config_path, dry_run)
 
     from aktenfux.main import execute_split, plan_split  # noqa: PLC0415
+    from aktenfux.split import SplitError  # noqa: PLC0415
 
     try:
         plan = plan_split(doc_id, before, cfg)
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, ValueError, SplitError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
@@ -376,7 +377,7 @@ def split(
 
     try:
         result = execute_split(plan, cfg)
-    except (FileNotFoundError, ValueError, RuntimeError, FileExistsError) as exc:
+    except (FileNotFoundError, ValueError, RuntimeError, FileExistsError, SplitError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
