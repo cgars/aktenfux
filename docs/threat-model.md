@@ -1,7 +1,7 @@
 # Aktenfux threat assessment
 
 Status: maintained assessment for the pre-release MVP  
-Last reviewed: 2026-10-07
+Last reviewed: 2026-10-09
 
 Owner: project maintainers
 
@@ -179,8 +179,10 @@ The current implementation includes useful controls:
 - `afu split` requires explicit boundaries and confirmation, revalidates source
   identity (document ID, SHA-256, page count, boundaries), records recoverable
   split provenance in the source sidecar, stages outputs under
-  `_Inbox/.split-staging/<operation-id>/`, and publishes collision-safe part PDFs
-  to `_Inbox` with a publish journal for deterministic retry;
+  `_Inbox/.split-staging/<operation-id>/`, and publishes part PDFs to `_Inbox`
+  with atomic no-overwrite creation and a durable batch journal for deterministic
+  retry; the inbox scanner skips all journal-listed parts while publishing, and
+  successful completion removes staged document copies and journal data;
 - Pydantic validates and normalizes the model response shape;
 - path resolution prevents moves outside `base_dir`;
 - destination collision handling protects normal move destinations, but not the

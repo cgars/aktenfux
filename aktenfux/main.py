@@ -64,7 +64,16 @@ def process_inbox(config: AktenfuxConfig) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not initialize SQLite: %s", exc)
 
+    from aktenfux.split import SplitError, is_split_output_pending  # noqa: PLC0415
+
     for pdf in pdfs:
+        try:
+            if is_split_output_pending(pdf, inbox):
+                logger.info("Skipping incomplete split output: %s", pdf.name)
+                continue
+        except SplitError as exc:
+            logger.error("Inbox scan stopped: split publish state is unsafe: %s", exc)
+            return
         try:
             _process_single(pdf, config)
         except Exception as exc:  # noqa: BLE001

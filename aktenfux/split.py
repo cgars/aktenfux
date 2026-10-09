@@ -7,7 +7,7 @@ import logging
 import os
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable
@@ -44,15 +44,25 @@ class SourceSnapshot:
     page_count: int
 
 
+@dataclass(frozen=True)
+class PublishJournal:
+    state: str
+    outputs: tuple[str, ...]
+    published: frozenset[str]
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _parse_utc(value: str, *, field_name: str) -> datetime:
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
         raise SplitError(f"Invalid split provenance timestamp in {field_name}.") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise SplitError(f"Split provenance timestamp in {field_name} must be UTC.")
+    return parsed
 
 
 def _deterministic_operation_id(
@@ -189,10 +199,10 @@ def _read_snapshot(config: AktenfuxConfig, document_id: str) -> SourceSnapshot:
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     fd: int | None = None
     tmp_path: Path | None = None
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         tmp_path = Path(tmp_name)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -218,13 +228,10 @@ def _write_sidecar_atomic(sidecar: SidecarDocument, sidecar_path: Path) -> None:
 
 
 def _write_bytes_exclusive_atomic(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        raise SplitError(f"Output collision for {path.name}.")
-
     fd: int | None = None
     tmp_path: Path | None = None
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         tmp_path = Path(tmp_name)
         with os.fdopen(fd, "wb") as fh:
@@ -232,9 +239,10 @@ def _write_bytes_exclusive_atomic(path: Path, data: bytes) -> None:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        if path.exists():
-            raise SplitError(f"Output collision for {path.name}.")
-        tmp_path.replace(path)
+        try:
+            os.link(tmp_path, path, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise SplitError(f"Output collision for {path.name}.") from exc
     except OSError as exc:
         raise SplitError(f"Could not write split output '{path.name}'.") from exc
     finally:
@@ -245,6 +253,20 @@ def _write_bytes_exclusive_atomic(path: Path, data: bytes) -> None:
                 tmp_path.unlink()
             except OSError:
                 pass
+
+
+def _ensure_directory(path: Path, *, label: str) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SplitError(f"Could not prepare {label} directory.") from exc
+
+
+def _sha256_file_bounded(path: Path, *, label: str) -> str:
+    try:
+        return sha256_file(path)
+    except OSError as exc:
+        raise SplitError(f"Could not verify {label} '{path.name}'.") from exc
 
 
 def _part_pdf_bytes(source_bytes: bytes, *, start_page: int, end_page: int) -> bytes:
@@ -343,22 +365,129 @@ def _staging_paths(config: AktenfuxConfig, operation_id: str) -> tuple[Path, Pat
     return staging_root, publish_journal
 
 
-def _load_publish_journal(path: Path) -> set[str]:
+def _load_publish_journal(
+    path: Path, *, expected_outputs: tuple[str, ...] | None = None
+) -> PublishJournal | None:
+    if path.is_symlink():
+        raise SplitError("Split publish journal must not be a symbolic link.")
     if not path.exists():
-        return set()
+        return None
+    if not path.is_file():
+        raise SplitError("Split publish journal is not a regular file.")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
         raise SplitError("Split publish journal is invalid.") from exc
-    published = payload.get("published")
-    if not isinstance(published, list) or not all(isinstance(item, str) for item in published):
+    if not isinstance(payload, dict):
         raise SplitError("Split publish journal is invalid.")
-    return set(published)
+
+    state = payload.get("state")
+    outputs = payload.get("outputs")
+    published = payload.get("published")
+    if state not in {"publishing", "completed"}:
+        raise SplitError("Split publish journal state is invalid.")
+    if not isinstance(outputs, list) or not outputs or not all(
+        isinstance(item, str) for item in outputs
+    ):
+        raise SplitError("Split publish journal outputs are invalid.")
+    if len(set(outputs)) != len(outputs) or any(
+        not item or "/" in item or "\\" in item or Path(item).suffix.lower() != ".pdf"
+        for item in outputs
+    ):
+        raise SplitError("Split publish journal outputs are invalid.")
+    if not isinstance(published, list) or not all(isinstance(item, str) for item in published):
+        raise SplitError("Split publish journal published set is invalid.")
+    if len(set(published)) != len(published) or not set(published).issubset(outputs):
+        raise SplitError("Split publish journal published set is invalid.")
+    if state == "completed" and set(published) != set(outputs):
+        raise SplitError("Completed split publish journal is incomplete.")
+
+    journal = PublishJournal(
+        state=state,
+        outputs=tuple(outputs),
+        published=frozenset(published),
+    )
+    if expected_outputs is not None and journal.outputs != expected_outputs:
+        raise SplitError("Split publish journal outputs do not match the split plan.")
+    return journal
 
 
-def _write_publish_journal(path: Path, published: set[str]) -> None:
-    payload = {"published": sorted(published)}
+def _write_publish_journal(
+    path: Path,
+    *,
+    state: str,
+    outputs: tuple[str, ...],
+    published: set[str] | frozenset[str],
+) -> None:
+    if state not in {"publishing", "completed"}:
+        raise SplitError("Split publish journal state is invalid.")
+    if not set(published).issubset(outputs):
+        raise SplitError("Split publish journal published set is invalid.")
+    if state == "completed" and set(published) != set(outputs):
+        raise SplitError("Completed split publish journal is incomplete.")
+    payload = {
+        "state": state,
+        "outputs": list(outputs),
+        "published": sorted(published),
+    }
     _write_text_atomic(path, json.dumps(payload, indent=2))
+
+
+def is_split_output_pending(pdf_path: Path, inbox_root: Path) -> bool:
+    """Return whether *pdf_path* belongs to an incompletely published split batch."""
+    staging_base = inbox_root / ".split-staging"
+    if staging_base.is_symlink():
+        raise SplitError("Split staging root must not be a symbolic link.")
+    if not staging_base.exists():
+        return False
+    if not staging_base.is_dir():
+        raise SplitError("Split staging root is not a directory.")
+
+    try:
+        operation_dirs = list(staging_base.iterdir())
+    except OSError as exc:
+        raise SplitError("Could not inspect split publish state.") from exc
+    for operation_dir in operation_dirs:
+        if operation_dir.is_symlink() or not operation_dir.is_dir():
+            raise SplitError("Split staging operation path is invalid.")
+        journal = _load_publish_journal(operation_dir / "publish-state.json")
+        if journal is None:
+            continue
+        if journal.state == "publishing" and pdf_path.name in journal.outputs:
+            return True
+    return False
+
+
+def _cleanup_staging(
+    staging_root: Path,
+    publish_journal_path: Path,
+    *,
+    expected_outputs: tuple[str, ...],
+) -> None:
+    if staging_root.is_symlink():
+        raise SplitError("Split staging operation path must not be a symbolic link.")
+    if not staging_root.exists():
+        return
+    if not staging_root.is_dir():
+        raise SplitError("Split staging operation path is not a directory.")
+
+    allowed = {*expected_outputs, publish_journal_path.name}
+    try:
+        children = list(staging_root.iterdir())
+        for child in children:
+            if child.name not in allowed or child.is_symlink() or not child.is_file():
+                raise SplitError("Split staging contains an unexpected artifact; cleanup stopped.")
+        for child in children:
+            child.unlink()
+        staging_root.rmdir()
+        try:
+            staging_root.parent.rmdir()
+        except OSError:
+            pass
+    except SplitError:
+        raise
+    except OSError as exc:
+        raise SplitError("Could not remove completed split staging data.") from exc
 
 
 def _ensure_staged_output(
@@ -371,13 +500,13 @@ def _ensure_staged_output(
     if staging_path.exists():
         if staging_path.is_symlink() or not staging_path.is_file():
             raise SplitError(f"Staged split output '{output_name}' is invalid.")
-        if sha256_file(staging_path) != expected_hash:
+        if _sha256_file_bounded(staging_path, label="staged split output") != expected_hash:
             raise SplitError(f"Staged split output hash mismatch for '{output_name}'.")
         return
     if part_bytes is None:
         raise SplitError(f"Missing split bytes for '{output_name}'.")
     _write_bytes_exclusive_atomic(staging_path, part_bytes)
-    if sha256_file(staging_path) != expected_hash:
+    if _sha256_file_bounded(staging_path, label="staged split output") != expected_hash:
         raise SplitError(f"Split staging hash verification failed for '{output_name}'.")
 
 
@@ -386,7 +515,7 @@ def _publish_output_from_stage(
 ) -> None:
     _validate_direct_destination_path(final_path, root=inbox_root)
     if final_path.exists():
-        if sha256_file(final_path) != expected_hash:
+        if _sha256_file_bounded(final_path, label="split output") != expected_hash:
             raise SplitError(f"Destination collision for {final_path.name}.")
         return
 
@@ -395,7 +524,7 @@ def _publish_output_from_stage(
     except OSError as exc:
         raise SplitError(f"Could not read staged output '{staged_path.name}'.") from exc
     _write_bytes_exclusive_atomic(final_path, data)
-    if sha256_file(final_path) != expected_hash:
+    if _sha256_file_bounded(final_path, label="split output") != expected_hash:
         raise SplitError(f"Split output hash verification failed for '{final_path.name}'.")
 
 
@@ -471,12 +600,28 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
         expected_parts=expected_parts,
     )
 
+    expected_output_names = tuple(output.filename for output in operation.outputs)
     staging_root, publish_journal_path = _staging_paths(config, expected_operation_id)
-    published = _load_publish_journal(publish_journal_path)
-    config.inbox_path.mkdir(parents=True, exist_ok=True)
-    staging_root.mkdir(parents=True, exist_ok=True)
+    journal = _load_publish_journal(
+        publish_journal_path,
+        expected_outputs=expected_output_names,
+    )
 
     if operation.state == "completed":
+        if journal is not None:
+            if set(journal.published) != set(expected_output_names):
+                raise SplitError("Completed split operation has an incomplete publish journal.")
+            _write_publish_journal(
+                publish_journal_path,
+                state="completed",
+                outputs=expected_output_names,
+                published=journal.published,
+            )
+        _cleanup_staging(
+            staging_root,
+            publish_journal_path,
+            expected_outputs=expected_output_names,
+        )
         completed_outputs: list[SplitPartResult] = []
         for output in operation.outputs:
             final_path = config.inbox_path / output.filename
@@ -485,7 +630,9 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
                 raise SplitError(
                     f"Completed split output '{output.filename}' is missing; refusing to republish."
                 )
-            if output.sha256 is None or sha256_file(final_path) != output.sha256:
+            if output.sha256 is None or _sha256_file_bounded(
+                final_path, label="completed split output"
+            ) != output.sha256:
                 raise SplitError(f"Completed split output '{output.filename}' no longer matches provenance.")
             completed_outputs.append(
                 SplitPartResult(
@@ -506,6 +653,12 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
             outputs=completed_outputs,
             completed_at_utc=operation.completed_at_utc or _utc_now(),
         )
+
+    if journal is not None and journal.state != "publishing":
+        raise SplitError("In-progress split operation has an invalid publish journal state.")
+    published = set(journal.published) if journal is not None else set()
+    _ensure_directory(config.inbox_path, label="inbox")
+    _ensure_directory(staging_root, label="split staging")
 
     for output_index, output in enumerate(operation.outputs):
         part_bytes: bytes | None = None
@@ -538,6 +691,15 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
             output_name=output.filename,
         )
 
+    # The scanner treats every output named by this durable marker as unavailable
+    # until the whole batch is published and the marker is completed or removed.
+    _write_publish_journal(
+        publish_journal_path,
+        state="publishing",
+        outputs=expected_output_names,
+        published=published,
+    )
+
     for output in operation.outputs:
         if output.sha256 is None:
             raise SplitError(f"Missing split output hash for '{output.filename}'.")
@@ -550,7 +712,7 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
                 raise SplitError(
                     f"Split output '{output.filename}' was previously published and is now missing; refusing to republish."
                 )
-            if sha256_file(final_path) != output.sha256:
+            if _sha256_file_bounded(final_path, label="published split output") != output.sha256:
                 raise SplitError(f"Published split output '{output.filename}' no longer matches provenance.")
             continue
 
@@ -561,7 +723,23 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
             inbox_root=config.inbox_path,
         )
         published.add(output.filename)
-        _write_publish_journal(publish_journal_path, published)
+        _write_publish_journal(
+            publish_journal_path,
+            state="publishing",
+            outputs=expected_output_names,
+            published=published,
+        )
+
+    if set(published) != set(expected_output_names):
+        raise SplitError("Split publish journal is incomplete after publication.")
+    for output in operation.outputs:
+        if output.sha256 is None:
+            raise SplitError(f"Missing split output hash for '{output.filename}'.")
+        final_path = config.inbox_path / output.filename
+        if not final_path.is_file() or final_path.is_symlink():
+            raise SplitError(f"Published split output '{output.filename}' is missing or invalid.")
+        if _sha256_file_bounded(final_path, label="published split output") != output.sha256:
+            raise SplitError(f"Published split output '{output.filename}' no longer matches provenance.")
 
     operation = operation.model_copy(
         update={
@@ -571,6 +749,17 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
     )
     sidecar.split_operations[operation_index] = operation
     _write_sidecar_atomic(sidecar, snapshot.sidecar_path)
+    _write_publish_journal(
+        publish_journal_path,
+        state="completed",
+        outputs=expected_output_names,
+        published=published,
+    )
+    _cleanup_staging(
+        staging_root,
+        publish_journal_path,
+        expected_outputs=expected_output_names,
+    )
 
     outputs: list[SplitPartResult] = []
     for output in operation.outputs:

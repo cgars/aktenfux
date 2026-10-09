@@ -1,7 +1,7 @@
 # Aktenfux architecture
 
 Status: maintained current-state and target-state baseline  
-Last reviewed: 2026-10-07
+Last reviewed: 2026-10-09
 
 Owner: project maintainers
 
@@ -140,6 +140,7 @@ artifacts, index rows, or lifecycle state.
 | `db.py` | Optional status and duplicate index | Derived in principle; automatic rebuild and pre-access exact-root validation for the configured index path are not implemented on `main`. |
 | `main.py` | Processing, approve, reject, and reprocess orchestration | Mixes application policy and I/O sequencing. |
 | `review.py` | Resolve and display review records | Sidecar data remains untrusted even when locally stored. |
+| `split.py` | Plan and execute explicit PDF splits with provenance, staging, and retry state | Publishes only deterministic direct-child `_Inbox` outputs; the scanner gates journal-listed parts until the batch is complete. |
 | `cli.py` | User commands and terminal presentation | Bulk actions need explicit consequence handling. |
 
 ## Current command and artifact behavior
@@ -168,7 +169,7 @@ from being mistaken for the behavior of every command.
 | `afu approve --dry-run` | Review PDF/sidecar and destination existence checks | Terminal/log proposal only | Still depends on untrusted sidecars and broad path checks; requires its own no-mutation regression coverage. |
 | `afu reject --dry-run` | Review PDF/sidecar and destination existence checks | Terminal/log proposal only; the current implementation returns before creating `_Error` | Still depends on untrusted sidecars; regression coverage must prove the destination directory and artifacts remain absent. |
 | `afu split --dry-run` | `_Split` PDF + sidecar lookup by document ID, page count read, source hash, boundary normalization | Terminal preview only | No split outputs or provenance writes are allowed in dry-run. |
-| `afu split --no-dry-run` | Same reads as split dry-run plus revalidation of source identity before write from a single-open source snapshot | Split-provenance sidecar updates, staged part generation under `_Inbox/.split-staging/<operation-id>/`, then collision-safe publish into `_Inbox` with a publish journal | Direct-root constraints currently require `_Split` and `_Inbox` direct children; cross-directory split batching remains out of scope. Completed operations refuse republish of missing consumed outputs to avoid duplicate downstream processing. |
+| `afu split --no-dry-run` | Same reads as split dry-run plus revalidation of source identity before write from a single-open source snapshot | Split-provenance sidecar updates, staged part generation under `_Inbox/.split-staging/<operation-id>/`, then atomic no-overwrite publish into `_Inbox` behind a durable batch journal. The inbox scanner skips journal-listed parts while publication is active; successful completion removes staged PDFs and the journal. | Direct-root constraints currently require `_Split` and `_Inbox` direct children; cross-directory split batching remains out of scope. Completed operations refuse republish of missing consumed outputs to avoid duplicate downstream processing. |
 
 ## Current implementation gap inventory
 

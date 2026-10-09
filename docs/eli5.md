@@ -1,7 +1,7 @@
 # Aktenfux — ELI5 Guide
 
 **Status:** Maintained design guide  
-**Last updated:** 2026-10-06
+**Last updated:** 2026-10-09
 
 This guide explains the design in everyday language. The comparisons clarify the system; they are not security guarantees by themselves.
 
@@ -22,7 +22,10 @@ The letter and its index card belong together. The catalogue is useful, but it m
 For probable multi-document scans, Aktenfux now provides an explicit split step:
 you preview boundaries first, confirm the exact page ranges and output filenames,
 then Aktenfux writes new part PDFs to `_Inbox` while keeping the original PDF and
-index card in `_Split`.
+index card in `_Split`. The parts are prepared together behind a batch marker;
+the inbox scanner ignores visible parts until the complete batch is ready. After
+success, Aktenfux removes the temporary copies, while an interrupted batch keeps
+enough checked state for the same split command to recover it.
 
 ## Local-first processing
 

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from pypdf import PdfReader
@@ -281,3 +283,170 @@ def test_execute_split_recovers_after_final_completion_write_failure(tmp_path, m
     sidecar = read_sidecar(cfg.split_path / "recover-complete.pdf")
     assert sidecar is not None
     assert sidecar.split_operations[0].state == "completed"
+
+
+def test_exclusive_atomic_write_does_not_overwrite_racing_writer(tmp_path, monkeypatch):
+    destination = tmp_path / "part.pdf"
+    original_link = os.link
+
+    def racing_link(source, target, *args, **kwargs):
+        Path(target).write_bytes(b"concurrent-writer")
+        return original_link(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(split_module.os, "link", racing_link)
+
+    with pytest.raises(SplitError, match="Output collision"):
+        split_module._write_bytes_exclusive_atomic(destination, b"split-output")
+
+    assert destination.read_bytes() == b"concurrent-writer"
+
+
+def test_execute_split_marks_batch_pending_before_first_publish_and_cleans_staging(
+    tmp_path, monkeypatch
+):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "batch.pdf", "docsplit000000014", pages=5)
+    plan = plan_split("docsplit000000014", [3], cfg)
+    original_publish = split_module._publish_output_from_stage
+    observed = {"publish_calls": 0}
+
+    def inspect_publish(staged_path, final_path, *, expected_hash, inbox_root):
+        staging_root, journal_path = split_module._staging_paths(cfg, plan.operation_id)
+        journal = split_module._load_publish_journal(
+            journal_path,
+            expected_outputs=tuple(part.destination_filename for part in plan.parts),
+        )
+        assert journal is not None
+        assert journal.state == "publishing"
+        if observed["publish_calls"] == 0:
+            assert not any(
+                (cfg.inbox_path / part.destination_filename).exists() for part in plan.parts
+            )
+        assert split_module.is_split_output_pending(final_path, cfg.inbox_path)
+        assert staging_root.exists()
+        observed["publish_calls"] += 1
+        return original_publish(
+            staged_path,
+            final_path,
+            expected_hash=expected_hash,
+            inbox_root=inbox_root,
+        )
+
+    monkeypatch.setattr(split_module, "_publish_output_from_stage", inspect_publish)
+
+    result = execute_split(plan, cfg)
+    staging_root, _ = split_module._staging_paths(cfg, plan.operation_id)
+
+    assert observed["publish_calls"] == 2
+    assert not staging_root.exists()
+    assert not split_module.is_split_output_pending(
+        cfg.inbox_path / result.outputs[0].filename, cfg.inbox_path
+    )
+
+
+def test_inbox_scan_skips_output_while_publish_journal_is_active(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.inbox_path.mkdir(parents=True, exist_ok=True)
+    output_path = cfg.inbox_path / "batch--part-01.pdf"
+    output_path.write_bytes(pdf_bytes(1))
+    operation_id = "a" * 32
+    _, journal_path = split_module._staging_paths(cfg, operation_id)
+    split_module._write_publish_journal(
+        journal_path,
+        state="publishing",
+        outputs=(output_path.name,),
+        published={output_path.name},
+    )
+
+    with patch("aktenfux.main._process_single") as process_single:
+        from aktenfux.main import process_inbox
+
+        process_inbox(cfg)
+        process_single.assert_not_called()
+
+    split_module._write_publish_journal(
+        journal_path,
+        state="completed",
+        outputs=(output_path.name,),
+        published={output_path.name},
+    )
+    with patch("aktenfux.main._process_single") as process_single:
+        process_inbox(cfg)
+        process_single.assert_called_once_with(output_path, cfg)
+
+
+def test_interrupted_publish_is_hidden_from_scanner_and_recovers(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "interrupted.pdf", "docsplit000000016", pages=5)
+    plan = plan_split("docsplit000000016", [3], cfg)
+    original_publish = split_module._publish_output_from_stage
+    publish_calls = {"count": 0}
+
+    def fail_second_publish(staged_path, final_path, *, expected_hash, inbox_root):
+        publish_calls["count"] += 1
+        if publish_calls["count"] == 2:
+            raise SplitError("injected second publish failure")
+        return original_publish(
+            staged_path,
+            final_path,
+            expected_hash=expected_hash,
+            inbox_root=inbox_root,
+        )
+
+    monkeypatch.setattr(split_module, "_publish_output_from_stage", fail_second_publish)
+    with pytest.raises(SplitError, match="injected second publish failure"):
+        execute_split(plan, cfg)
+
+    first_output = cfg.inbox_path / "interrupted--part-01.pdf"
+    second_output = cfg.inbox_path / "interrupted--part-02.pdf"
+    assert first_output.exists()
+    assert not second_output.exists()
+    assert split_module.is_split_output_pending(first_output, cfg.inbox_path)
+
+    with patch("aktenfux.main._process_single") as process_single:
+        from aktenfux.main import process_inbox
+
+        process_inbox(cfg)
+        process_single.assert_not_called()
+
+    monkeypatch.setattr(split_module, "_publish_output_from_stage", original_publish)
+    result = execute_split(plan, cfg)
+    staging_root, _ = split_module._staging_paths(cfg, plan.operation_id)
+
+    assert len(result.outputs) == 2
+    assert first_output.exists()
+    assert second_output.exists()
+    assert not staging_root.exists()
+
+
+def test_parse_utc_rejects_naive_timestamp():
+    with pytest.raises(SplitError, match="must be UTC"):
+        split_module._parse_utc("2026-10-09T00:00:00", field_name="created_at_utc")
+
+
+def test_load_publish_journal_rejects_non_object_json(tmp_path):
+    journal_path = tmp_path / "publish-state.json"
+    journal_path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(SplitError, match="journal is invalid"):
+        split_module._load_publish_journal(journal_path)
+
+
+def test_execute_split_bounds_directory_creation_errors(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "mkdir.pdf", "docsplit000000015", pages=4)
+    plan = plan_split("docsplit000000015", [3], cfg)
+    original_mkdir = Path.mkdir
+
+    def failing_mkdir(path, *args, **kwargs):
+        if path == cfg.inbox_path:
+            raise OSError("failure at /sensitive/full/path")
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", failing_mkdir)
+
+    with pytest.raises(SplitError) as exc_info:
+        execute_split(plan, cfg)
+
+    assert "inbox" in str(exc_info.value)
+    assert "/sensitive/full/path" not in str(exc_info.value)
