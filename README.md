@@ -147,6 +147,7 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 | `afu scan --dry-run` | Before inbox inspection, contact Ollama and discover models. Discovery failure or a declined pull stops. An accepted pull can fail with partial external state; its stream must report explicit success, after which the model is re-listed and must be verified. With any PDF and indexing enabled, the current MVP initializes/accesses SQLite; after successful analysis it writes unsafe model-named JSON (synthetic data only). |
 | `afu review` | List documents awaiting approval |
 | `afu approve <id>` | Archive an approved document, or stage it in `_Split` when split detection is recommended |
+| `afu split <id> --before N [--before M ...]` | Preview and, after explicit confirmation, split one staged `_Split` PDF into `_Inbox` part PDFs |
 | `afu approve --all` | Archive/stage all documents currently in `_Review` |
 | `afu reject <id>` | Move a document to `_Error` |
 | `afu reject --all` | Move all documents currently in `_Review` to `_Error` |
@@ -162,6 +163,9 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 - Every scan contacts the configured Ollama endpoint before checking whether the inbox contains a PDF. Discovery failure now stops without offering a pull. If discovery succeeds and the model is absent, declining stops; an accepted pull can fail and leave partial external state. Its stream must report explicit success, after which the model is re-listed and must be verified. A verified pull persists the model even for an empty inbox or scan dry-run.
 - Current scan and reprocess dry-run do not move the source PDF, but they can create/access SQLite state, create `_DryRun`, and write a model-named JSON result that can escape that directory and replace another file. Use only synthetic, disposable input until mutation-free dry-run is implemented.
 - Current normal scans can silently overwrite existing same-stem inbox `.json` and optional `.md` siblings before move collision handling. Keep the inbox free of sibling artifacts and retain backups until fixed.
+- `afu split` validates that the selected PDF and sidecar are direct regular files in `_Split`, shows exact page ranges and destination filenames, and requires explicit confirmation unless `--yes` is used.
+- Split execution preserves the original PDF/sidecar in `_Split`, writes per-part hashes to sidecar provenance first, stages outputs in `_Inbox/.split-staging/<operation-id>/`, then publishes to `_Inbox` with a durable batch journal and atomic no-overwrite creation. The inbox scanner skips every part named by an active journal until the complete batch is published; completed staging copies and journal data are removed.
+- Completed split operations are not allowed to republish missing `_Inbox` outputs; if outputs were already consumed, Aktenfux fails safely instead of creating duplicates.
 - See the [architecture](docs/architecture.md) and [threat model](docs/threat-model.md) for current gaps and release gates.
 - Target behavior permanently archives documents **only after you approve them**; current lifecycle-root aliasing and model-derived path escape gaps can bypass this guarantee.
 - Target behavior keeps each PDF and sidecar together as a recoverable audit unit; current sequential writes and moves can leave partial or separated state.

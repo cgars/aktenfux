@@ -1,7 +1,7 @@
 # Aktenfux threat assessment
 
 Status: maintained assessment for the pre-release MVP  
-Last reviewed: 2026-10-07
+Last reviewed: 2026-10-09
 
 Owner: project maintainers
 
@@ -176,6 +176,13 @@ The current implementation includes useful controls:
   is not a complete implemented guarantee: lifecycle-root aliases and
   model-supplied filename/folder escapes can both bypass review staging;
 - probable multi-document scans are staged for follow-up rather than split silently;
+- `afu split` requires explicit boundaries and confirmation, revalidates source
+  identity (document ID, SHA-256, page count, boundaries), records recoverable
+  split provenance in the source sidecar, stages outputs under
+  `_Inbox/.split-staging/<operation-id>/`, and publishes part PDFs to `_Inbox`
+  with atomic no-overwrite creation and a durable batch journal for deterministic
+  retry; the inbox scanner skips all journal-listed parts while publishing, and
+  successful completion removes staged document copies and journal data;
 - Pydantic validates and normalizes the model response shape;
 - path resolution prevents moves outside `base_dir`;
 - destination collision handling protects normal move destinations, but not the
@@ -205,6 +212,10 @@ These controls have important limits:
   replace an existing JSON file;
 - an absolute or traversing `sqlite_path` can create or update an index outside
   `base_dir` because it is not confined before database access;
+- current split execution accepts only direct-child PDFs/sidecars in `_Split`
+  and writes parts only as direct children in `_Inbox`; completed split retries
+  fail closed if previously published outputs are missing, so consumed files are
+  not silently republished as duplicates;
 - normal scans silently replace an existing same-stem inbox JSON and, when
   enabled, Markdown sibling before move collision handling runs; the subsequent
   move removes the replacement from the inbox, so the original is unrecoverable;
