@@ -164,7 +164,8 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 - Current scan and reprocess dry-run do not move the source PDF, but they can create/access SQLite state, create `_DryRun`, and write a model-named JSON result that can escape that directory and replace another file. Use only synthetic, disposable input until mutation-free dry-run is implemented.
 - Current normal scans can silently overwrite existing same-stem inbox `.json` and optional `.md` siblings before move collision handling. Keep the inbox free of sibling artifacts and retain backups until fixed.
 - `afu split` validates that the selected PDF and sidecar are direct regular files in `_Split`, shows exact page ranges and destination filenames, and requires explicit confirmation unless `--yes` is used.
-- Split execution preserves the original PDF/sidecar in `_Split`, writes collision-safe part PDFs to `_Inbox`, and records recoverable split provenance in the source sidecar.
+- Split execution preserves the original PDF/sidecar in `_Split`, writes per-part hashes to sidecar provenance first, stages outputs in `_Inbox/.split-staging/<operation-id>/`, then publishes to `_Inbox` with a publish journal for deterministic retry.
+- Completed split operations are not allowed to republish missing `_Inbox` outputs; if outputs were already consumed, Aktenfux fails safely instead of creating duplicates.
 - See the [architecture](docs/architecture.md) and [threat model](docs/threat-model.md) for current gaps and release gates.
 - Target behavior permanently archives documents **only after you approve them**; current lifecycle-root aliasing and model-derived path escape gaps can bypass this guarantee.
 - Target behavior keeps each PDF and sidecar together as a recoverable audit unit; current sequential writes and moves can leave partial or separated state.

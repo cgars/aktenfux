@@ -178,8 +178,9 @@ The current implementation includes useful controls:
 - probable multi-document scans are staged for follow-up rather than split silently;
 - `afu split` requires explicit boundaries and confirmation, revalidates source
   identity (document ID, SHA-256, page count, boundaries), records recoverable
-  split provenance in the source sidecar, and writes collision-safe part PDFs to
-  `_Inbox`;
+  split provenance in the source sidecar, stages outputs under
+  `_Inbox/.split-staging/<operation-id>/`, and publishes collision-safe part PDFs
+  to `_Inbox` with a publish journal for deterministic retry;
 - Pydantic validates and normalizes the model response shape;
 - path resolution prevents moves outside `base_dir`;
 - destination collision handling protects normal move destinations, but not the
@@ -210,7 +211,9 @@ These controls have important limits:
 - an absolute or traversing `sqlite_path` can create or update an index outside
   `base_dir` because it is not confined before database access;
 - current split execution accepts only direct-child PDFs/sidecars in `_Split`
-  and writes parts only as direct children in `_Inbox`;
+  and writes parts only as direct children in `_Inbox`; completed split retries
+  fail closed if previously published outputs are missing, so consumed files are
+  not silently republished as duplicates;
 - normal scans silently replace an existing same-stem inbox JSON and, when
   enabled, Markdown sibling before move collision handling runs; the subsequent
   move removes the replacement from the inbox, so the original is unrecoverable;

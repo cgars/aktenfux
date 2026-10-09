@@ -168,7 +168,7 @@ from being mistaken for the behavior of every command.
 | `afu approve --dry-run` | Review PDF/sidecar and destination existence checks | Terminal/log proposal only | Still depends on untrusted sidecars and broad path checks; requires its own no-mutation regression coverage. |
 | `afu reject --dry-run` | Review PDF/sidecar and destination existence checks | Terminal/log proposal only; the current implementation returns before creating `_Error` | Still depends on untrusted sidecars; regression coverage must prove the destination directory and artifacts remain absent. |
 | `afu split --dry-run` | `_Split` PDF + sidecar lookup by document ID, page count read, source hash, boundary normalization | Terminal preview only | No split outputs or provenance writes are allowed in dry-run. |
-| `afu split --no-dry-run` | Same reads as split dry-run plus revalidation of source identity before write | Split-provenance sidecar updates and collision-safe part-PDF creation in `_Inbox` | Direct-root constraints currently require `_Split` and `_Inbox` direct children; cross-directory split batching remains out of scope. |
+| `afu split --no-dry-run` | Same reads as split dry-run plus revalidation of source identity before write from a single-open source snapshot | Split-provenance sidecar updates, staged part generation under `_Inbox/.split-staging/<operation-id>/`, then collision-safe publish into `_Inbox` with a publish journal | Direct-root constraints currently require `_Split` and `_Inbox` direct children; cross-directory split batching remains out of scope. Completed operations refuse republish of missing consumed outputs to avoid duplicate downstream processing. |
 
 ## Current implementation gap inventory
 
