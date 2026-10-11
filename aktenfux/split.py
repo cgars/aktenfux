@@ -274,6 +274,28 @@ def _read_snapshot(config: AktenfuxConfig, document_id: str) -> SourceSnapshot:
     )
 
 
+def list_split_documents(config: AktenfuxConfig) -> list[tuple[str, str, int]]:
+    """Return stable document IDs and safe display metadata for eligible _Split PDFs."""
+    _validate_split_roots(config, include_inbox=False)
+    entries: list[tuple[str, str, int]] = []
+    for pdf_path in sorted(config.split_path.glob("*.pdf")):
+        try:
+            _validate_direct_regular_file(pdf_path, root=config.split_path, suffix=".pdf")
+            sidecar = _read_sidecar_validated(sidecar_path_for(pdf_path))
+            document_id = sidecar.id
+            snapshot = _read_snapshot(config, document_id)
+        except (SplitError, ValueError, OSError):
+            continue
+        entries.append((document_id, sidecar.suggested_filename or pdf_path.name, snapshot.page_count))
+    return entries
+
+
+def get_split_document_snapshot(config: AktenfuxConfig, document_id: str) -> SourceSnapshot:
+    """Return the validated source snapshot for a _Split document."""
+    _validate_split_roots(config, include_inbox=False)
+    return _read_snapshot(config, document_id)
+
+
 def _write_text_atomic(path: Path, text: str) -> None:
     fd: int | None = None
     tmp_path: Path | None = None

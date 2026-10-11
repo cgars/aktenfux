@@ -20,7 +20,13 @@ from pydantic import BaseModel, Field
 
 from aktenfux.config import AktenfuxConfig, load_config
 from aktenfux.schema import SplitPlan, SplitResult
-from aktenfux.split import SplitError, _read_snapshot, _validate_direct_regular_file, plan_split, execute_split
+from aktenfux.split import (
+    SplitError,
+    get_split_document_snapshot,
+    list_split_documents,
+    plan_split,
+    execute_split,
+)
 
 _INDEX_HTML = """<!doctype html>
 <html lang=\"en\">
@@ -43,8 +49,9 @@ _INDEX_HTML = """<!doctype html>
     ul { margin: 0; padding-left: 1.1rem; }
     li { cursor: pointer; padding: 0.2rem 0; }
     li.selected { color: #93c5fd; font-weight: 600; }
-    .viewer-frame { flex: 1; min-height: 420px; border: 1px solid #475569; border-radius: 12px; background: #020617; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-    .viewer-frame iframe { width: 100%; height: 100%; border: none; background: white; }
+    .viewer-frame { flex: 1; min-height: 420px; border: 1px solid #475569; border-radius: 12px; background: #020617; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
+    .viewer-frame iframe { width: 100%; height: 100%; border: none; background: white; transform-origin: center center; }
+    .boundary-marker { position: absolute; top: 0; bottom: 0; width: 3px; background: #f59e0b; box-shadow: 0 0 0 1px rgba(245,158,11,0.8); left: 50%; transform: translateX(-50%); opacity: 0.9; pointer-events: none; }
     .controls { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
     .range-list { margin-top: 0.5rem; }
     .status { min-height: 1.25rem; font-size: 0.95rem; }
@@ -73,6 +80,7 @@ _INDEX_HTML = """<!doctype html>
       </div>
 
       <div class=\"viewer-frame\" id=\"viewer-frame\">
+        <div id=\"boundary-marker\" class=\"boundary-marker\" aria-hidden=\"true\" style=\"display: none;\"></div>
         <iframe id=\"pdf-frame\" title=\"PDF viewer\" src=\"about:blank\"></iframe>
       </div>
 
@@ -114,6 +122,7 @@ _INDEX_HTML = """<!doctype html>
     const executeButton = document.getElementById('execute');
     const confirmCheck = document.getElementById('confirm-check');
     const messageEl = document.getElementById('message');
+    const boundaryMarker = document.getElementById('boundary-marker');
 
     function setMessage(text, kind = 'info') {
       messageEl.textContent = text || '';
@@ -122,13 +131,42 @@ _INDEX_HTML = """<!doctype html>
       if (kind === 'ok') messageEl.classList.add('ok');
     }
 
+    function resetConfirmationState() {
+      state.confirmChecked = false;
+      confirmCheck.checked = false;
+      updateViewerUi();
+    }
+
+    function updateBoundaryMarker() {
+      const markerVisible = !!state.currentDocumentId && state.boundaries.includes(state.currentPage);
+      boundaryMarker.style.display = markerVisible ? 'block' : 'none';
+      if (markerVisible) {
+        const doc = state.documents.find((item) => item.id === state.currentDocumentId);
+        const totalPages = doc ? doc.page_count : 1;
+        const percent = (state.currentPage - 0.5) / totalPages * 100;
+        boundaryMarker.style.left = `${Math.max(8, Math.min(92, percent))}%`;
+      }
+    }
+
     function updateViewTransform() {
       pdfFrame.style.transform = `scale(${state.zoom}) rotate(${state.rotation}deg)`;
-      pdfFrame.style.transformOrigin = 'center center';
     }
 
     function formatRange(part) {
       return `${part.start_page}-${part.end_page}`;
+    }
+
+    function renderPreviewParts(plan) {
+      if (!plan || !Array.isArray(plan.parts)) {
+        previewList.textContent = 'No preview available.';
+        return;
+      }
+      previewList.textContent = '';
+      plan.parts.forEach((part) => {
+        const row = document.createElement('div');
+        row.textContent = `pages ${formatRange(part)} → ${part.destination_filename}`;
+        previewList.appendChild(row);
+      });
     }
 
     async function loadDocuments() {
@@ -141,6 +179,14 @@ _INDEX_HTML = """<!doctype html>
       docList.innerHTML = '';
       if (!docs.length) {
         docList.innerHTML = '<p>No documents are currently eligible for splitting.</p>';
+        state.currentDocumentId = null;
+        state.preview = null;
+        state.previewToken = null;
+        pdfFrame.src = 'about:blank';
+        resetConfirmationState();
+        pageInfo.textContent = 'No document selected';
+        previewList.textContent = 'Select a document to preview.';
+        boundaryMarker.style.display = 'none';
         return;
       }
       docs.forEach((doc) => {
@@ -169,12 +215,15 @@ _INDEX_HTML = """<!doctype html>
       state.boundaries = [];
       state.preview = null;
       state.previewToken = null;
+      state.confirmChecked = false;
+      confirmCheck.checked = false;
       if (forceRefresh) {
         await preview();
       }
-      pdfFrame.src = `/api/split/documents/${documentId}/pdf`;
+      pdfFrame.src = `/api/split/documents/${documentId}/pdf#page=${state.currentPage}`;
       pageInfo.textContent = `Page ${state.currentPage}/${doc.page_count}`;
       refreshDocumentList();
+      updateBoundaryMarker();
       updateViewerUi();
     }
 
@@ -195,12 +244,14 @@ _INDEX_HTML = """<!doctype html>
       document.getElementById('toggle-boundary').disabled = !enabled || state.pendingPreview || state.pendingExecute;
       document.getElementById('prev-page').disabled = !enabled;
       document.getElementById('next-page').disabled = !enabled;
+      updateBoundaryMarker();
     }
 
     async function preview() {
       const doc = state.documents.find((item) => item.id === state.currentDocumentId);
       if (!doc) return;
       state.pendingPreview = true;
+      resetConfirmationState();
       const payload = { document_id: doc.id, boundaries: [...state.boundaries].sort((a, b) => a - b) };
       try {
         const response = await fetch('/api/split/preview', {
@@ -214,10 +265,10 @@ _INDEX_HTML = """<!doctype html>
         }
         state.preview = body.plan;
         state.previewToken = body.preview_token;
-        previewList.innerHTML = body.plan.parts.map((part) => `<div>pages ${formatRange(part)} → ${part.destination_filename}</div>`).join('');
+        renderPreviewParts(body.plan);
         setMessage(`Preview ready for ${body.plan.document_id}.`, 'ok');
       } catch (error) {
-        previewList.innerHTML = `<div class=\"danger\">${(error && error.message) || 'Preview failed.'}</div>`;
+        previewList.textContent = (error && error.message) || 'Preview failed.';
         setMessage((error && error.message) || 'Preview failed.', 'error');
         state.preview = null;
         state.previewToken = null;
@@ -229,7 +280,7 @@ _INDEX_HTML = """<!doctype html>
 
     async function executePlan() {
       const doc = state.documents.find((item) => item.id === state.currentDocumentId);
-      if (!doc || !state.preview || !state.previewToken) return;
+      if (!doc || !state.preview || !state.previewToken || state.pendingExecute) return;
       state.pendingExecute = true;
       updateViewerUi();
       try {
@@ -250,6 +301,7 @@ _INDEX_HTML = """<!doctype html>
         state.preview = null;
         state.previewToken = null;
         confirmCheck.checked = false;
+        state.confirmChecked = false;
         await loadDocuments();
       } catch (error) {
         setMessage((error && error.message) || 'Split execution failed.', 'error');
@@ -260,7 +312,7 @@ _INDEX_HTML = """<!doctype html>
     }
 
     function toggleBoundary() {
-      if (!state.currentDocumentId) return;
+      if (!state.currentDocumentId || state.pendingPreview || state.pendingExecute) return;
       const page = state.currentPage;
       if (page <= 1) return;
       const exists = state.boundaries.includes(page);
@@ -275,8 +327,8 @@ _INDEX_HTML = """<!doctype html>
     document.getElementById('zoom-in').onclick = () => { state.zoom = Math.min(2.5, Number((state.zoom + 0.25).toFixed(2))); updateViewTransform(); };
     document.getElementById('zoom-out').onclick = () => { state.zoom = Math.max(0.5, Number((state.zoom - 0.25).toFixed(2))); updateViewTransform(); };
     document.getElementById('rotate').onclick = () => { state.rotation = (state.rotation + 90) % 360; updateViewTransform(); };
-    document.getElementById('prev-page').onclick = () => { if (state.currentPage > 1) { state.currentPage -= 1; pageInfo.textContent = `Page ${state.currentPage}/${state.documents.find((item) => item.id === state.currentDocumentId)?.page_count || 1}`; } };
-    document.getElementById('next-page').onclick = () => { const doc = state.documents.find((item) => item.id === state.currentDocumentId); if (doc && state.currentPage < doc.page_count) { state.currentPage += 1; pageInfo.textContent = `Page ${state.currentPage}/${doc.page_count}`; } };
+    document.getElementById('prev-page').onclick = () => { const doc = state.documents.find((item) => item.id === state.currentDocumentId); if (!doc) return; if (state.currentPage > 1) { state.currentPage -= 1; pdfFrame.src = `/api/split/documents/${doc.id}/pdf#page=${state.currentPage}`; pageInfo.textContent = `Page ${state.currentPage}/${doc.page_count}`; updateBoundaryMarker(); } };
+    document.getElementById('next-page').onclick = () => { const doc = state.documents.find((item) => item.id === state.currentDocumentId); if (!doc) return; if (state.currentPage < doc.page_count) { state.currentPage += 1; pdfFrame.src = `/api/split/documents/${doc.id}/pdf#page=${state.currentPage}`; pageInfo.textContent = `Page ${state.currentPage}/${doc.page_count}`; updateBoundaryMarker(); } };
     document.getElementById('toggle-boundary').onclick = toggleBoundary;
     confirmCheck.onchange = () => {
       state.confirmChecked = confirmCheck.checked;
@@ -375,37 +427,26 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
     @app.get("/api/split/documents", response_model=list[SplitDocumentDTO])
     async def list_documents() -> list[SplitDocumentDTO]:
         try:
-            _validate_split_roots(cfg, include_inbox=False)
+            entries = list_split_documents(cfg)
         except SplitError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-        entries: list[SplitDocumentDTO] = []
-        for pdf_path in sorted(cfg.split_path.glob("*.pdf")):
-            try:
-                _validate_direct_regular_file(pdf_path, root=cfg.split_path, suffix=".pdf")
-                sidecar = _read_sidecar_from_pdf(pdf_path)
-                document_id = sidecar.id
-                snapshot = _read_snapshot(cfg, document_id)
-            except (SplitError, ValueError):
-                continue
-            label = sidecar.suggested_filename or pdf_path.name
-            entries.append(
-                SplitDocumentDTO(
-                    id=document_id,
-                    label=label,
-                    name=pdf_path.name,
-                    page_count=snapshot.page_count,
-                    pdf_url=f"/api/split/documents/{document_id}/pdf",
-                )
+        return [
+            SplitDocumentDTO(
+                id=document_id,
+                label=label,
+                name=label,
+                page_count=page_count,
+                pdf_url=f"/api/split/documents/{document_id}/pdf",
             )
-        return entries
+            for document_id, label, page_count in entries
+        ]
 
     @app.get("/api/split/documents/{document_id}/pdf")
     async def serve_document_pdf(document_id: str) -> FileResponse:
         if not _is_valid_document_id(document_id):
             raise HTTPException(status_code=400, detail="Unexpected document identifier.")
         try:
-            snapshot = _read_snapshot(cfg, document_id)
+            snapshot = get_split_document_snapshot(cfg, document_id)
         except (SplitError, ValueError) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         try:
@@ -413,6 +454,8 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
             split_root = cfg.split_path.resolve(strict=True)
             if resolved.parent != split_root:
                 raise ValueError("PDF path must remain in _Split.")
+            if resolved.is_symlink():
+                raise ValueError("PDF path must not be a symbolic link.")
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=403, detail="PDF path is outside the expected split root.") from exc
         return FileResponse(path=resolved, media_type="application/pdf")
@@ -439,6 +482,10 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
 
     @app.post("/api/split/execute")
     async def execute(request: ExecuteRequest) -> dict[str, Any]:
+        if not request.preview_token or len(request.preview_token) < 8:
+            raise HTTPException(status_code=400, detail="Preview token is invalid.")
+        if not isinstance(request.plan, dict):
+            raise HTTPException(status_code=400, detail="Plan payload is invalid.")
         lock = await _ensure_lock()
         async with lock:
             current = app.state.preview_store.get(request.document_id)
@@ -461,7 +508,7 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
                 raise HTTPException(status_code=409, detail="Execution requires the exact most recently previewed plan.")
 
             try:
-                snapshot = _read_snapshot(cfg, request.document_id)
+                snapshot = get_split_document_snapshot(cfg, request.document_id)
             except SplitError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             for prior in snapshot.sidecar.split_operations:
