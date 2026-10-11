@@ -16,6 +16,8 @@ dependencies = [
     "typer>=0.12",
     "rich>=13.0",
     "pyyaml>=6.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
