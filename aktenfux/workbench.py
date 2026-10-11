@@ -412,7 +412,11 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         token = _preview_token(plan)
-        app.state.preview_store[request.document_id] = {"token": token, "plan": plan.model_dump(mode="json")}
+        app.state.preview_store[request.document_id] = {
+            "token": token,
+            "plan": plan.model_dump(mode="json"),
+            "completed": False,
+        }
         return {"document_id": request.document_id, "plan": plan.model_dump(mode="json"), "preview_token": token}
 
     @app.post("/api/split/execute")
@@ -432,6 +436,17 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
         if plan.operation_id != expected_operation:
             raise HTTPException(status_code=409, detail="Execution requires the exact most recently previewed plan.")
 
+        try:
+            snapshot = _read_snapshot(cfg, request.document_id)
+        except SplitError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        for prior in snapshot.sidecar.split_operations:
+            if prior.operation_id == plan.operation_id:
+                if prior.state == "completed":
+                    raise HTTPException(status_code=409, detail="Split execution has already completed for this preview.")
+                if prior.state == "in_progress":
+                    raise HTTPException(status_code=409, detail="Split execution is already in progress.")
+
         if plan.operation_id in app.state.in_flight:
             raise HTTPException(status_code=409, detail="Split execution is already in progress.")
 
@@ -444,6 +459,11 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
         finally:
             app.state.in_flight.discard(plan.operation_id)
 
+        app.state.preview_store[request.document_id] = {
+            "token": current["token"],
+            "plan": current["plan"],
+            "completed": True,
+        }
         return {"result": result.model_dump(mode="json")}
 
     return app
