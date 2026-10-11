@@ -1,9 +1,10 @@
 """Local split workbench for previewing and executing _Split PDF splits."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -301,7 +302,7 @@ _INDEX_HTML = """<!doctype html>
 
 class PreviewRequest(BaseModel):
     document_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
-    boundaries: list[int] = Field(..., min_length=1, max_length=64)
+    boundaries: list[int] = Field(..., max_length=64)
 
 
 class ExecuteRequest(BaseModel):
@@ -332,7 +333,7 @@ def _preview_token(plan: SplitPlan) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _boundaries_are_safe(value: list[int]) -> list[int]:
+def _validate_and_normalize_boundaries(value: list[int]) -> list[int]:
     normalized = []
     seen: set[int] = set()
     for boundary in value:
@@ -347,11 +348,21 @@ def _boundaries_are_safe(value: list[int]) -> list[int]:
 
 def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
     cfg = config or load_config()
-    app = FastAPI(title="Aktenfux Split Workbench", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        app.state.execute_lock = asyncio.Lock()
+        yield
+
+    app = FastAPI(title="Aktenfux Split Workbench", version="0.1.0", lifespan=lifespan)
     app.state.config = cfg
     app.state.preview_store: dict[str, dict[str, Any]] = {}
-    app.state.execute_lock = threading.Lock()
+    app.state.execute_lock: asyncio.Lock | None = None
     app.state.in_flight: set[str] = set()
+
+    async def _ensure_lock() -> asyncio.Lock:
+        if app.state.execute_lock is None:
+            app.state.execute_lock = asyncio.Lock()
+        return app.state.execute_lock
 
     @app.get("/", response_class=HTMLResponse)
     async def root() -> HTMLResponse:
@@ -391,18 +402,25 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
 
     @app.get("/api/split/documents/{document_id}/pdf")
     async def serve_document_pdf(document_id: str) -> FileResponse:
-        if not re_valid_id(document_id):
+        if not _is_valid_document_id(document_id):
             raise HTTPException(status_code=400, detail="Unexpected document identifier.")
         try:
             snapshot = _read_snapshot(cfg, document_id)
         except (SplitError, ValueError) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return FileResponse(path=snapshot.pdf_path, media_type="application/pdf")
+        try:
+            resolved = snapshot.pdf_path.resolve(strict=True)
+            split_root = cfg.split_path.resolve(strict=True)
+            if resolved.parent != split_root:
+                raise ValueError("PDF path must remain in _Split.")
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=403, detail="PDF path is outside the expected split root.") from exc
+        return FileResponse(path=resolved, media_type="application/pdf")
 
     @app.post("/api/split/preview")
     async def preview(request: PreviewRequest) -> dict[str, Any]:
         try:
-            safe_boundaries = _boundaries_are_safe(request.boundaries)
+            safe_boundaries = _validate_and_normalize_boundaries(request.boundaries)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -421,55 +439,67 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
 
     @app.post("/api/split/execute")
     async def execute(request: ExecuteRequest) -> dict[str, Any]:
-        current = app.state.preview_store.get(request.document_id)
-        if current is None:
-            raise HTTPException(status_code=409, detail="No preview has been generated for this document.")
-        if current["token"] != request.preview_token:
-            raise HTTPException(status_code=409, detail="Stale or mismatched preview token; preview again before executing.")
+        lock = await _ensure_lock()
+        async with lock:
+            current = app.state.preview_store.get(request.document_id)
+            if current is None:
+                raise HTTPException(status_code=409, detail="No preview has been generated for this document.")
+            if current.get("failed") is True:
+                raise HTTPException(status_code=409, detail="This preview is no longer valid; create a fresh preview before retrying.")
+            if current.get("completed") is True:
+                raise HTTPException(status_code=409, detail="Split execution has already completed for this preview.")
+            if current["token"] != request.preview_token:
+                raise HTTPException(status_code=409, detail="Stale or mismatched preview token; preview again before executing.")
 
-        try:
-            plan = SplitPlan.model_validate(request.plan)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail="Plan payload is invalid.") from exc
+            try:
+                plan = SplitPlan.model_validate(request.plan)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail="Plan payload is invalid.") from exc
 
-        expected_operation = current["plan"].get("operation_id")
-        if plan.operation_id != expected_operation:
-            raise HTTPException(status_code=409, detail="Execution requires the exact most recently previewed plan.")
+            expected_operation = current["plan"].get("operation_id")
+            if plan.operation_id != expected_operation:
+                raise HTTPException(status_code=409, detail="Execution requires the exact most recently previewed plan.")
 
-        try:
-            snapshot = _read_snapshot(cfg, request.document_id)
-        except SplitError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        for prior in snapshot.sidecar.split_operations:
-            if prior.operation_id == plan.operation_id:
-                if prior.state == "completed":
-                    raise HTTPException(status_code=409, detail="Split execution has already completed for this preview.")
-                if prior.state == "in_progress":
-                    raise HTTPException(status_code=409, detail="Split execution is already in progress.")
+            try:
+                snapshot = _read_snapshot(cfg, request.document_id)
+            except SplitError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            for prior in snapshot.sidecar.split_operations:
+                if prior.operation_id == plan.operation_id:
+                    if prior.state == "completed":
+                        raise HTTPException(status_code=409, detail="Split execution has already completed for this preview.")
+                    if prior.state == "in_progress":
+                        raise HTTPException(status_code=409, detail="Split execution is already in progress.")
 
-        if plan.operation_id in app.state.in_flight:
-            raise HTTPException(status_code=409, detail="Split execution is already in progress.")
-
-        with app.state.execute_lock:
+            if plan.operation_id in app.state.in_flight:
+                raise HTTPException(status_code=409, detail="Split execution is already in progress.")
             app.state.in_flight.add(plan.operation_id)
+
         try:
             result = execute_split(plan, cfg)
         except (SplitError, ValueError, FileNotFoundError, FileExistsError) as exc:
+            async with lock:
+                app.state.preview_store[request.document_id] = {
+                    "token": current["token"],
+                    "plan": current["plan"],
+                    "completed": False,
+                    "failed": True,
+                }
+                app.state.in_flight.discard(plan.operation_id)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        finally:
+        async with lock:
             app.state.in_flight.discard(plan.operation_id)
-
-        app.state.preview_store[request.document_id] = {
-            "token": current["token"],
-            "plan": current["plan"],
-            "completed": True,
-        }
+            app.state.preview_store[request.document_id] = {
+                "token": current["token"],
+                "plan": current["plan"],
+                "completed": True,
+            }
         return {"result": result.model_dump(mode="json")}
 
     return app
 
 
-def re_valid_id(value: str) -> bool:
+def _is_valid_document_id(value: str) -> bool:
     return bool(value) and all(ch.isalnum() or ch in {"_", "-"} for ch in value)
 
 

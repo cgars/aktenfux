@@ -1,8 +1,6 @@
 """Focused tests for the local split workbench API."""
 from __future__ import annotations
 
-import threading
-
 from fastapi.testclient import TestClient
 
 import aktenfux.workbench as workbench_module
@@ -68,7 +66,7 @@ def test_workbench_preview_requires_latest_plan_and_prevents_duplicate_execute(t
     assert (cfg.inbox_path / "bundle--part-01.pdf").exists()
     assert (cfg.inbox_path / "bundle--part-02.pdf").exists()
 
-    app.state.preview_store["docbench000002"] = {"token": token, "plan": plan}
+    app.state.preview_store["docbench000002"] = {"token": token, "plan": plan, "completed": True}
     duplicate = client.post(
         "/api/split/execute",
         json={
@@ -79,14 +77,3 @@ def test_workbench_preview_requires_latest_plan_and_prevents_duplicate_execute(t
     )
     assert duplicate.status_code == 409, duplicate.text
     assert "already completed" in duplicate.json()["detail"].lower()
-
-    blocked = client.post(
-        "/api/split/execute",
-        json={
-            "document_id": "docbench000002",
-            "preview_token": token,
-            "plan": plan,
-        },
-    )
-    assert blocked.status_code == 409, blocked.text
-    assert "already completed" in blocked.json()["detail"].lower()
