@@ -20,7 +20,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - permissive import for r
         "The split workbench requires the package dependencies from pyproject.toml. "
         "Install with 'pip install -e .'."
     ) from exc
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from aktenfux.config import AktenfuxConfig, load_config
 from aktenfux.schema import SplitPlan, SplitResult
@@ -190,6 +190,10 @@ _INDEX_HTML = """<!doctype html>
       });
     }
 
+    function setUntrustedText(node, value) {
+      node.textContent = String(value ?? '');
+    }
+
     async function loadDocuments() {
       const response = await fetch('/api/split/documents');
       if (!response.ok) {
@@ -260,7 +264,7 @@ _INDEX_HTML = """<!doctype html>
       const doc = state.documents.find((item) => item.id === state.currentDocumentId);
       const enabled = !!doc;
       const docPages = doc ? doc.page_count : 1;
-      pageInfo.textContent = enabled ? `Page ${state.currentPage}/${docPages}` : 'No document selected';
+      setUntrustedText(pageInfo, enabled ? `Page ${state.currentPage}/${docPages}` : 'No document selected');
       executeButton.disabled = !state.preview || !state.confirmChecked || state.pendingExecute;
       confirmCheck.disabled = !state.preview || state.pendingExecute;
       document.getElementById('toggle-boundary').disabled = !enabled || state.pendingPreview || state.pendingExecute;
@@ -290,7 +294,7 @@ _INDEX_HTML = """<!doctype html>
         renderPreviewParts(body.plan);
         setMessage(`Preview ready for ${body.plan.document_id}.`, 'ok');
       } catch (error) {
-        previewList.textContent = (error && error.message) || 'Preview failed.';
+        previewList.textContent = 'Preview failed.';
         setMessage((error && error.message) || 'Preview failed.', 'error');
         state.preview = null;
         state.previewToken = null;
@@ -299,11 +303,12 @@ _INDEX_HTML = """<!doctype html>
         updateViewerUi();
       }
     }
-
     async function executePlan() {
       const doc = state.documents.find((item) => item.id === state.currentDocumentId);
       if (!doc || !state.preview || !state.previewToken || state.pendingExecute) return;
       state.pendingExecute = true;
+      state.confirmChecked = false;
+      confirmCheck.checked = false;
       updateViewerUi();
       try {
         const response = await fetch('/api/split/execute', {
@@ -329,6 +334,10 @@ _INDEX_HTML = """<!doctype html>
         setMessage((error && error.message) || 'Split execution failed.', 'error');
       } finally {
         state.pendingExecute = false;
+        state.preview = null;
+        state.previewToken = null;
+        confirmCheck.checked = false;
+        state.confirmChecked = false;
         updateViewerUi();
       }
     }
@@ -349,8 +358,8 @@ _INDEX_HTML = """<!doctype html>
     document.getElementById('zoom-in').onclick = () => { state.zoom = Math.min(2.5, Number((state.zoom + 0.25).toFixed(2))); updateViewTransform(); };
     document.getElementById('zoom-out').onclick = () => { state.zoom = Math.max(0.5, Number((state.zoom - 0.25).toFixed(2))); updateViewTransform(); };
     document.getElementById('rotate').onclick = () => { state.rotation = (state.rotation + 90) % 360; updateViewTransform(); };
-    document.getElementById('prev-page').onclick = () => { const doc = state.documents.find((item) => item.id === state.currentDocumentId); if (!doc) return; if (state.currentPage > 1) { state.currentPage -= 1; pdfFrame.src = `/api/split/documents/${doc.id}/pdf#page=${state.currentPage}`; pageInfo.textContent = `Page ${state.currentPage}/${doc.page_count}`; updateBoundaryMarker(); } };
-    document.getElementById('next-page').onclick = () => { const doc = state.documents.find((item) => item.id === state.currentDocumentId); if (!doc) return; if (state.currentPage < doc.page_count) { state.currentPage += 1; pdfFrame.src = `/api/split/documents/${doc.id}/pdf#page=${state.currentPage}`; pageInfo.textContent = `Page ${state.currentPage}/${doc.page_count}`; updateBoundaryMarker(); } };
+    document.getElementById('prev-page').onclick = () => { const doc = state.documents.find((item) => item.id === state.currentDocumentId); if (!doc) return; if (state.currentPage > 1) { state.currentPage -= 1; pdfFrame.src = `/api/split/documents/${doc.id}/pdf#page=${state.currentPage}`; setUntrustedText(pageInfo, `Page ${state.currentPage}/${doc.page_count}`); updateBoundaryMarker(); } };
+    document.getElementById('next-page').onclick = () => { const doc = state.documents.find((item) => item.id === state.currentDocumentId); if (!doc) return; if (state.currentPage < doc.page_count) { state.currentPage += 1; pdfFrame.src = `/api/split/documents/${doc.id}/pdf#page=${state.currentPage}`; setUntrustedText(pageInfo, `Page ${state.currentPage}/${doc.page_count}`); updateBoundaryMarker(); } };
     document.getElementById('toggle-boundary').onclick = toggleBoundary;
     confirmCheck.onchange = () => {
       state.confirmChecked = confirmCheck.checked;
@@ -378,11 +387,27 @@ class PreviewRequest(BaseModel):
     document_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     boundaries: list[int] = Field(..., max_length=64)
 
+    @field_validator("boundaries")
+    @classmethod
+    def validate_boundaries(cls, value: list[int]) -> list[int]:
+        if len(value) > 64:
+            raise ValueError("Too many boundaries for a split preview.")
+        return value
+
 
 class ExecuteRequest(BaseModel):
     document_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     preview_token: str = Field(..., min_length=8, max_length=128, pattern=r"^[A-Fa-f0-9]+$")
-    plan: dict[str, Any]
+    plan: dict[str, Any] = Field(..., min_length=1, max_length=100000)
+
+    @field_validator("plan")
+    @classmethod
+    def validate_plan_payload(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise TypeError("Plan payload is invalid.")
+        if len(json.dumps(value, separators=(",", ":"), sort_keys=True)) > 100000:
+            raise ValueError("Plan payload is too large.")
+        return value
 
 
 class SplitDocumentDTO(BaseModel):
@@ -528,6 +553,7 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
         if not isinstance(request.plan, dict):
             raise HTTPException(status_code=400, detail="Plan payload is invalid.")
         lock = await _ensure_lock()
+        current = app.state.preview_store.get(request.document_id)
         async with lock:
             current = app.state.preview_store.get(request.document_id)
             if current is None:
@@ -546,6 +572,8 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
 
             expected_operation = current["plan"].get("operation_id")
             if plan.operation_id != expected_operation:
+                raise HTTPException(status_code=409, detail="Execution requires the exact most recently previewed plan.")
+            if current["plan"] != request.plan:
                 raise HTTPException(status_code=409, detail="Execution requires the exact most recently previewed plan.")
 
             try:
@@ -567,21 +595,25 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
             result = execute_split(plan, cfg)
         except (SplitError, ValueError, FileNotFoundError, FileExistsError) as exc:
             async with lock:
-                app.state.preview_store[request.document_id] = {
-                    "token": current["token"],
-                    "plan": current["plan"],
-                    "completed": False,
-                    "failed": True,
-                }
+                current = app.state.preview_store.get(request.document_id)
+                if current is not None:
+                    app.state.preview_store[request.document_id] = {
+                        "token": current["token"],
+                        "plan": current["plan"],
+                        "completed": False,
+                        "failed": True,
+                    }
                 app.state.in_flight.discard(plan.operation_id)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         async with lock:
+            current = app.state.preview_store.get(request.document_id)
             app.state.in_flight.discard(plan.operation_id)
-            app.state.preview_store[request.document_id] = {
-                "token": current["token"],
-                "plan": current["plan"],
-                "completed": True,
-            }
+            if current is not None:
+                app.state.preview_store[request.document_id] = {
+                    "token": current["token"],
+                    "plan": current["plan"],
+                    "completed": True,
+                }
         return {"result": result.model_dump(mode="json")}
 
     return app

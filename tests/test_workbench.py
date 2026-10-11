@@ -37,6 +37,9 @@ def test_workbench_rejects_root_escape_and_unexpected_ids(tmp_path):
     response = client.get("/api/split/documents/../../etc/passwd/pdf")
     assert response.status_code in {400, 404}
 
+    response = client.get("/api/split/documents/%2e%2e/%2e%2e/etc/passwd/pdf")
+    assert response.status_code in {400, 404}
+
     response = client.get("/api/split/documents/../bundle/pdf")
     assert response.status_code in {400, 404}
 
@@ -105,6 +108,24 @@ def test_workbench_preview_requires_latest_plan_and_prevents_duplicate_execute(t
     )
     assert duplicate.status_code == 409, duplicate.text
     assert "already completed" in duplicate.json()["detail"].lower()
+
+    stale_token = client.post(
+        "/api/split/preview",
+        json={"document_id": "docbench000002", "boundaries": [2]},
+    )
+    assert stale_token.status_code == 200, stale_token.text
+    replacement = stale_token.json()
+    valid_new_token = replacement["preview_token"]
+    invalidated = client.post(
+        "/api/split/execute",
+        json={
+            "document_id": "docbench000002",
+            "preview_token": valid_new_token,
+            "plan": plan,
+        },
+    )
+    assert invalidated.status_code == 409, invalidated.text
+    assert "exact most recently previewed" in invalidated.json()["detail"].lower()
 
 
 def test_workbench_validates_loopback_binding() -> None:
