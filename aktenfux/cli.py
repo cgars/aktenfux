@@ -334,6 +334,62 @@ def reject(
 
 
 @app.command()
+def split(
+    doc_id: str = typer.Argument(..., help="Document ID staged in _Split."),
+    before: list[int] = typer.Option(
+        ...,
+        "--before",
+        help="Page number before which a new document begins (repeatable).",
+    ),
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    dry_run: Optional[bool] = typer.Option(None, "--dry-run/--no-dry-run"),
+    yes: bool = typer.Option(False, "--yes", help="Execute without interactive confirmation."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Preview and execute a recoverable split for one staged document."""
+    _setup_logging(verbose)
+    cfg = _load_config(config_path, dry_run)
+
+    from aktenfux.main import execute_split, plan_split  # noqa: PLC0415
+    from aktenfux.split import SplitError  # noqa: PLC0415
+
+    try:
+        plan = plan_split(doc_id, before, cfg)
+    except (FileNotFoundError, ValueError, SplitError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[bold]Split plan for {plan.document_id}[/bold]")
+    console.print(f"Source: {plan.source_filename} ({plan.source_page_count} pages)")
+    for part in plan.parts:
+        console.print(
+            f"  • pages {part.start_page}-{part.end_page} -> "
+            f"_Inbox/{part.destination_filename}"
+        )
+
+    if cfg.dry_run:
+        console.print("[yellow]Dry-run:[/yellow] no files or sidecars were changed.")
+        return
+
+    if not yes and not typer.confirm("Execute split exactly as previewed?"):
+        console.print("[yellow]Cancelled.[/yellow]")
+        return
+
+    try:
+        result = execute_split(plan, cfg)
+    except (FileNotFoundError, ValueError, RuntimeError, FileExistsError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[green]✓[/green] Split complete (operation {result.operation_id}).")
+    for output in result.outputs:
+        console.print(
+            f"  • _Inbox/{output.filename} "
+            f"(pages {output.start_page}-{output.end_page}, sha256={output.sha256})"
+        )
+
+
+@app.command()
 def status(
     config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
