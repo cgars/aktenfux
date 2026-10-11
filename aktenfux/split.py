@@ -219,9 +219,6 @@ def _find_source_by_document_id(split_root: Path, document_id: str) -> tuple[Pat
     if not split_root.exists():
         raise SplitError("_Split directory is missing.")
 
-    exact: tuple[Path, Path, SidecarDocument] | None = None
-    prefix_matches: list[tuple[Path, Path, SidecarDocument]] = []
-
     for pdf_path in sorted(split_root.glob("*.pdf")):
         try:
             _validate_direct_regular_file(pdf_path, root=split_root, suffix=".pdf")
@@ -233,17 +230,8 @@ def _find_source_by_document_id(split_root: Path, document_id: str) -> tuple[Pat
             continue
 
         if sidecar.id == document_id:
-            exact = (pdf_path, sidecar_path, sidecar)
-            break
-        if sidecar.id.startswith(document_id):
-            prefix_matches.append((pdf_path, sidecar_path, sidecar))
+            return pdf_path, sidecar_path, sidecar
 
-    if exact is not None:
-        return exact
-    if len(prefix_matches) == 1:
-        return prefix_matches[0]
-    if len(prefix_matches) > 1:
-        raise SplitError(f"Document id prefix '{document_id}' is ambiguous in _Split.")
     raise SplitError(f"Document '{document_id}' not found in _Split.")
 
 

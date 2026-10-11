@@ -398,13 +398,19 @@ def workbench(
 ) -> None:
     """Run the local split workbench on the loopback interface."""
     _setup_logging(verbose)
-    from aktenfux.workbench import create_app  # noqa: PLC0415
+    from aktenfux.workbench import _validate_loopback_host, create_app  # noqa: PLC0415
+
+    try:
+        bind_host = _validate_loopback_host(host)
+    except ValueError as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
 
     app_instance = create_app(_load_config(config_path, dry_run=None))
     import uvicorn  # noqa: PLC0415
 
-    console.print(f"[green]Starting split workbench at http://{host}:{port}[/green]")
-    uvicorn.run(app_instance, host=host, port=port, log_level="warning")
+    console.print(f"[green]Starting split workbench at http://{bind_host}:{port}[/green]")
+    uvicorn.run(app_instance, host=bind_host, port=port, log_level="warning")
 
 
 @app.command()

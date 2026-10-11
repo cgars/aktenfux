@@ -3,14 +3,18 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 try:
-    from fastapi import FastAPI, HTTPException
-    from fastapi.responses import FileResponse, HTMLResponse
+    from fastapi import FastAPI, HTTPException, Request
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.middleware.trustedhost import TrustedHostMiddleware
+    from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 except ModuleNotFoundError as exc:  # pragma: no cover - permissive import for runtime setup
     raise ModuleNotFoundError(
         "The split workbench requires the package dependencies from pyproject.toml. "
@@ -115,6 +119,17 @@ _INDEX_HTML = """<!doctype html>
       preview: null,
     };
 
+    function renderDocumentList() {
+      docList.replaceChildren();
+      state.documents.forEach((doc) => {
+        const li = document.createElement('li');
+        li.textContent = `${doc.label} (${doc.page_count} pages)`;
+        li.className = doc.id === state.currentDocumentId ? 'selected' : '';
+        li.onclick = () => selectDocument(doc.id);
+        docList.appendChild(li);
+      });
+    }
+
     const docList = document.getElementById('document-list');
     const previewList = document.getElementById('preview-list');
     const pdfFrame = document.getElementById('pdf-frame');
@@ -131,9 +146,13 @@ _INDEX_HTML = """<!doctype html>
       if (kind === 'ok') messageEl.classList.add('ok');
     }
 
-    function resetConfirmationState() {
+    function clearConfirmationState() {
       state.confirmChecked = false;
       confirmCheck.checked = false;
+    }
+
+    function resetConfirmationState() {
+      clearConfirmationState();
       updateViewerUi();
     }
 
@@ -150,6 +169,8 @@ _INDEX_HTML = """<!doctype html>
 
     function updateViewTransform() {
       pdfFrame.style.transform = `scale(${state.zoom}) rotate(${state.rotation}deg)`;
+      const frame = document.getElementById('viewer-frame');
+      frame.style.transform = `rotate(${state.rotation}deg)`;
     }
 
     function formatRange(part) {
@@ -161,7 +182,7 @@ _INDEX_HTML = """<!doctype html>
         previewList.textContent = 'No preview available.';
         return;
       }
-      previewList.textContent = '';
+      previewList.replaceChildren();
       plan.parts.forEach((part) => {
         const row = document.createElement('div');
         row.textContent = `pages ${formatRange(part)} → ${part.destination_filename}`;
@@ -176,9 +197,11 @@ _INDEX_HTML = """<!doctype html>
       }
       const docs = await response.json();
       state.documents = docs;
-      docList.innerHTML = '';
+      docList.replaceChildren();
       if (!docs.length) {
-        docList.innerHTML = '<p>No documents are currently eligible for splitting.</p>';
+        const empty = document.createElement('p');
+        empty.textContent = 'No documents are currently eligible for splitting.';
+        docList.appendChild(empty);
         state.currentDocumentId = null;
         state.preview = null;
         state.previewToken = null;
@@ -215,8 +238,7 @@ _INDEX_HTML = """<!doctype html>
       state.boundaries = [];
       state.preview = null;
       state.previewToken = null;
-      state.confirmChecked = false;
-      confirmCheck.checked = false;
+      clearConfirmationState();
       if (forceRefresh) {
         await preview();
       }
@@ -406,6 +428,17 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
         yield
 
     app = FastAPI(title="Aktenfux Split Workbench", version="0.1.0", lifespan=lifespan)
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=["localhost", "127.0.0.1", "[::1]", "::1", "testserver"],
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost", "http://127.0.0.1", "null"],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+        allow_credentials=False,
+    )
     app.state.config = cfg
     app.state.preview_store: dict[str, dict[str, Any]] = {}
     app.state.execute_lock: asyncio.Lock | None = None
@@ -443,10 +476,11 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
 
     @app.get("/api/split/documents/{document_id}/pdf")
     async def serve_document_pdf(document_id: str) -> FileResponse:
-        if not _is_valid_document_id(document_id):
+        decoded_document_id = unquote(document_id)
+        if not _is_valid_document_id(decoded_document_id):
             raise HTTPException(status_code=400, detail="Unexpected document identifier.")
         try:
-            snapshot = get_split_document_snapshot(cfg, document_id)
+            snapshot = get_split_document_snapshot(cfg, decoded_document_id)
         except (SplitError, ValueError) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         try:
@@ -459,6 +493,13 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=403, detail="PDF path is outside the expected split root.") from exc
         return FileResponse(path=resolved, media_type="application/pdf")
+
+    @app.get("/api/split/documents/{document_id:path}")
+    async def document_identifier_guard(document_id: str) -> dict[str, str]:
+        decoded_document_id = unquote(document_id)
+        if not _is_valid_document_id(decoded_document_id):
+            raise HTTPException(status_code=400, detail="Unexpected document identifier.")
+        raise HTTPException(status_code=404, detail="Document not found.")
 
     @app.post("/api/split/preview")
     async def preview(request: PreviewRequest) -> dict[str, Any]:
@@ -550,6 +591,27 @@ def _is_valid_document_id(value: str) -> bool:
     return bool(value) and all(ch.isalnum() or ch in {"_", "-"} for ch in value)
 
 
+def _validate_loopback_host(host: str) -> str:
+    if not host:
+        raise ValueError("Host must not be empty.")
+    try:
+        parsed = ipaddress.ip_address(host)
+    except ValueError:
+        parsed = None
+    if parsed is not None:
+        if parsed.version == 6 and parsed == ipaddress.ip_address("::1"):
+            return host
+        if parsed.version == 4 and parsed == ipaddress.ip_address("127.0.0.1"):
+            return host
+        raise ValueError("The split workbench must bind only to loopback addresses.")
+    lowered = host.lower()
+    if lowered in {"localhost", "127.0.0.1", "::1"}:
+        return host
+    if lowered.startswith("127."):
+        return host
+    raise ValueError("The split workbench must bind only to loopback addresses.")
+
+
 def _validate_split_roots(config: AktenfuxConfig, *, include_inbox: bool) -> None:
     from aktenfux.split import _validate_split_roots as _validate_roots
 
@@ -560,8 +622,8 @@ def _serve_from_module(host: str, port: int, config_path: Path | None = None) ->
     import uvicorn
 
     cfg = load_config(config_path)
-    uvicorn.run(create_app(cfg), host=host, port=port, log_level="warning")
-
+    bind_host = _validate_loopback_host(host)
+    uvicorn.run(create_app(cfg), host=bind_host, port=port, log_level="warning")
 
 if __name__ == "__main__":
     import argparse
