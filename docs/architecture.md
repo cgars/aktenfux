@@ -1,7 +1,7 @@
 # Aktenfux architecture
 
 Status: maintained current-state and target-state baseline  
-Last reviewed: 2026-10-09
+Last reviewed: 2026-10-11
 
 Owner: project maintainers
 
@@ -168,8 +168,8 @@ from being mistaken for the behavior of every command.
 | `afu reprocess --no-dry-run` | Ollama reachability, then Review PDF/sidecar, parser, inference, and optional index | On successful analysis: sidecar/optional Markdown rewrite and a second move from Review; optional metadata/index. On no-OCR or inference failure: move to Error. | Re-enters the scan pipeline; model paths can bypass Review and sequential writes/moves can leave partial state. The application returns no structured outcome receipt, so the CLI cannot safely claim success and directs the user to Review, Error, and logs. |
 | `afu approve --dry-run` | Review PDF/sidecar and destination existence checks | Terminal/log proposal only | Still depends on untrusted sidecars and broad path checks; requires its own no-mutation regression coverage. |
 | `afu reject --dry-run` | Review PDF/sidecar and destination existence checks | Terminal/log proposal only; the current implementation returns before creating `_Error` | Still depends on untrusted sidecars; regression coverage must prove the destination directory and artifacts remain absent. |
-| `afu split --dry-run` | `_Split` PDF + sidecar lookup by document ID, page count read, source hash, boundary normalization | Terminal preview only | No split outputs or provenance writes are allowed in dry-run. |
-| `afu split --no-dry-run` | Same reads as split dry-run plus revalidation of source identity before write from a single-open source snapshot | Split-provenance sidecar updates, staged part generation under `_Inbox/.split-staging/<operation-id>/`, then atomic no-overwrite publish into `_Inbox` behind a durable batch journal. The inbox scanner skips journal-listed parts while publication is active; successful completion removes staged PDFs and the journal. | Direct-root constraints currently require `_Split` and `_Inbox` direct children; cross-directory split batching remains out of scope. Completed operations refuse republish of missing consumed outputs to avoid duplicate downstream processing. |
+| `afu split --dry-run` | Validate `_Split` as a direct non-link `base_dir` child; read its PDF + sidecar by document ID; compare the opened PDF SHA-256 with the authoritative sidecar; read page count and normalize boundaries | Terminal preview only | No split outputs or provenance writes are allowed in dry-run. |
+| `afu split --no-dry-run` | Validate distinct `_Split`/`_Inbox` roots before access, then perform the split dry-run reads plus source-identity revalidation from a single-open snapshot | Split-provenance sidecar updates, staged part generation under `_Inbox/.split-staging/<operation-id>/`, then exclusive no-overwrite publish into `_Inbox` behind a durable batch journal. Hard-link publication is atomic where supported; a tested exclusive fallback supports filesystems without hard links. The inbox scanner skips journal-listed parts while publication is active; successful completion removes staged PDFs and the journal. | Direct-root constraints require `_Split` and `_Inbox` to be distinct direct children; cross-directory split batching remains out of scope. Completed operations refuse republish of missing consumed outputs to avoid duplicate downstream processing. On a hard-link-less filesystem, abrupt termination during the fallback's individual file write can leave an unpublished partial destination that fails closed and requires reconciliation. |
 
 ## Current implementation gap inventory
 

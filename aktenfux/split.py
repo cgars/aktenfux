@@ -1,6 +1,7 @@
 """Recoverable document split planning and execution services."""
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
@@ -102,6 +103,79 @@ def _build_parts(source_stem: str, page_count: int, boundaries: list[int]) -> li
     return parts
 
 
+def _is_link_or_junction(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction is not None and is_junction())
+
+
+def _validate_lifecycle_root(
+    *,
+    base_dir: Path,
+    root: Path,
+    configured_name: str,
+    label: str,
+    must_exist: bool,
+) -> Path:
+    """Validate one direct lifecycle root before any document access."""
+    try:
+        configured_path = Path(configured_name)
+        resolved_base = base_dir.resolve()
+        resolved_root = root.resolve()
+    except (OSError, RuntimeError, TypeError) as exc:
+        raise SplitError(f"Could not validate the configured {label} root.") from exc
+
+    if (
+        configured_path.is_absolute()
+        or len(configured_path.parts) != 1
+        or configured_path.name in {"", ".", ".."}
+        or resolved_root == resolved_base
+        or resolved_root.parent != resolved_base
+    ):
+        raise SplitError(f"Configured {label} root must be a direct child of base_dir.")
+    try:
+        if _is_link_or_junction(root):
+            raise SplitError(f"Configured {label} root must not be a link or junction.")
+        if root.exists() and not root.is_dir():
+            raise SplitError(f"Configured {label} root is not a directory.")
+        if must_exist and not root.is_dir():
+            raise SplitError(f"Configured {label} root is missing.")
+    except SplitError:
+        raise
+    except OSError as exc:
+        raise SplitError(f"Could not validate the configured {label} root.") from exc
+    return resolved_root
+
+
+def _validate_split_roots(config: AktenfuxConfig, *, include_inbox: bool) -> None:
+    resolved_split = _validate_lifecycle_root(
+        base_dir=config.base_dir,
+        root=config.split_path,
+        configured_name=config.split_dir,
+        label="split",
+        must_exist=True,
+    )
+    if not include_inbox:
+        return
+    resolved_inbox = _validate_lifecycle_root(
+        base_dir=config.base_dir,
+        root=config.inbox_path,
+        configured_name=config.inbox_dir,
+        label="inbox",
+        must_exist=False,
+    )
+    if resolved_split == resolved_inbox:
+        raise SplitError("Configured split and inbox roots must be distinct.")
+    try:
+        if config.inbox_path.exists() and os.path.samefile(config.split_path, config.inbox_path):
+            raise SplitError("Configured split and inbox roots must not alias each other.")
+    except SplitError:
+        raise
+    except OSError as exc:
+        raise SplitError("Could not verify split and inbox root identity.") from exc
+
+
 def _validate_direct_regular_file(path: Path, *, root: Path, suffix: str) -> None:
     try:
         assert_within_base(path, root)
@@ -182,6 +256,8 @@ def _read_snapshot(config: AktenfuxConfig, document_id: str) -> SourceSnapshot:
         raise SplitError(f"Could not read source PDF '{pdf_path.name}'.") from exc
 
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    if source_sha256 != sidecar.sha256:
+        raise SplitError("Source PDF hash does not match its authoritative sidecar.")
     try:
         page_count = len(PdfReader(BytesIO(source_bytes)).pages)
     except Exception as exc:  # noqa: BLE001
@@ -227,7 +303,53 @@ def _write_sidecar_atomic(sidecar: SidecarDocument, sidecar_path: Path) -> None:
     _write_text_atomic(sidecar_path, sidecar.model_dump_json(indent=2))
 
 
-def _write_bytes_exclusive_atomic(path: Path, data: bytes) -> None:
+def _hard_link_is_unsupported(exc: OSError) -> bool:
+    unsupported_errnos = {
+        errno.EPERM,
+        errno.EXDEV,
+        errno.ENOSYS,
+        getattr(errno, "ENOTSUP", errno.EOPNOTSUPP),
+        errno.EOPNOTSUPP,
+    }
+    return exc.errno in unsupported_errnos or getattr(exc, "winerror", None) in {1, 50}
+
+
+def _write_bytes_exclusive_fallback(path: Path, data: bytes) -> None:
+    """Create *path* without overwrite when hard-link publication is unavailable."""
+    fd: int | None = None
+    created = False
+    completed = False
+    created_identity: tuple[int, int] | None = None
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(path, flags, 0o600)
+        created = True
+        opened_stat = os.fstat(fd)
+        created_identity = (opened_stat.st_dev, opened_stat.st_ino)
+        with os.fdopen(fd, "wb") as fh:
+            fd = None
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        completed = True
+    except FileExistsError as exc:
+        raise SplitError(f"Output collision for {path.name}.") from exc
+    except OSError as exc:
+        raise SplitError(f"Could not write split output '{path.name}'.") from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if created and not completed and created_identity is not None:
+            try:
+                current_stat = path.lstat()
+                if (current_stat.st_dev, current_stat.st_ino) == created_identity:
+                    path.unlink()
+            except OSError:
+                pass
+
+
+def _write_bytes_exclusive(path: Path, data: bytes) -> None:
     fd: int | None = None
     tmp_path: Path | None = None
     try:
@@ -243,6 +365,12 @@ def _write_bytes_exclusive_atomic(path: Path, data: bytes) -> None:
             os.link(tmp_path, path, follow_symlinks=False)
         except FileExistsError as exc:
             raise SplitError(f"Output collision for {path.name}.") from exc
+        except NotImplementedError:
+            _write_bytes_exclusive_fallback(path, data)
+        except OSError as exc:
+            if not _hard_link_is_unsupported(exc):
+                raise
+            _write_bytes_exclusive_fallback(path, data)
     except OSError as exc:
         raise SplitError(f"Could not write split output '{path.name}'.") from exc
     finally:
@@ -505,7 +633,7 @@ def _ensure_staged_output(
         return
     if part_bytes is None:
         raise SplitError(f"Missing split bytes for '{output_name}'.")
-    _write_bytes_exclusive_atomic(staging_path, part_bytes)
+    _write_bytes_exclusive(staging_path, part_bytes)
     if _sha256_file_bounded(staging_path, label="staged split output") != expected_hash:
         raise SplitError(f"Split staging hash verification failed for '{output_name}'.")
 
@@ -523,13 +651,14 @@ def _publish_output_from_stage(
         data = staged_path.read_bytes()
     except OSError as exc:
         raise SplitError(f"Could not read staged output '{staged_path.name}'.") from exc
-    _write_bytes_exclusive_atomic(final_path, data)
+    _write_bytes_exclusive(final_path, data)
     if _sha256_file_bounded(final_path, label="split output") != expected_hash:
         raise SplitError(f"Split output hash verification failed for '{final_path.name}'.")
 
 
 def plan_split(document_id: str, boundaries: list[int], config: AktenfuxConfig) -> SplitPlan:
     """Return a read-only split plan for a document staged in _Split."""
+    _validate_split_roots(config, include_inbox=False)
     snapshot = _read_snapshot(config, document_id)
     if snapshot.page_count < 2:
         raise SplitError("Single-page PDFs cannot be split.")
@@ -552,6 +681,7 @@ def plan_split(document_id: str, boundaries: list[int], config: AktenfuxConfig) 
 
 def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
     """Execute a split plan with recoverable, idempotent semantics."""
+    _validate_split_roots(config, include_inbox=True)
     snapshot = _read_snapshot(config, plan.document_id)
     expected_parts = _validate_plan_against_source(plan, snapshot)
     expected_operation_id = _deterministic_operation_id(

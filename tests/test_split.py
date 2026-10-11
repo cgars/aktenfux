@@ -1,6 +1,7 @@
 """Tests for recoverable split planning/execution services."""
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -129,7 +130,7 @@ def test_execute_split_detects_same_page_count_source_swap(tmp_path):
     writer.write(str(swapped))
     source.write_bytes(swapped.read_bytes())
 
-    with pytest.raises(SplitError, match="source identity mismatch"):
+    with pytest.raises(SplitError, match="authoritative sidecar"):
         execute_split(plan, cfg)
 
 
@@ -237,7 +238,7 @@ def test_execute_split_recovers_after_output_write_failure(tmp_path, monkeypatch
     write_split_doc(cfg.split_path, "recover-write.pdf", "docsplit000000012", pages=5)
     plan = plan_split("docsplit000000012", [3], cfg)
 
-    original_writer = split_module._write_bytes_exclusive_atomic
+    original_writer = split_module._write_bytes_exclusive
     calls = {"count": 0}
 
     def flaky_writer(path: Path, data: bytes):
@@ -247,11 +248,11 @@ def test_execute_split_recovers_after_output_write_failure(tmp_path, monkeypatch
                 raise SplitError("injected output write failure")
         return original_writer(path, data)
 
-    monkeypatch.setattr(split_module, "_write_bytes_exclusive_atomic", flaky_writer)
+    monkeypatch.setattr(split_module, "_write_bytes_exclusive", flaky_writer)
     with pytest.raises(SplitError, match="injected output write failure"):
         execute_split(plan, cfg)
 
-    monkeypatch.setattr(split_module, "_write_bytes_exclusive_atomic", original_writer)
+    monkeypatch.setattr(split_module, "_write_bytes_exclusive", original_writer)
     result = execute_split(plan, cfg)
     assert all((cfg.inbox_path / item.filename).exists() for item in result.outputs)
 
@@ -296,9 +297,170 @@ def test_exclusive_atomic_write_does_not_overwrite_racing_writer(tmp_path, monke
     monkeypatch.setattr(split_module.os, "link", racing_link)
 
     with pytest.raises(SplitError, match="Output collision"):
-        split_module._write_bytes_exclusive_atomic(destination, b"split-output")
+        split_module._write_bytes_exclusive(destination, b"split-output")
 
     assert destination.read_bytes() == b"concurrent-writer"
+
+
+def test_plan_split_rejects_absolute_split_root_before_pdf_parse(tmp_path):
+    base_dir = tmp_path / "workspace"
+    outside_split = tmp_path / "outside-split"
+    cfg = split_module.AktenfuxConfig(
+        {
+            "base_dir": str(base_dir),
+            "split_dir": str(outside_split),
+            "dry_run": False,
+            "use_sqlite_index": False,
+        }
+    )
+    write_split_doc(outside_split, "outside.pdf", "docsplit000000017", pages=3)
+
+    with patch("aktenfux.split.PdfReader") as pdf_reader:
+        with pytest.raises(SplitError, match="direct child of base_dir"):
+            plan_split("docsplit000000017", [2], cfg)
+        pdf_reader.assert_not_called()
+
+
+def test_execute_split_rejects_escaped_inbox_before_mutation(tmp_path):
+    base_dir = tmp_path / "workspace"
+    cfg = split_module.AktenfuxConfig(
+        {
+            "base_dir": str(base_dir),
+            "inbox_dir": "../outside-inbox",
+            "dry_run": False,
+            "use_sqlite_index": False,
+        }
+    )
+    source = write_split_doc(cfg.split_path, "escaped.pdf", "docsplit000000018", pages=4)
+    plan = plan_split("docsplit000000018", [3], cfg)
+    sidecar_before = source.with_suffix(".json").read_bytes()
+
+    with pytest.raises(SplitError, match="inbox root must be a direct child"):
+        execute_split(plan, cfg)
+
+    assert source.with_suffix(".json").read_bytes() == sidecar_before
+    assert not cfg.inbox_path.exists()
+
+
+def test_plan_split_rejects_linked_split_root_before_pdf_parse(tmp_path):
+    base_dir = tmp_path / "workspace"
+    outside_split = tmp_path / "outside-linked-split"
+    outside_split.mkdir()
+    base_dir.mkdir()
+    linked_split = base_dir / "_Split"
+    try:
+        linked_split.symlink_to(outside_split, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        pytest.skip("Directory symlinks are not available on this platform.")
+    cfg = make_config(base_dir)
+    write_split_doc(outside_split, "linked.pdf", "docsplit000000021", pages=3)
+
+    with patch("aktenfux.split.PdfReader") as pdf_reader:
+        with pytest.raises(SplitError, match="split root"):
+            plan_split("docsplit000000021", [2], cfg)
+        pdf_reader.assert_not_called()
+
+
+def test_execute_split_rejects_aliased_split_and_inbox_roots(tmp_path):
+    cfg = split_module.AktenfuxConfig(
+        {
+            "base_dir": str(tmp_path),
+            "inbox_dir": "_Split",
+            "dry_run": False,
+            "use_sqlite_index": False,
+        }
+    )
+    source = write_split_doc(cfg.split_path, "alias.pdf", "docsplit000000022", pages=4)
+    plan = plan_split("docsplit000000022", [3], cfg)
+    sidecar_before = source.with_suffix(".json").read_bytes()
+
+    with pytest.raises(SplitError, match="must be distinct"):
+        execute_split(plan, cfg)
+
+    assert source.with_suffix(".json").read_bytes() == sidecar_before
+
+
+def test_plan_split_rejects_pdf_hash_mismatch_before_parse(tmp_path):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "replaced.pdf", "docsplit000000019", pages=3)
+    source.write_bytes(pdf_bytes(4))
+
+    with patch("aktenfux.split.PdfReader") as pdf_reader:
+        with pytest.raises(SplitError, match="authoritative sidecar"):
+            plan_split("docsplit000000019", [2], cfg)
+        pdf_reader.assert_not_called()
+
+
+def test_exclusive_write_falls_back_without_hard_link_support(tmp_path, monkeypatch):
+    destination = tmp_path / "fallback.pdf"
+
+    def unsupported_link(*args, **kwargs):
+        raise OSError(errno.EOPNOTSUPP, "hard links unsupported")
+
+    monkeypatch.setattr(split_module.os, "link", unsupported_link)
+
+    split_module._write_bytes_exclusive(destination, b"split-output")
+
+    assert destination.read_bytes() == b"split-output"
+
+
+def test_exclusive_fallback_does_not_overwrite_collision(tmp_path, monkeypatch):
+    destination = tmp_path / "fallback-collision.pdf"
+    destination.write_bytes(b"existing")
+
+    def unsupported_link(*args, **kwargs):
+        raise OSError(errno.EOPNOTSUPP, "hard links unsupported")
+
+    monkeypatch.setattr(split_module.os, "link", unsupported_link)
+
+    with pytest.raises(SplitError, match="Output collision"):
+        split_module._write_bytes_exclusive(destination, b"split-output")
+
+    assert destination.read_bytes() == b"existing"
+
+
+def test_exclusive_fallback_removes_owned_file_after_write_failure(tmp_path, monkeypatch):
+    destination = tmp_path / "fallback-failure.pdf"
+
+    def failing_fsync(fd):
+        raise OSError("injected fallback flush failure")
+
+    monkeypatch.setattr(split_module.os, "fsync", failing_fsync)
+
+    with pytest.raises(SplitError, match="Could not write split output"):
+        split_module._write_bytes_exclusive_fallback(destination, b"partial")
+
+    assert not destination.exists()
+
+
+def test_exclusive_write_falls_back_when_link_api_is_unavailable(tmp_path, monkeypatch):
+    destination = tmp_path / "fallback-api.pdf"
+
+    def unavailable_link(*args, **kwargs):
+        raise NotImplementedError
+
+    monkeypatch.setattr(split_module.os, "link", unavailable_link)
+
+    split_module._write_bytes_exclusive(destination, b"split-output")
+
+    assert destination.read_bytes() == b"split-output"
+
+
+def test_execute_split_works_without_hard_link_support(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "portable.pdf", "docsplit000000020", pages=5)
+    plan = plan_split("docsplit000000020", [3], cfg)
+
+    def unsupported_link(*args, **kwargs):
+        raise OSError(errno.EOPNOTSUPP, "hard links unsupported")
+
+    monkeypatch.setattr(split_module.os, "link", unsupported_link)
+
+    result = execute_split(plan, cfg)
+
+    assert all((cfg.inbox_path / output.filename).is_file() for output in result.outputs)
+    staging_root, _ = split_module._staging_paths(cfg, plan.operation_id)
+    assert not staging_root.exists()
 
 
 def test_execute_split_marks_batch_pending_before_first_publish_and_cleans_staging(
