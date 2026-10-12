@@ -5,16 +5,17 @@ import asyncio
 import hashlib
 import ipaddress
 import json
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 try:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.middleware.trustedhost import TrustedHostMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 except ModuleNotFoundError as exc:  # pragma: no cover - permissive import for runtime setup
     raise ModuleNotFoundError(
         "The split workbench requires the package dependencies from pyproject.toml. "
@@ -157,20 +158,18 @@ _INDEX_HTML = """<!doctype html>
     }
 
     function updateBoundaryMarker() {
+      const doc = state.documents.find((item) => item.id === state.currentDocumentId);
+      const totalPages = doc ? doc.page_count : 1;
       const markerVisible = !!state.currentDocumentId && state.boundaries.includes(state.currentPage);
       boundaryMarker.style.display = markerVisible ? 'block' : 'none';
       if (markerVisible) {
-        const doc = state.documents.find((item) => item.id === state.currentDocumentId);
-        const totalPages = doc ? doc.page_count : 1;
-        const percent = (state.currentPage - 0.5) / totalPages * 100;
-        boundaryMarker.style.left = `${Math.max(8, Math.min(92, percent))}%`;
+        const percent = ((state.currentPage - 1) / Math.max(totalPages - 1, 1)) * 100;
+        boundaryMarker.style.left = `${Math.max(4, Math.min(96, percent))}%`;
       }
     }
-
+ 
     function updateViewTransform() {
       pdfFrame.style.transform = `scale(${state.zoom}) rotate(${state.rotation}deg)`;
-      const frame = document.getElementById('viewer-frame');
-      frame.style.transform = `rotate(${state.rotation}deg)`;
     }
 
     function formatRange(part) {
@@ -247,7 +246,7 @@ _INDEX_HTML = """<!doctype html>
         await preview();
       }
       pdfFrame.src = `/api/split/documents/${documentId}/pdf#page=${state.currentPage}`;
-      pageInfo.textContent = `Page ${state.currentPage}/${doc.page_count}`;
+      setUntrustedText(pageInfo, `Page ${state.currentPage}/${doc.page_count}`);
       refreshDocumentList();
       updateBoundaryMarker();
       updateViewerUi();
@@ -358,8 +357,8 @@ _INDEX_HTML = """<!doctype html>
     document.getElementById('zoom-in').onclick = () => { state.zoom = Math.min(2.5, Number((state.zoom + 0.25).toFixed(2))); updateViewTransform(); };
     document.getElementById('zoom-out').onclick = () => { state.zoom = Math.max(0.5, Number((state.zoom - 0.25).toFixed(2))); updateViewTransform(); };
     document.getElementById('rotate').onclick = () => { state.rotation = (state.rotation + 90) % 360; updateViewTransform(); };
-    document.getElementById('prev-page').onclick = () => { const doc = state.documents.find((item) => item.id === state.currentDocumentId); if (!doc) return; if (state.currentPage > 1) { state.currentPage -= 1; pdfFrame.src = `/api/split/documents/${doc.id}/pdf#page=${state.currentPage}`; setUntrustedText(pageInfo, `Page ${state.currentPage}/${doc.page_count}`); updateBoundaryMarker(); } };
-    document.getElementById('next-page').onclick = () => { const doc = state.documents.find((item) => item.id === state.currentDocumentId); if (!doc) return; if (state.currentPage < doc.page_count) { state.currentPage += 1; pdfFrame.src = `/api/split/documents/${doc.id}/pdf#page=${state.currentPage}`; setUntrustedText(pageInfo, `Page ${state.currentPage}/${doc.page_count}`); updateBoundaryMarker(); } };
+    document.getElementById('prev-page').onclick = () => { const doc = state.documents.find((item) => item.id === state.currentDocumentId); if (!doc) return; if (state.currentPage > 1) { const nextPage = state.currentPage - 1; state.currentPage = nextPage; pdfFrame.src = `/api/split/documents/${doc.id}/pdf#page=${nextPage}`; setUntrustedText(pageInfo, `Page ${nextPage}/${doc.page_count}`); updateBoundaryMarker(); } };
+    document.getElementById('next-page').onclick = () => { const doc = state.documents.find((item) => item.id === state.currentDocumentId); if (!doc) return; if (state.currentPage < doc.page_count) { const nextPage = state.currentPage + 1; state.currentPage = nextPage; pdfFrame.src = `/api/split/documents/${doc.id}/pdf#page=${nextPage}`; setUntrustedText(pageInfo, `Page ${nextPage}/${doc.page_count}`); updateBoundaryMarker(); } };
     document.getElementById('toggle-boundary').onclick = toggleBoundary;
     confirmCheck.onchange = () => {
       state.confirmChecked = confirmCheck.checked;
@@ -384,7 +383,7 @@ _INDEX_HTML = """<!doctype html>
 
 
 class PreviewRequest(BaseModel):
-    document_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    document_id: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     boundaries: list[int] = Field(..., max_length=64)
 
     @field_validator("boundaries")
@@ -396,9 +395,10 @@ class PreviewRequest(BaseModel):
 
 
 class ExecuteRequest(BaseModel):
-    document_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    document_id: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     preview_token: str = Field(..., min_length=8, max_length=128, pattern=r"^[A-Fa-f0-9]+$")
     plan: dict[str, Any] = Field(..., min_length=1, max_length=100000)
+    confirm: bool = False
 
     @field_validator("plan")
     @classmethod
@@ -459,7 +459,7 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
     )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost", "http://127.0.0.1", "null"],
+        allow_origins=["http://localhost", "http://127.0.0.1", "http://[::1]"],
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
         allow_credentials=False,
@@ -499,6 +499,24 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
             for document_id, label, page_count in entries
         ]
 
+    @app.middleware("http")
+    async def limit_body_and_origin(request: Request, call_next):
+        if request.method in {"POST", "PUT", "PATCH"}:
+            body = await request.body()
+            if len(body) > 128 * 1024:
+                return JSONResponse(status_code=413, content={"detail": "Request body is too large."})
+            origin = (request.headers.get("origin") or "").strip()
+            if origin.lower() == "null":
+                return JSONResponse(status_code=403, content={"detail": "Cross-origin requests are not allowed."})
+            if request.url.path.startswith("/api/split"):
+                if origin and origin not in {"http://localhost", "http://127.0.0.1", "http://[::1]"}:
+                    return JSONResponse(status_code=403, content={"detail": "Cross-origin requests are not allowed."})
+                host = request.headers.get("host") or ""
+                hostname = urlsplit(f"//{host}").hostname or ""
+                if hostname and hostname not in {"localhost", "127.0.0.1", "::1", "testserver"}:
+                    return JSONResponse(status_code=403, content={"detail": "Unexpected Host header."})
+        return await call_next(request)
+
     @app.get("/api/split/documents/{document_id}/pdf")
     async def serve_document_pdf(document_id: str) -> FileResponse:
         decoded_document_id = unquote(document_id)
@@ -525,6 +543,7 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
         if not _is_valid_document_id(decoded_document_id):
             raise HTTPException(status_code=400, detail="Unexpected document identifier.")
         raise HTTPException(status_code=404, detail="Document not found.")
+
 
     @app.post("/api/split/preview")
     async def preview(request: PreviewRequest) -> dict[str, Any]:
@@ -575,6 +594,8 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
                 raise HTTPException(status_code=409, detail="Execution requires the exact most recently previewed plan.")
             if current["plan"] != request.plan:
                 raise HTTPException(status_code=409, detail="Execution requires the exact most recently previewed plan.")
+            if not request.confirm:
+                raise HTTPException(status_code=409, detail="Execution requires an explicit confirmation for the current plan.")
 
             try:
                 snapshot = get_split_document_snapshot(cfg, request.document_id)
@@ -605,6 +626,10 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
                     }
                 app.state.in_flight.discard(plan.operation_id)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            async with lock:
+                app.state.in_flight.discard(plan.operation_id)
+            raise HTTPException(status_code=500, detail="Split execution failed unexpectedly.") from exc
         async with lock:
             current = app.state.preview_store.get(request.document_id)
             app.state.in_flight.discard(plan.operation_id)
@@ -620,7 +645,11 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
 
 
 def _is_valid_document_id(value: str) -> bool:
-    return bool(value) and all(ch.isalnum() or ch in {"_", "-"} for ch in value)
+    if not value or len(value) > 64:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        return False
+    return True
 
 
 def _validate_loopback_host(host: str) -> str:

@@ -89,6 +89,7 @@ def test_workbench_preview_requires_latest_plan_and_prevents_duplicate_execute(t
             "document_id": "docbench000002",
             "preview_token": token,
             "plan": plan,
+            "confirm": True,
         },
     )
     assert execution.status_code == 200, execution.text
@@ -104,6 +105,7 @@ def test_workbench_preview_requires_latest_plan_and_prevents_duplicate_execute(t
             "document_id": "docbench000002",
             "preview_token": token,
             "plan": plan,
+            "confirm": True,
         },
     )
     assert duplicate.status_code == 409, duplicate.text
@@ -122,10 +124,113 @@ def test_workbench_preview_requires_latest_plan_and_prevents_duplicate_execute(t
             "document_id": "docbench000002",
             "preview_token": valid_new_token,
             "plan": plan,
+            "confirm": True,
         },
     )
     assert invalidated.status_code == 409, invalidated.text
     assert "exact most recently previewed" in invalidated.json()["detail"].lower()
+
+
+def test_workbench_requires_explicit_confirmation_and_rejects_null_origin(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docbench000003", pages=8)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    preview = client.post(
+        "/api/split/preview",
+        json={"document_id": "docbench000003", "boundaries": [4]},
+    )
+    assert preview.status_code == 200, preview.text
+    payload = preview.json()
+
+    direct = client.post(
+        "/api/split/execute",
+        json={
+            "document_id": "docbench000003",
+            "preview_token": payload["preview_token"],
+            "plan": payload["plan"],
+        },
+    )
+    assert direct.status_code == 409, direct.text
+    assert "confirmation" in direct.json()["detail"].lower()
+
+    null_origin = TestClient(app, headers={"Origin": "null"})
+    blocked = null_origin.post(
+        "/api/split/execute",
+        json={
+            "document_id": "docbench000003",
+            "preview_token": payload["preview_token"],
+            "plan": payload["plan"],
+            "confirm": True,
+        },
+    )
+    assert blocked.status_code == 403, blocked.text
+
+    same_origin = client.post(
+        "/api/split/execute",
+        json={
+            "document_id": "docbench000003",
+            "preview_token": payload["preview_token"],
+            "plan": payload["plan"],
+            "confirm": True,
+        },
+    )
+    assert same_origin.status_code == 200, same_origin.text
+
+
+def test_workbench_cleans_up_inflight_state_after_runtime_failure(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docbench000004", pages=8)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    preview = client.post(
+        "/api/split/preview",
+        json={"document_id": "docbench000004", "boundaries": [4]},
+    )
+    assert preview.status_code == 200, preview.text
+    payload = preview.json()
+
+    def fail_execute(plan, config):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("aktenfux.workbench.execute_split", fail_execute)
+
+    failed = client.post(
+        "/api/split/execute",
+        json={
+            "document_id": "docbench000004",
+            "preview_token": payload["preview_token"],
+            "plan": payload["plan"],
+            "confirm": True,
+        },
+    )
+    assert failed.status_code == 500, failed.text
+    assert not app.state.in_flight
+
+
+def test_workbench_rejects_oversized_and_unexpected_document_ids(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docbench000005", pages=8)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    oversized = client.post(
+        "/api/split/preview",
+        content=("{" + '"document_id": "x"' + ',"boundaries": [2]}') * 100000,
+        headers={"Content-Type": "application/json"},
+    )
+    assert oversized.status_code == 413
+
+    unicode_route = client.get("/api/split/documents/é/pdf")
+    assert unicode_route.status_code == 400
+
+    large_route = client.get(f"/api/split/documents/{'a' * 300}/pdf")
+    assert large_route.status_code == 400
+
+    encoded_route = client.get("/api/split/documents/%2e%2e/%2e%2e/etc/passwd/pdf")
+    assert encoded_route.status_code == 400
 
 
 def test_workbench_validates_loopback_binding() -> None:
