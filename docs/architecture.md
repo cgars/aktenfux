@@ -1,7 +1,7 @@
 # Aktenfux architecture
 
 Status: maintained current-state and target-state baseline  
-Last reviewed: 2026-10-11
+Last reviewed: 2026-10-12
 
 Owner: project maintainers
 
@@ -52,16 +52,22 @@ the letter or its authoritative index card.
 ```mermaid
 flowchart TD
     U["Local user"] --> CLI["afu CLI"]
+    U --> UI["Loopback split workbench"]
     CLI --> CORE["Aktenfux processing core"]
+    UI --> SPLIT["Typed split services"]
+    CLI --> SPLIT
     CORE --> PDF["PDF parser libraries"]
+    SPLIT --> PDF
     CORE --> OLLAMA["Configured Ollama endpoint"]
     CORE --> STORE["Configured document paths — not fully confined"]
+    SPLIT --> STORE
     CORE --> DB[("Configured SQLite path — not fully confined")]
 ```
 
-The CLI is the interface currently present on `main`. A browser workbench exists
-separately as draft work and is not part of the current architecture. The
-configured Ollama URL defaults to loopback, but the implementation currently
+The CLI remains the broad interface. A focused browser workbench now exposes
+only validated split inspection, preview, and execution through the same typed
+split services as `afu split`; it is not a general review GUI. The configured
+Ollama URL defaults to loopback, but the implementation currently
 allows other URLs without an explicit remote-inference opt-in. Configured
 document and SQLite paths are also not fully confined to distinct workspace roots.
 
@@ -141,6 +147,8 @@ artifacts, index rows, or lifecycle state.
 | `main.py` | Processing, approve, reject, and reprocess orchestration | Mixes application policy and I/O sequencing. |
 | `review.py` | Resolve and display review records | Sidecar data remains untrusted even when locally stored. |
 | `split.py` | Plan and execute explicit PDF splits with provenance, staging, and retry state | Publishes only deterministic direct-child `_Inbox` outputs; the scanner gates journal-listed parts until the batch is complete. |
+| `workbench.py` | Serve the local split adapter and static browser controller | Loopback bind validation, trusted Hosts, per-process CSRF token, exact same-origin writes, streaming request limit, strict DTOs, and exact-plan confirmation; no remote or multi-user deployment. |
+| `workbench.js` | Navigate the native PDF viewer and manage boundary preview/confirmation state | No CDN assets; untrusted values use text nodes; document or boundary changes invalidate the prior preview and confirmation. |
 | `cli.py` | User commands and terminal presentation | Bulk actions need explicit consequence handling. |
 
 ## Current command and artifact behavior
@@ -170,6 +178,9 @@ from being mistaken for the behavior of every command.
 | `afu reject --dry-run` | Review PDF/sidecar and destination existence checks | Terminal/log proposal only; the current implementation returns before creating `_Error` | Still depends on untrusted sidecars; regression coverage must prove the destination directory and artifacts remain absent. |
 | `afu split --dry-run` | Validate `_Split` as a direct non-link `base_dir` child; read its PDF + sidecar by document ID; compare the opened PDF SHA-256 with the authoritative sidecar; read page count and normalize boundaries | Terminal preview only | No split outputs or provenance writes are allowed in dry-run. |
 | `afu split --no-dry-run` | Validate distinct `_Split`/`_Inbox` roots before access, then perform the split dry-run reads plus source-identity revalidation from a single-open snapshot | Split-provenance sidecar updates, staged part generation under `_Inbox/.split-staging/<operation-id>/`, then exclusive no-overwrite publish into `_Inbox` behind a durable batch journal. Hard-link publication is atomic where supported; a tested exclusive fallback supports filesystems without hard links. The inbox scanner skips journal-listed parts while publication is active; successful completion removes staged PDFs and the journal. | Direct-root constraints require `_Split` and `_Inbox` to be distinct direct children; cross-directory split batching remains out of scope. Completed operations refuse republish of missing consumed outputs to avoid duplicate downstream processing. On a hard-link-less filesystem, abrupt termination during the fallback's individual file write can leave an unpublished partial destination that fails closed and requires reconciliation. |
+| `afu workbench` read paths | Bind to an explicitly validated loopback address; serve the local page/controller; validate `_Split`; list typed document summaries; serve only an exact validated PDF | HTTP responses and terminal startup message only | Uses the browser's native PDF viewer; this is a single-user local boundary and not an authenticated remote service. |
+| `afu workbench` preview | Validate Host, per-process CSRF token, same Origin/Host/port when Origin is present, streaming body size, strict document ID and boundary list; call `plan_split` | Ephemeral in-memory latest-preview state with a new one-time token | Restarting the process discards previews; even an identical replacement preview invalidates the prior token, and changing a document/boundary or any execution failure requires a fresh preview and confirmation. |
+| `afu workbench` execute | Repeat the adapter checks; require literal confirmation, exact preview token and complete plan; revalidate the source and prior operation state | Same recoverable `_Split` sidecar, `_Inbox` staging/journal, and output effects as `afu split --no-dry-run`; ephemeral in-flight/completion state | Cancellation and all exceptions clear in-flight state and invalidate the matching preview. The API is unsupported beyond loopback and provides no user accounts. |
 
 ## Current implementation gap inventory
 
@@ -222,23 +233,27 @@ manual recovery even though no unique business state should live there.
 | Config → network endpoint | Operator configuration chooses data destination | Local-only by default; remote transfer requires explicit informed opt-in. |
 | Sidecar → review decision | Generated or edited data influences the user | Show origin, evidence, confidence, warnings, and conflicts. |
 | CLI/UI/MCP → application command | An interface requests state change | Centralize policy; preview and confirm consequential writes. |
+| Browser page → local workbench API | A local web origin requests PDF reads or split writes | Trusted loopback Host; per-process CSRF token; exact Origin/Host/port match for browser writes; bounded typed requests; CSP and text-only untrusted rendering. |
 | Workspace → sync/backup/export | Sensitive artifacts leave process control | Document confidentiality, race, retention, and recovery assumptions. |
 
-## Application service boundary — planned
+## Application service boundary
 
 <!-- diagram: target-components -->
 ```mermaid
 flowchart TD
     CLI["CLI"] --> APP["Application services"]
-    UI["Review workbench — planned"] --> APP
+    UI["Split workbench"] --> SPLIT["Typed split services"]
+    REVIEW["Broader review UI — planned"] --> APP
     MCP["MCP adapter — planned"] --> APP
+    CLI --> SPLIT
     APP --> DOC["Document and evidence pipeline"]
     APP --> COMMANDS["Review and archive commands"]
+    SPLIT --> STORE["PDFs and sidecars"]
     DOC --> INF["Inference provider interface"]
     INF --> OLLAMA["Ollama default"]
     INF --> LOCAL["Other explicitly configured local provider"]
-    DOC --> STORE["PDFs, sidecars and derived index"]
-    COMMANDS --> STORE
+    DOC --> DATA["PDFs, sidecars and derived index"]
+    COMMANDS --> DATA
 ```
 
 The application layer owns use cases such as scan, inspect, approve, reject,
@@ -305,7 +320,8 @@ The following architecture invariants apply:
 6. Implement and test SQLite rebuild before calling the index recoverable.
 7. Introduce provider-neutral inference while retaining the local-only default.
 8. Add page-level evidence and hierarchical long-document processing.
-9. Connect the review workbench through application services.
+9. Expand the focused split workbench into broader review capabilities only
+   through application services and a separate write-capability review.
 10. Add MCP read tools, then separately review any proposed write tools.
 11. Introduce canonical timezone-aware UTC lifecycle timestamps and migrate or
     explicitly mark legacy naive sidecar values without guessing their offset.
@@ -351,7 +367,8 @@ advisories.
 ## Change-verification harness
 
 `scripts/verify.py` is the canonical cross-platform pre-push and CI entry point.
-It runs the full Python tests, compiles Python sources, invokes repository checks,
+It runs the full Python tests, compiles Python sources, checks the workbench
+JavaScript syntax, runs dependency-free Node behavior tests, invokes repository checks,
 and checks unstaged, staged, and committed branch diffs for whitespace errors.
 `scripts/check_repository.py` validates inline and reference-style relative
 Markdown links, table column counts with optional edge pipes, named Mermaid
@@ -370,12 +387,13 @@ and lifecycle directories inside pytest-managed temporary roots. They do not
 contact the user's configured Ollama endpoint or access the user's configured
 lifecycle directories.
 
-`.github/workflows/verification.yml` runs the same command for every pull
-request and push to `main`. Its checkout and Python setup actions are pinned to
-immutable reviewed commits; the newly introduced setup action is the commit
-published as `actions/setup-python` v5.6.0. Python dependencies are still
-resolved from the project's open version ranges, so this improves repeatability
-of the checks but does not provide a reproducible or offline dependency
-installation. The preceding CI installation step downloads packages and writes
-only to the ephemeral runner environment; no dependency cache is configured.
+.github/workflows/verification.yml` runs the same command for every pull
+request and push to `main`. Its checkout, Python, and Node setup actions are
+pinned to immutable reviewed commits. FastAPI and Uvicorn use reviewed minor
+ranges, and the repository check rejects removing their upper bounds. Other
+Python dependencies are still resolved from open version ranges, so the project
+does not yet provide a completely reproducible or offline installation. The CI
+installation step downloads packages and writes only to the ephemeral runner
+environment; no dependency cache is configured. `httpx2` is test-only and
+bounded to the reviewed Starlette TestClient-compatible minor series.
 Actual Mermaid rendering remains in the separately gated architecture workflow.

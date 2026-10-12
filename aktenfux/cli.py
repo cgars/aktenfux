@@ -390,6 +390,30 @@ def split(
 
 
 @app.command()
+def workbench(
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Loopback host used by the local split workbench."),
+    port: int = typer.Option(8000, "--port", help="Loopback port used by the local split workbench."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Run the local split workbench on the loopback interface."""
+    _setup_logging(verbose)
+    from aktenfux.workbench import _validate_loopback_host, create_app  # noqa: PLC0415
+
+    try:
+        bind_host = _validate_loopback_host(host)
+    except ValueError as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    app_instance = create_app(_load_config(config_path, dry_run=None))
+    import uvicorn  # noqa: PLC0415
+
+    console.print(f"[green]Starting split workbench at http://{bind_host}:{port}[/green]")
+    uvicorn.run(app_instance, host=bind_host, port=port, log_level="warning")
+
+
+@app.command()
 def status(
     config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),

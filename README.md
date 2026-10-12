@@ -86,6 +86,9 @@ afu reject <id>
 
 # Show folder counts
 afu status
+
+# Open the loopback-only split workbench for documents already in _Split
+afu workbench
 ```
 
 All commands are also available as:
@@ -148,6 +151,7 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 | `afu review` | List documents awaiting approval |
 | `afu approve <id>` | Archive an approved document, or stage it in `_Split` when split detection is recommended |
 | `afu split <id> --before N [--before M ...]` | Preview and, after explicit confirmation, split one staged `_Split` PDF into `_Inbox` part PDFs |
+| `afu workbench` | Start the loopback-only browser workbench for previewing and explicitly confirming `_Split` operations |
 | `afu approve --all` | Archive/stage all documents currently in `_Review` |
 | `afu reject <id>` | Move a document to `_Error` |
 | `afu reject --all` | Move all documents currently in `_Review` to `_Error` |
@@ -166,6 +170,8 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 - `afu split` requires `_Split` and `_Inbox` to be distinct, direct, non-link children of `base_dir`; validates that the selected PDF and sidecar are direct regular files in `_Split`; and rejects a PDF whose SHA-256 no longer matches its authoritative sidecar. It shows exact page ranges and destination filenames and requires explicit confirmation unless `--yes` is used.
 - Split execution preserves the original PDF/sidecar in `_Split`, writes per-part hashes to sidecar provenance first, stages outputs in `_Inbox/.split-staging/<operation-id>/`, then publishes to `_Inbox` with a durable batch journal and exclusive no-overwrite creation. Publication uses an atomic hard link when supported and a tested exclusive fallback otherwise. The inbox scanner skips every part named by an active journal until the complete batch is published; completed staging copies and journal data are removed.
 - Completed split operations are not allowed to republish missing `_Inbox` outputs; if outputs were already consumed, Aktenfux fails safely instead of creating duplicates.
+- `afu workbench` binds only to `localhost`, `127.0.0.1`, or `::1`. Its mutating API requires a per-process page token, an exact same-origin browser request when an Origin header is present, the exact latest server-held preview with its one-time token, and literal `true` confirmation. Host validation, a 128 KiB streaming request limit, strict identifiers, and fail-closed in-flight cleanup protect the local adapter; this is a single-user local boundary, not remote authentication.
+- The workbench renders untrusted filenames and errors as text, serves no CDN assets, and applies a restrictive Content Security Policy. It uses the browser's native PDF viewer, so rendering details can vary by browser; navigation, zoom, rotation, boundary semantics, confirmation reset, and hostile display values have Node-based behavior tests in the canonical harness.
 - See the [architecture](docs/architecture.md) and [threat model](docs/threat-model.md) for current gaps and release gates.
 - Target behavior permanently archives documents **only after you approve them**; current lifecycle-root aliasing and model-derived path escape gaps can bypass this guarantee.
 - Target behavior keeps each PDF and sidecar together as a recoverable audit unit; current sequential writes and moves can leave partial or separated state.
@@ -199,6 +205,9 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 | `db.py` | Optional SQLite index |
 | `review.py` | List and display `_Review` documents |
 | `main.py` | Core processing pipeline |
+| `split.py` | Typed split inspection, planning, execution, provenance, and recovery services shared by CLI and workbench |
+| `workbench.py` | Loopback-only FastAPI adapter with bounded requests, Host/origin/CSRF controls, and exact-plan execution |
+| `workbench.js` | Dependency-free browser controller for PDF navigation, boundary preview, confirmation, and safe rendering |
 | `cli.py` | Typer-based CLI (`afu`) |
 
 ---
@@ -223,7 +232,8 @@ make verify
 ```
 
 The verification harness runs the complete Python test suite, compiles the
-Python sources, checks working-tree and branch diffs for whitespace errors,
+Python sources, checks the workbench JavaScript with Node.js 22, runs its
+frontend behavior tests, checks working-tree and branch diffs for whitespace errors,
 validates relative Markdown links and table structure, checks named Mermaid
 sources using top-level backtick or tilde fences, and rejects
 runtime artifacts found in nested lifecycle directories as well as at the
@@ -236,6 +246,13 @@ configured by the user. Python compilation and test execution may create
 ignored `__pycache__` and `.pytest_cache` developer caches; tests also create
 and mutate synthetic PDFs, sidecars, SQLite databases, and lifecycle directories
 under pytest-managed temporary roots.
+
+The security-sensitive local-server dependencies use reviewed minor-version
+ranges (`fastapi>=0.143,<0.144` and `uvicorn>=0.54,<0.55`) rather than open lower
+bounds. The test-only `httpx2` range matches Starlette's maintained TestClient
+backend and is kept out of the runtime graph. The rest of the Python graph is
+not yet locked, so fully reproducible offline installation remains a release
+gate documented in the threat model.
 
 ---
 
