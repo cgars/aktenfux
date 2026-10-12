@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from scripts.check_repository import (
+    check_bounded_runtime_dependencies,
     check_git_artifacts,
     check_git_markdown,
     check_named_diagrams,
@@ -26,6 +27,19 @@ def test_markdown_links_accept_existing_relative_target(tmp_path, monkeypatch):
     monkeypatch.setattr("scripts.check_repository.REPO_ROOT", tmp_path)
 
     assert check_markdown_links([source]) == []
+
+
+def test_runtime_server_dependencies_require_upper_and_lower_bounds(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\ndependencies = ["fastapi>=0.143", "uvicorn>=0.54,<0.55"]\n',
+        encoding="utf-8",
+    )
+
+    errors = check_bounded_runtime_dependencies(pyproject)
+
+    assert len(errors) == 1
+    assert "fastapi" in errors[0]
 
 
 def test_markdown_links_reject_missing_relative_target(tmp_path, monkeypatch):

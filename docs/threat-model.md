@@ -1,7 +1,7 @@
 # Aktenfux threat assessment
 
 Status: maintained assessment for the pre-release MVP  
-Last reviewed: 2026-10-11
+Last reviewed: 2026-10-12
 
 Owner: project maintainers
 
@@ -60,7 +60,8 @@ In scope:
 - optional SQLite index and duplicate detection;
 - review, approval, rejection, reprocessing, and split staging;
 - synchronized local folders, logs, backups, and repository hygiene;
-- planned review UI and MCP boundaries where they affect current design.
+- the current focused split workbench plus planned broader review UI and MCP
+  boundaries where they affect current design.
 
 Assumptions:
 
@@ -108,6 +109,7 @@ The model is not an authorized actor. It produces untrusted proposals.
 ```mermaid
 flowchart TD
     U["User and local interfaces"] -->|"commands"| A["Aktenfux application"]
+    B["Local browser origin"] -->|"token-bound split requests"| A
     F["Inbox and synchronized filesystem"] -->|"hostile files and events"| A
     A -->|"PDF bytes"| P["Parser dependencies"]
     A -->|"OCR text and prompts"| M["Configured inference endpoint"]
@@ -166,6 +168,7 @@ final archive.
 | AF-18 | The clerk turns an unreadable amount into “zero”—or reads the written word “false” as “yes.” | Permissive model/schema coercion silently converts malformed amounts to `0.0`, clamps out-of-range confidence percentages, maps unknown types to `Other`, and drops malformed collection entries. Configuration also uses loose Python coercion: a quoted non-empty value such as `"false"` becomes true and can unexpectedly enable Markdown, metadata rewriting, SQLite, or dry-run behavior. These conversions can hide invalid input and persist false data or activate consequential behavior. | T/R/E | High | Use strict typed schemas for model, sidecar, and configuration boundaries; reject wrong scalar/collection types and ambiguous consequential values; distinguish missing, invalid, model-proposed, and human-confirmed states; record bounded validation codes; require evidence and human review for amounts, deadlines, identities, and actions. | Adversarial locale/number corpus, quoted boolean and wrong-type configuration matrix, out-of-range scores, malformed collections, unknown enums, round-trip provenance, and CLI tests proving invalid configuration fails before filesystem, database, parser, inference, or metadata access. |
 | AF-19 | A label from the letter changes what the terminal appears to say. | Untrusted model, sidecar, filename, remote Ollama, or streamed model-download text is printed through Rich, logs, or raw `print`; control characters, ANSI escapes, terminal hyperlinks, or markup can spoof prompts, hide warnings, alter display, or create oversized output. | S/T/I | High | Strip or visibly escape control characters; disable markup for untrusted fields; bound displayed values and streamed output; never render remote text as trusted prompts; separate trusted UI chrome from evidence. | ANSI/control/OSC/markup corpus across review tables, errors, filenames, model lists, test responses, and pull streams; snapshot tests proving warnings and confirmations cannot be spoofed. |
 | AF-20 | The review desk and archive cabinet are configured as the same place. | Lifecycle directories can currently be absolute, equal, nested, case/Unicode aliases, or symlinks to the same filesystem object. If `_Review` aliases or sits inside `Archive`, a scan can place a document in the permanent archive before approval; other overlaps can bypass state boundaries or make cleanup affect another lifecycle. | T/R/E | Critical | Derive lifecycle roots from validated relative names; resolve with platform-aware normalization; require inbox, review, imported, error, split, dry-run, archive, and dedicated index locations to be pairwise distinct, non-overlapping, non-symlink directories beneath `base_dir`, and distinct from `base_dir` itself; fail configuration loading before creating anything. | Equal, parent/child, absolute, `..`, symlink/junction, case-fold, Unicode-normalization, short-name, and filesystem-identity alias configurations proving startup fails before directory, database, parser, inference, mover, or writer access. |
+| AF-21 | Another website tries to hand the local clerk a forged split instruction, or an enormous note jams the desk. | A loopback web adapter can still be reached by the browser. Host rebinding, cross-origin requests, UI-only confirmation, stale previews, DOM injection, unbounded bodies, duplicate submissions, cancellation, or exception paths could expose a PDF, execute the wrong split, mislead the owner, exhaust memory, or leave the document permanently marked busy. | S/T/R/I/D/E | High | Bind only to explicit loopback addresses; validate Host; require a per-process page token and exact Origin/Host/port match for browser writes; stream-limit bodies before parsing; use strict bounded DTOs; render untrusted values as text under CSP; require the exact latest complete plan and literal confirmation; prevent duplicate/in-flight preview replacement; clear and invalidate state on every failure and cancellation. | Real-port same-origin, null/foreign-origin, hostile-Host, missing-token, oversized streaming body, strict confirmation, stale/exact plan, hostile display value, navigation/marker, duplicate-submit, unexpected-error, and cancellation tests in the canonical harness. |
 
 ## Implemented controls and known limits
 
@@ -186,6 +189,16 @@ The current implementation includes useful controls:
   filesystems without hard links, the inbox scanner skips all journal-listed
   parts while publishing, and successful completion removes staged document
   copies and journal data;
+- the focused split workbench binds only to explicitly validated loopback
+  addresses; validates Hosts; requires a per-process page token and an exact
+  Origin/Host/port match when a browser Origin is present; stream-limits request
+  bodies to 128 KiB before JSON parsing; uses strict bounded identifiers and
+  lists; renders untrusted values as text under CSP; and requires the exact
+  latest plan plus literal confirmation before calling the shared split service;
+- every workbench preview receives a fresh one-time token; failures and
+  cancellations invalidate the matching preview and
+  clear in-flight state; a new preview for the same document is refused while
+  execution is active;
 - Pydantic validates and normalizes the model response shape;
 - path resolution prevents moves outside `base_dir`;
 - destination collision handling protects normal move destinations, but not the
@@ -261,7 +274,9 @@ These controls have important limits:
 - untrusted model, sidecar, filename, and remote endpoint text can reach Rich,
   logs, or raw terminal output without consistent control-character escaping,
   markup disabling, or display bounds;
-- Python runtime and build dependencies use open lower bounds without a lock;
+- FastAPI and Uvicorn now use reviewed minor-version ranges and the repository
+  gate requires their upper bounds; the test-only Starlette client backend is
+  likewise bounded. The remaining Python runtime/build graph is not locked, and
   model artifacts have no recorded integrity/provenance verification;
 - PDF metadata rewriting uses a predictable sibling temporary path without
   exclusive/no-follow creation and can collide with or follow a pre-existing
@@ -355,6 +370,10 @@ consider it only after a separate ADR and all gates below are satisfied.
 - a threat-model update for each supported provider or deployment pattern.
 
 ### Before GUI or MCP write capabilities
+
+The focused loopback split workbench implements the narrow controls above for
+one split command. This does not satisfy the gate for a broader review GUI,
+remote deployment, or MCP write tools; those capabilities remain planned.
 
 - application services own all state transitions and policy;
 - read-only and write capabilities are separately configurable;

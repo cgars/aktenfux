@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +43,15 @@ def main() -> int:
     run(
         "Python compilation",
         [sys.executable, "-m", "compileall", "-q", "aktenfux", "tests", "scripts"],
+    )
+    node = shutil.which("node")
+    if node is None:
+        print("\nERROR: Node.js is required for workbench verification.", file=sys.stderr)
+        return 1
+    run("Workbench JavaScript syntax", [node, "--check", "aktenfux/workbench.js"])
+    run(
+        "Workbench frontend tests",
+        [node, "--test", "tests/workbench_frontend.test.js"],
     )
     run("Repository checks", [sys.executable, "scripts/check_repository.py"])
     run("Unstaged diff whitespace", ["git", "diff", "--check"])

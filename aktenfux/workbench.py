@@ -1,43 +1,52 @@
-"""Local split workbench for previewing and executing _Split PDF splits."""
+"""Local, loopback-only split workbench."""
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import html
 import ipaddress
 import json
 import re
+import secrets
+from collections import deque
 from contextlib import asynccontextmanager
+from hmac import compare_digest
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
-    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi import FastAPI, HTTPException
     from fastapi.middleware.trustedhost import TrustedHostMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 except ModuleNotFoundError as exc:  # pragma: no cover - permissive import for runtime setup
     raise ModuleNotFoundError(
         "The split workbench requires the package dependencies from pyproject.toml. "
         "Install with 'pip install -e .'."
     ) from exc
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from aktenfux.config import AktenfuxConfig, load_config
-from aktenfux.schema import SplitPlan, SplitResult
+from aktenfux.schema import SplitPlan
 from aktenfux.split import (
     SplitError,
+    execute_split,
     get_split_document_snapshot,
     list_split_documents,
     plan_split,
-    execute_split,
 )
 
+MAX_REQUEST_BODY_BYTES = 128 * 1024
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_DOCUMENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_WORKBENCH_JS = Path(__file__).with_name("workbench.js").read_text(encoding="utf-8")
+
 _INDEX_HTML = """<!doctype html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-  <meta charset=\"utf-8\" />
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="aktenfux-csrf-token" content="__CSRF_TOKEN__" />
   <title>Aktenfux Split Workbench</title>
   <style>
     :root { color-scheme: light dark; }
@@ -51,12 +60,11 @@ _INDEX_HTML = """<!doctype html>
     button.secondary { background: #475569; }
     button.warning { background: #b45309; }
     button:disabled { opacity: 0.55; cursor: not-allowed; }
-    ul { margin: 0; padding-left: 1.1rem; }
-    li { cursor: pointer; padding: 0.2rem 0; }
-    li.selected { color: #93c5fd; font-weight: 600; }
+    .document-choice { display: block; width: 100%; margin-bottom: 0.4rem; text-align: left; background: #1e293b; }
+    .document-choice.selected { color: #bfdbfe; outline: 2px solid #60a5fa; }
     .viewer-frame { flex: 1; min-height: 420px; border: 1px solid #475569; border-radius: 12px; background: #020617; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
     .viewer-frame iframe { width: 100%; height: 100%; border: none; background: white; transform-origin: center center; }
-    .boundary-marker { position: absolute; top: 0; bottom: 0; width: 3px; background: #f59e0b; box-shadow: 0 0 0 1px rgba(245,158,11,0.8); left: 50%; transform: translateX(-50%); opacity: 0.9; pointer-events: none; }
+    .boundary-marker { position: absolute; z-index: 2; top: 0.75rem; left: 50%; transform: translateX(-50%); padding: 0.45rem 0.75rem; border: 2px solid #fbbf24; border-radius: 999px; color: #111827; background: #fbbf24; font-weight: 700; pointer-events: none; }
     .controls { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
     .range-list { margin-top: 0.5rem; }
     .status { min-height: 1.25rem; font-size: 0.95rem; }
@@ -64,327 +72,206 @@ _INDEX_HTML = """<!doctype html>
     .ok { color: #86efac; }
     .confirmer { display: flex; align-items: center; gap: 0.6rem; }
   </style>
+  <script src="/workbench.js" defer></script>
 </head>
 <body>
-  <div class=\"layout\">
-    <aside class=\"sidebar\">
+  <div class="layout">
+    <aside class="sidebar">
       <h2>Split queue</h2>
-      <div id=\"document-list\"></div>
+      <div id="document-list"></div>
     </aside>
-    <main class=\"viewer\">
-      <div class=\"panel\">
-        <div class=\"controls\">
-          <button id=\"prev-page\" class=\"secondary\" type=\"button\">Prev</button>
-          <button id=\"next-page\" class=\"secondary\" type=\"button\">Next</button>
-          <button id=\"zoom-out\" class=\"secondary\" type=\"button\">-</button>
-          <button id=\"zoom-in\" class=\"secondary\" type=\"button\">+</button>
-          <button id=\"rotate\" class=\"secondary\" type=\"button\">Rotate</button>
-          <button id=\"toggle-boundary\" class=\"warning\" type=\"button\">Toggle boundary</button>
-          <span id=\"page-info\">No document selected</span>
+    <main class="viewer">
+      <div class="panel">
+        <div class="controls">
+          <button id="prev-page" class="secondary" type="button">Prev</button>
+          <button id="next-page" class="secondary" type="button">Next</button>
+          <button id="zoom-out" class="secondary" type="button">−</button>
+          <button id="zoom-in" class="secondary" type="button">+</button>
+          <button id="rotate" class="secondary" type="button">Rotate</button>
+          <button id="toggle-boundary" class="warning" type="button">Toggle boundary</button>
+          <button id="refresh-preview" class="secondary" type="button">Preview split</button>
+          <span id="page-info">No document selected</span>
         </div>
       </div>
-
-      <div class=\"viewer-frame\" id=\"viewer-frame\">
-        <div id=\"boundary-marker\" class=\"boundary-marker\" aria-hidden=\"true\" style=\"display: none;\"></div>
-        <iframe id=\"pdf-frame\" title=\"PDF viewer\" src=\"about:blank\"></iframe>
+      <div class="viewer-frame" id="viewer-frame">
+        <div id="boundary-marker" class="boundary-marker" role="status" hidden></div>
+        <iframe id="pdf-frame" title="PDF viewer" src="about:blank"></iframe>
       </div>
-
-      <div class=\"panel\">
-        <div class=\"status\" id=\"message\"></div>
+      <div class="panel">
+        <div class="status" id="message"></div>
         <h3>Result preview</h3>
-        <div id=\"preview-list\" class=\"range-list\">Select a document to preview.</div>
-        <div class=\"confirmer\">
-          <input id=\"confirm-check\" type=\"checkbox\" />
-          <label for=\"confirm-check\">I confirm this exact plan.</label>
+        <div id="preview-list" class="range-list">Select a document to preview.</div>
+        <div class="confirmer">
+          <input id="confirm-check" type="checkbox" />
+          <label for="confirm-check">I confirm this exact plan.</label>
         </div>
-        <div class=\"controls\" style=\"margin-top: 0.8rem;\">
-          <button id=\"execute\" type=\"button\" disabled>Execute split</button>
+        <div class="controls" style="margin-top: 0.8rem;">
+          <button id="execute" type="button" disabled>Execute split</button>
         </div>
       </div>
     </main>
   </div>
-
-  <script>
-    const state = {
-      documents: [],
-      currentDocumentId: null,
-      currentPage: 1,
-      pageCount: 1,
-      boundaries: [],
-      previewToken: null,
-      pendingPreview: false,
-      pendingExecute: false,
-      zoom: 1,
-      rotation: 0,
-      confirmChecked: false,
-      preview: null,
-    };
-
-    function renderDocumentList() {
-      docList.replaceChildren();
-      state.documents.forEach((doc) => {
-        const li = document.createElement('li');
-        li.textContent = `${doc.label} (${doc.page_count} pages)`;
-        li.className = doc.id === state.currentDocumentId ? 'selected' : '';
-        li.onclick = () => selectDocument(doc.id);
-        docList.appendChild(li);
-      });
-    }
-
-    const docList = document.getElementById('document-list');
-    const previewList = document.getElementById('preview-list');
-    const pdfFrame = document.getElementById('pdf-frame');
-    const pageInfo = document.getElementById('page-info');
-    const executeButton = document.getElementById('execute');
-    const confirmCheck = document.getElementById('confirm-check');
-    const messageEl = document.getElementById('message');
-    const boundaryMarker = document.getElementById('boundary-marker');
-
-    function setMessage(text, kind = 'info') {
-      messageEl.textContent = text || '';
-      messageEl.className = 'status';
-      if (kind === 'error') messageEl.classList.add('danger');
-      if (kind === 'ok') messageEl.classList.add('ok');
-    }
-
-    function clearConfirmationState() {
-      state.confirmChecked = false;
-      confirmCheck.checked = false;
-    }
-
-    function resetConfirmationState() {
-      clearConfirmationState();
-      updateViewerUi();
-    }
-
-    function updateBoundaryMarker() {
-      const doc = state.documents.find((item) => item.id === state.currentDocumentId);
-      const totalPages = doc ? doc.page_count : 1;
-      const markerVisible = !!state.currentDocumentId && state.boundaries.includes(state.currentPage);
-      boundaryMarker.style.display = markerVisible ? 'block' : 'none';
-      if (markerVisible) {
-        const percent = ((state.currentPage - 1) / Math.max(totalPages - 1, 1)) * 100;
-        boundaryMarker.style.left = `${Math.max(4, Math.min(96, percent))}%`;
-      }
-    }
- 
-    function updateViewTransform() {
-      pdfFrame.style.transform = `scale(${state.zoom}) rotate(${state.rotation}deg)`;
-    }
-
-    function formatRange(part) {
-      return `${part.start_page}-${part.end_page}`;
-    }
-
-    function renderPreviewParts(plan) {
-      if (!plan || !Array.isArray(plan.parts)) {
-        previewList.textContent = 'No preview available.';
-        return;
-      }
-      previewList.replaceChildren();
-      plan.parts.forEach((part) => {
-        const row = document.createElement('div');
-        row.textContent = `pages ${formatRange(part)} → ${part.destination_filename}`;
-        previewList.appendChild(row);
-      });
-    }
-
-    function setUntrustedText(node, value) {
-      node.textContent = String(value ?? '');
-    }
-
-    async function loadDocuments() {
-      const response = await fetch('/api/split/documents');
-      if (!response.ok) {
-        throw new Error('Could not load documents.');
-      }
-      const docs = await response.json();
-      state.documents = docs;
-      docList.replaceChildren();
-      if (!docs.length) {
-        const empty = document.createElement('p');
-        empty.textContent = 'No documents are currently eligible for splitting.';
-        docList.appendChild(empty);
-        state.currentDocumentId = null;
-        state.preview = null;
-        state.previewToken = null;
-        pdfFrame.src = 'about:blank';
-        resetConfirmationState();
-        pageInfo.textContent = 'No document selected';
-        previewList.textContent = 'Select a document to preview.';
-        boundaryMarker.style.display = 'none';
-        return;
-      }
-      docs.forEach((doc) => {
-        const li = document.createElement('li');
-        li.textContent = `${doc.label} (${doc.page_count} pages)`;
-        li.className = doc.id === state.currentDocumentId ? 'selected' : '';
-        li.onclick = () => selectDocument(doc.id);
-        docList.appendChild(li);
-      });
-      if (state.currentDocumentId && !docs.some((item) => item.id === state.currentDocumentId)) {
-        state.currentDocumentId = docs[0].id;
-      }
-      if (!state.currentDocumentId && docs.length) {
-        state.currentDocumentId = docs[0].id;
-      }
-      if (state.currentDocumentId) {
-        selectDocument(state.currentDocumentId, false);
-      }
-    }
-
-    async function selectDocument(documentId, forceRefresh = true) {
-      const doc = state.documents.find((item) => item.id === documentId);
-      if (!doc) return;
-      state.currentDocumentId = documentId;
-      state.currentPage = Math.min(Math.max(1, state.currentPage), doc.page_count);
-      state.boundaries = [];
-      state.preview = null;
-      state.previewToken = null;
-      clearConfirmationState();
-      if (forceRefresh) {
-        await preview();
-      }
-      pdfFrame.src = `/api/split/documents/${documentId}/pdf#page=${state.currentPage}`;
-      setUntrustedText(pageInfo, `Page ${state.currentPage}/${doc.page_count}`);
-      refreshDocumentList();
-      updateBoundaryMarker();
-      updateViewerUi();
-    }
-
-    function refreshDocumentList() {
-      [...docList.children].forEach((node, idx) => {
-        const doc = state.documents[idx];
-        node.classList.toggle('selected', doc && doc.id === state.currentDocumentId);
-      });
-    }
-
-    function updateViewerUi() {
-      const doc = state.documents.find((item) => item.id === state.currentDocumentId);
-      const enabled = !!doc;
-      const docPages = doc ? doc.page_count : 1;
-      setUntrustedText(pageInfo, enabled ? `Page ${state.currentPage}/${docPages}` : 'No document selected');
-      executeButton.disabled = !state.preview || !state.confirmChecked || state.pendingExecute;
-      confirmCheck.disabled = !state.preview || state.pendingExecute;
-      document.getElementById('toggle-boundary').disabled = !enabled || state.pendingPreview || state.pendingExecute;
-      document.getElementById('prev-page').disabled = !enabled;
-      document.getElementById('next-page').disabled = !enabled;
-      updateBoundaryMarker();
-    }
-
-    async function preview() {
-      const doc = state.documents.find((item) => item.id === state.currentDocumentId);
-      if (!doc) return;
-      state.pendingPreview = true;
-      resetConfirmationState();
-      const payload = { document_id: doc.id, boundaries: [...state.boundaries].sort((a, b) => a - b) };
-      try {
-        const response = await fetch('/api/split/preview', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        const body = await response.json();
-        if (!response.ok) {
-          throw new Error(body.detail || 'Invalid split preview.');
-        }
-        state.preview = body.plan;
-        state.previewToken = body.preview_token;
-        renderPreviewParts(body.plan);
-        setMessage(`Preview ready for ${body.plan.document_id}.`, 'ok');
-      } catch (error) {
-        previewList.textContent = 'Preview failed.';
-        setMessage((error && error.message) || 'Preview failed.', 'error');
-        state.preview = null;
-        state.previewToken = null;
-      } finally {
-        state.pendingPreview = false;
-        updateViewerUi();
-      }
-    }
-    async function executePlan() {
-      const doc = state.documents.find((item) => item.id === state.currentDocumentId);
-      if (!doc || !state.preview || !state.previewToken || state.pendingExecute) return;
-      state.pendingExecute = true;
-      state.confirmChecked = false;
-      confirmCheck.checked = false;
-      updateViewerUi();
-      try {
-        const response = await fetch('/api/split/execute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            document_id: doc.id,
-            plan: state.preview,
-            preview_token: state.previewToken,
-          }),
-        });
-        const body = await response.json();
-        if (!response.ok) {
-          throw new Error(body.detail || 'Split execution failed.');
-        }
-        setMessage(`Split complete: ${body.result.outputs.length} parts created.`, 'ok');
-        state.preview = null;
-        state.previewToken = null;
-        confirmCheck.checked = false;
-        state.confirmChecked = false;
-        await loadDocuments();
-      } catch (error) {
-        setMessage((error && error.message) || 'Split execution failed.', 'error');
-      } finally {
-        state.pendingExecute = false;
-        state.preview = null;
-        state.previewToken = null;
-        confirmCheck.checked = false;
-        state.confirmChecked = false;
-        updateViewerUi();
-      }
-    }
-
-    function toggleBoundary() {
-      if (!state.currentDocumentId || state.pendingPreview || state.pendingExecute) return;
-      const page = state.currentPage;
-      if (page <= 1) return;
-      const exists = state.boundaries.includes(page);
-      if (exists) {
-        state.boundaries = state.boundaries.filter((value) => value !== page);
-      } else {
-        state.boundaries = [...state.boundaries, page].sort((a, b) => a - b);
-      }
-      preview();
-    }
-
-    document.getElementById('zoom-in').onclick = () => { state.zoom = Math.min(2.5, Number((state.zoom + 0.25).toFixed(2))); updateViewTransform(); };
-    document.getElementById('zoom-out').onclick = () => { state.zoom = Math.max(0.5, Number((state.zoom - 0.25).toFixed(2))); updateViewTransform(); };
-    document.getElementById('rotate').onclick = () => { state.rotation = (state.rotation + 90) % 360; updateViewTransform(); };
-    document.getElementById('prev-page').onclick = () => { const doc = state.documents.find((item) => item.id === state.currentDocumentId); if (!doc) return; if (state.currentPage > 1) { const nextPage = state.currentPage - 1; state.currentPage = nextPage; pdfFrame.src = `/api/split/documents/${doc.id}/pdf#page=${nextPage}`; setUntrustedText(pageInfo, `Page ${nextPage}/${doc.page_count}`); updateBoundaryMarker(); } };
-    document.getElementById('next-page').onclick = () => { const doc = state.documents.find((item) => item.id === state.currentDocumentId); if (!doc) return; if (state.currentPage < doc.page_count) { const nextPage = state.currentPage + 1; state.currentPage = nextPage; pdfFrame.src = `/api/split/documents/${doc.id}/pdf#page=${nextPage}`; setUntrustedText(pageInfo, `Page ${nextPage}/${doc.page_count}`); updateBoundaryMarker(); } };
-    document.getElementById('toggle-boundary').onclick = toggleBoundary;
-    confirmCheck.onchange = () => {
-      state.confirmChecked = confirmCheck.checked;
-      updateViewerUi();
-    };
-    executeButton.onclick = executePlan;
-
-    document.addEventListener('keydown', (event) => {
-      if (event.key.toLowerCase() === 't') {
-        toggleBoundary();
-      }
-    });
-
-    updateViewTransform();
-    loadDocuments().catch((error) => {
-      setMessage(error.message || 'Could not load documents.', 'error');
-    });
-  </script>
 </body>
 </html>
 """
 
 
+async def _send_error(
+    scope: Scope,
+    receive: Receive,
+    send: Send,
+    *,
+    status_code: int,
+    detail: str,
+) -> None:
+    response = JSONResponse(status_code=status_code, content={"detail": detail})
+    await response(scope, receive, send)
+
+
+class RequestBodyLimitMiddleware:
+    """Read at most ``max_bytes`` before a mutating body reaches the parser."""
+
+    def __init__(self, app: ASGIApp, max_bytes: int = MAX_REQUEST_BODY_BYTES) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope.get("method") not in _MUTATING_METHODS:
+            await self.app(scope, receive, send)
+            return
+
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        content_length = headers.get(b"content-length")
+        if content_length is not None:
+            try:
+                declared_length = int(content_length)
+            except ValueError:
+                await _send_error(
+                    scope,
+                    receive,
+                    send,
+                    status_code=400,
+                    detail="Content-Length is invalid.",
+                )
+                return
+            if declared_length < 0:
+                await _send_error(
+                    scope,
+                    receive,
+                    send,
+                    status_code=400,
+                    detail="Content-Length is invalid.",
+                )
+                return
+            if declared_length > self.max_bytes:
+                await _send_error(
+                    scope,
+                    receive,
+                    send,
+                    status_code=413,
+                    detail="Request body is too large.",
+                )
+                return
+
+        received = 0
+        messages: deque[Message] = deque()
+        while True:
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    await _send_error(
+                        scope,
+                        receive,
+                        send,
+                        status_code=413,
+                        detail="Request body is too large.",
+                    )
+                    return
+                messages.append(message)
+                if not message.get("more_body", False):
+                    break
+            elif message["type"] == "http.disconnect":
+                messages.append(message)
+                break
+
+        async def replay_receive() -> Message:
+            if messages:
+                return messages.popleft()
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        await self.app(scope, replay_receive, send)
+
+
+def _header(scope: Scope, name: bytes) -> str:
+    for key, value in scope.get("headers", []):
+        if key.lower() == name:
+            return value.decode("latin-1")
+    return ""
+
+
+def _same_origin(origin: str, host: str) -> bool:
+    try:
+        parsed_origin = urlsplit(origin)
+        parsed_host = urlsplit(f"//{host}")
+    except ValueError:
+        return False
+    if parsed_origin.scheme != "http" or parsed_origin.username or parsed_origin.password:
+        return False
+    if parsed_origin.path not in {"", "/"} or parsed_origin.query or parsed_origin.fragment:
+        return False
+    if not parsed_origin.hostname or not parsed_host.hostname:
+        return False
+    origin_port = parsed_origin.port or 80
+    host_port = parsed_host.port or 80
+    return (
+        parsed_origin.hostname.lower() == parsed_host.hostname.lower()
+        and origin_port == host_port
+    )
+
+
+class WorkbenchRequestSecurityMiddleware:
+    """Require the page token and a matching browser origin for API writes."""
+
+    def __init__(self, app: ASGIApp, csrf_token: str) -> None:
+        self.app = app
+        self.csrf_token = csrf_token
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] == "http"
+            and scope.get("method") in _MUTATING_METHODS
+            and str(scope.get("path", "")).startswith("/api/split")
+        ):
+            supplied_token = _header(scope, b"x-aktenfux-csrf")
+            if not supplied_token or not compare_digest(supplied_token, self.csrf_token):
+                await _send_error(
+                    scope,
+                    receive,
+                    send,
+                    status_code=403,
+                    detail="A valid workbench security token is required.",
+                )
+                return
+            origin = _header(scope, b"origin").strip()
+            host = _header(scope, b"host").strip()
+            if origin and (origin.lower() == "null" or not _same_origin(origin, host)):
+                await _send_error(
+                    scope,
+                    receive,
+                    send,
+                    status_code=403,
+                    detail="Cross-origin requests are not allowed.",
+                )
+                return
+        await self.app(scope, receive, send)
+
+
 class PreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     document_id: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-    boundaries: list[int] = Field(..., max_length=64)
+    boundaries: list[int] = Field(..., min_length=1, max_length=64)
 
     @field_validator("boundaries")
     @classmethod
@@ -395,17 +282,24 @@ class PreviewRequest(BaseModel):
 
 
 class ExecuteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     document_id: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-    preview_token: str = Field(..., min_length=8, max_length=128, pattern=r"^[A-Fa-f0-9]+$")
-    plan: dict[str, Any] = Field(..., min_length=1, max_length=100000)
-    confirm: bool = False
+    preview_token: str = Field(..., min_length=64, max_length=64, pattern=r"^[a-f0-9]+$")
+    plan: dict[str, Any] = Field(..., min_length=1, max_length=128)
+    confirm: StrictBool
+
+    @field_validator("confirm")
+    @classmethod
+    def require_confirmation(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("Execution requires explicit confirmation.")
+        return value
 
     @field_validator("plan")
     @classmethod
     def validate_plan_payload(cls, value: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(value, dict):
-            raise TypeError("Plan payload is invalid.")
-        if len(json.dumps(value, separators=(",", ":"), sort_keys=True)) > 100000:
+        if len(json.dumps(value, separators=(",", ":"), sort_keys=True)) > 100_000:
             raise ValueError("Plan payload is too large.")
         return value
 
@@ -418,22 +312,13 @@ class SplitDocumentDTO(BaseModel):
     pdf_url: str
 
 
-def _read_sidecar_from_pdf(pdf_path: Path):
-    from aktenfux.storage import read_sidecar
-
-    sidecar = read_sidecar(pdf_path)
-    if sidecar is None:
-        raise SplitError(f"Missing sidecar for {pdf_path.name}.")
-    return sidecar
-
-
-def _preview_token(plan: SplitPlan) -> str:
-    payload = json.dumps(plan.model_dump(mode="json"), separators=(",", ":"), sort_keys=True)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+def _new_preview_token() -> str:
+    """Return a one-time token so even an identical new preview invalidates the old one."""
+    return secrets.token_hex(32)
 
 
 def _validate_and_normalize_boundaries(value: list[int]) -> list[int]:
-    normalized = []
+    normalized: list[int] = []
     seen: set[int] = set()
     for boundary in value:
         if boundary < 2 or boundary > 5000:
@@ -445,8 +330,23 @@ def _validate_and_normalize_boundaries(value: list[int]) -> list[int]:
     return sorted(normalized)
 
 
+def _security_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": (
+            "default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; "
+            "frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+        ),
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+    }
+
+
 def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
     cfg = config or load_config()
+    csrf_token = secrets.token_urlsafe(32)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         app.state.execute_lock = asyncio.Lock()
@@ -457,26 +357,38 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
         TrustedHostMiddleware,
         allowed_hosts=["localhost", "127.0.0.1", "[::1]", "::1", "testserver"],
     )
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://localhost", "http://127.0.0.1", "http://[::1]"],
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["*"],
-        allow_credentials=False,
-    )
+    app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
+    app.add_middleware(WorkbenchRequestSecurityMiddleware, csrf_token=csrf_token)
     app.state.config = cfg
+    app.state.csrf_token = csrf_token
     app.state.preview_store: dict[str, dict[str, Any]] = {}
     app.state.execute_lock: asyncio.Lock | None = None
     app.state.in_flight: set[str] = set()
+    app.state.in_flight_documents: set[str] = set()
 
-    async def _ensure_lock() -> asyncio.Lock:
+    async def ensure_lock() -> asyncio.Lock:
         if app.state.execute_lock is None:
             app.state.execute_lock = asyncio.Lock()
         return app.state.execute_lock
 
+    def mark_preview_failed(document_id: str, token: str) -> None:
+        current = app.state.preview_store.get(document_id)
+        if current is not None and current.get("token") == token:
+            current["completed"] = False
+            current["failed"] = True
+
     @app.get("/", response_class=HTMLResponse)
     async def root() -> HTMLResponse:
-        return HTMLResponse(_INDEX_HTML)
+        page = _INDEX_HTML.replace("__CSRF_TOKEN__", html.escape(csrf_token, quote=True))
+        return HTMLResponse(page, headers=_security_headers())
+
+    @app.get("/workbench.js")
+    async def workbench_javascript() -> Response:
+        return Response(
+            _WORKBENCH_JS,
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -490,32 +402,14 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         return [
             SplitDocumentDTO(
-                id=document_id,
-                label=label,
-                name=label,
-                page_count=page_count,
-                pdf_url=f"/api/split/documents/{document_id}/pdf",
+                id=entry.document_id,
+                label=entry.display_name,
+                name=entry.display_name,
+                page_count=entry.page_count,
+                pdf_url=f"/api/split/documents/{entry.document_id}/pdf",
             )
-            for document_id, label, page_count in entries
+            for entry in entries
         ]
-
-    @app.middleware("http")
-    async def limit_body_and_origin(request: Request, call_next):
-        if request.method in {"POST", "PUT", "PATCH"}:
-            body = await request.body()
-            if len(body) > 128 * 1024:
-                return JSONResponse(status_code=413, content={"detail": "Request body is too large."})
-            origin = (request.headers.get("origin") or "").strip()
-            if origin.lower() == "null":
-                return JSONResponse(status_code=403, content={"detail": "Cross-origin requests are not allowed."})
-            if request.url.path.startswith("/api/split"):
-                if origin and origin not in {"http://localhost", "http://127.0.0.1", "http://[::1]"}:
-                    return JSONResponse(status_code=403, content={"detail": "Cross-origin requests are not allowed."})
-                host = request.headers.get("host") or ""
-                hostname = urlsplit(f"//{host}").hostname or ""
-                if hostname and hostname not in {"localhost", "127.0.0.1", "::1", "testserver"}:
-                    return JSONResponse(status_code=403, content={"detail": "Unexpected Host header."})
-        return await call_next(request)
 
     @app.get("/api/split/documents/{document_id}/pdf")
     async def serve_document_pdf(document_id: str) -> FileResponse:
@@ -529,12 +423,13 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
         try:
             resolved = snapshot.pdf_path.resolve(strict=True)
             split_root = cfg.split_path.resolve(strict=True)
-            if resolved.parent != split_root:
+            if resolved.parent != split_root or snapshot.pdf_path.is_symlink():
                 raise ValueError("PDF path must remain in _Split.")
-            if resolved.is_symlink():
-                raise ValueError("PDF path must not be a symbolic link.")
         except (OSError, ValueError) as exc:
-            raise HTTPException(status_code=403, detail="PDF path is outside the expected split root.") from exc
+            raise HTTPException(
+                status_code=403,
+                detail="PDF path is outside the expected split root.",
+            ) from exc
         return FileResponse(path=resolved, media_type="application/pdf")
 
     @app.get("/api/split/documents/{document_id:path}")
@@ -544,7 +439,6 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="Unexpected document identifier.")
         raise HTTPException(status_code=404, detail="Document not found.")
 
-
     @app.post("/api/split/preview")
     async def preview(request: PreviewRequest) -> dict[str, Any]:
         try:
@@ -552,50 +446,71 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        lock = await ensure_lock()
+        async with lock:
+            if request.document_id in app.state.in_flight_documents:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Split execution is already in progress for this document.",
+                )
         try:
             plan = plan_split(request.document_id, safe_boundaries, cfg)
         except (SplitError, ValueError, FileNotFoundError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        token = _preview_token(plan)
-        app.state.preview_store[request.document_id] = {
-            "token": token,
+        token = _new_preview_token()
+        async with lock:
+            if request.document_id in app.state.in_flight_documents:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Split execution is already in progress for this document.",
+                )
+            app.state.preview_store[request.document_id] = {
+                "token": token,
+                "plan": plan.model_dump(mode="json"),
+                "completed": False,
+                "failed": False,
+            }
+        return {
+            "document_id": request.document_id,
             "plan": plan.model_dump(mode="json"),
-            "completed": False,
+            "preview_token": token,
         }
-        return {"document_id": request.document_id, "plan": plan.model_dump(mode="json"), "preview_token": token}
 
     @app.post("/api/split/execute")
     async def execute(request: ExecuteRequest) -> dict[str, Any]:
-        if not request.preview_token or len(request.preview_token) < 8:
-            raise HTTPException(status_code=400, detail="Preview token is invalid.")
-        if not isinstance(request.plan, dict):
-            raise HTTPException(status_code=400, detail="Plan payload is invalid.")
-        lock = await _ensure_lock()
-        current = app.state.preview_store.get(request.document_id)
+        lock = await ensure_lock()
         async with lock:
             current = app.state.preview_store.get(request.document_id)
             if current is None:
-                raise HTTPException(status_code=409, detail="No preview has been generated for this document.")
+                raise HTTPException(
+                    status_code=409,
+                    detail="No preview has been generated for this document.",
+                )
             if current.get("failed") is True:
-                raise HTTPException(status_code=409, detail="This preview is no longer valid; create a fresh preview before retrying.")
+                raise HTTPException(
+                    status_code=409,
+                    detail="This preview is no longer valid; create a fresh preview before retrying.",
+                )
             if current.get("completed") is True:
-                raise HTTPException(status_code=409, detail="Split execution has already completed for this preview.")
+                raise HTTPException(
+                    status_code=409,
+                    detail="Split execution has already completed for this preview.",
+                )
             if current["token"] != request.preview_token:
-                raise HTTPException(status_code=409, detail="Stale or mismatched preview token; preview again before executing.")
-
+                raise HTTPException(
+                    status_code=409,
+                    detail="Stale or mismatched preview token; preview again before executing.",
+                )
             try:
                 plan = SplitPlan.model_validate(request.plan)
             except Exception as exc:  # noqa: BLE001
                 raise HTTPException(status_code=400, detail="Plan payload is invalid.") from exc
-
-            expected_operation = current["plan"].get("operation_id")
-            if plan.operation_id != expected_operation:
-                raise HTTPException(status_code=409, detail="Execution requires the exact most recently previewed plan.")
             if current["plan"] != request.plan:
-                raise HTTPException(status_code=409, detail="Execution requires the exact most recently previewed plan.")
-            if not request.confirm:
-                raise HTTPException(status_code=409, detail="Execution requires an explicit confirmation for the current plan.")
+                raise HTTPException(
+                    status_code=409,
+                    detail="Execution requires the exact most recently previewed plan.",
+                )
 
             try:
                 snapshot = get_split_document_snapshot(cfg, request.document_id)
@@ -604,52 +519,53 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
             for prior in snapshot.sidecar.split_operations:
                 if prior.operation_id == plan.operation_id:
                     if prior.state == "completed":
-                        raise HTTPException(status_code=409, detail="Split execution has already completed for this preview.")
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Split execution has already completed for this preview.",
+                        )
                     if prior.state == "in_progress":
-                        raise HTTPException(status_code=409, detail="Split execution is already in progress.")
-
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Split execution is already in progress.",
+                        )
             if plan.operation_id in app.state.in_flight:
-                raise HTTPException(status_code=409, detail="Split execution is already in progress.")
+                raise HTTPException(
+                    status_code=409,
+                    detail="Split execution is already in progress.",
+                )
             app.state.in_flight.add(plan.operation_id)
+            app.state.in_flight_documents.add(request.document_id)
 
         try:
             result = execute_split(plan, cfg)
         except (SplitError, ValueError, FileNotFoundError, FileExistsError) as exc:
-            async with lock:
-                current = app.state.preview_store.get(request.document_id)
-                if current is not None:
-                    app.state.preview_store[request.document_id] = {
-                        "token": current["token"],
-                        "plan": current["plan"],
-                        "completed": False,
-                        "failed": True,
-                    }
-                app.state.in_flight.discard(plan.operation_id)
+            mark_preview_failed(request.document_id, request.preview_token)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:
-            async with lock:
-                app.state.in_flight.discard(plan.operation_id)
-            raise HTTPException(status_code=500, detail="Split execution failed unexpectedly.") from exc
-        async with lock:
+        except asyncio.CancelledError:
+            mark_preview_failed(request.document_id, request.preview_token)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            mark_preview_failed(request.document_id, request.preview_token)
+            raise HTTPException(
+                status_code=500,
+                detail="Split execution failed unexpectedly; create a fresh preview before retrying.",
+            ) from exc
+        else:
             current = app.state.preview_store.get(request.document_id)
+            if current is not None and current.get("token") == request.preview_token:
+                current["completed"] = True
+                current["failed"] = False
+            return {"result": result.model_dump(mode="json")}
+        finally:
+            # These non-awaiting mutations must run even while task cancellation is active.
             app.state.in_flight.discard(plan.operation_id)
-            if current is not None:
-                app.state.preview_store[request.document_id] = {
-                    "token": current["token"],
-                    "plan": current["plan"],
-                    "completed": True,
-                }
-        return {"result": result.model_dump(mode="json")}
+            app.state.in_flight_documents.discard(request.document_id)
 
     return app
 
 
 def _is_valid_document_id(value: str) -> bool:
-    if not value or len(value) > 64:
-        return False
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
-        return False
-    return True
+    return bool(_DOCUMENT_ID_PATTERN.fullmatch(value))
 
 
 def _validate_loopback_host(host: str) -> str:
@@ -665,18 +581,9 @@ def _validate_loopback_host(host: str) -> str:
         if parsed.version == 4 and parsed == ipaddress.ip_address("127.0.0.1"):
             return host
         raise ValueError("The split workbench must bind only to loopback addresses.")
-    lowered = host.lower()
-    if lowered in {"localhost", "127.0.0.1", "::1"}:
-        return host
-    if lowered.startswith("127."):
+    if host.lower() == "localhost":
         return host
     raise ValueError("The split workbench must bind only to loopback addresses.")
-
-
-def _validate_split_roots(config: AktenfuxConfig, *, include_inbox: bool) -> None:
-    from aktenfux.split import _validate_split_roots as _validate_roots
-
-    _validate_roots(config, include_inbox=include_inbox)
 
 
 def _serve_from_module(host: str, port: int, config_path: Path | None = None) -> None:
@@ -685,6 +592,7 @@ def _serve_from_module(host: str, port: int, config_path: Path | None = None) ->
     cfg = load_config(config_path)
     bind_host = _validate_loopback_host(host)
     uvicorn.run(create_app(cfg), host=bind_host, port=port, log_level="warning")
+
 
 if __name__ == "__main__":
     import argparse

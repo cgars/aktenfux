@@ -1,7 +1,7 @@
 # Aktenfux — ELI5 Guide
 
 **Status:** Maintained design guide  
-**Last updated:** 2026-10-11
+**Last updated:** 2026-10-12
 
 This guide explains the design in everyday language. The comparisons clarify the system; they are not security guarantees by themselves.
 
@@ -93,9 +93,30 @@ Scan also checks the configured Ollama service before it even looks for PDFs. Wh
 
 The JSON filename comes directly from untrusted model output: an absolute name or `..` can escape `_DryRun` and replace a file elsewhere. These state changes are critical release-gate gaps, not merely a filename-collision problem. Target behavior must ignore model-supplied path strings, derive safe names locally, validate exact roots, and return or display the proposed sidecar, destination, and changes without creating or accessing a database or persisting a directory, PDF, sidecar, Markdown file, index row, or lifecycle state.
 
-## Planned UI and MCP control
+## Current split workbench and future MCP control
 
-A future graphical interface and MCP server are additional windows onto the same clerk. They must call the same application services and obey the same validation, authorization, preview, approval, and audit rules as the CLI.
+Aktenfux now has one small graphical window for the existing split operation.
+It is not a general document-management GUI. It shows only validated documents
+already in `_Split`, lets you mark a cut before a page, previews the exact output
+parts, and requires you to confirm that exact preview before writing anything.
+The browser adapter calls the same split services as the CLI.
+
+The window listens only on the local computer. Each started process gives its
+own page a random security token; write requests must return that token, come
+from the same browser origin when an Origin header is present, and carry the
+exact latest preview. Think of this as the clerk checking both the numbered
+ticket and the index card before acting. It is protection for one trusted local
+user, not an account system for a shared or remotely exposed server.
+
+The browser's built-in PDF viewer displays the pages, so appearance can differ
+between browsers. Aktenfux itself controls the selected page, zoom, rotation,
+and the clearly labelled “Split before page N” marker. Changing the document or
+boundaries cancels the old preview and clears confirmation. A failure or
+cancellation also requires a fresh preview.
+
+A future broader review interface and MCP server are additional windows onto
+the same clerk. They must call the same application services and obey the same
+validation, authorization, preview, approval, and audit rules as the CLI.
 
 For MCP, read-only tools should come first. Write tools should use narrow, typed inputs; return a preview; require explicit confirmation; and never accept arbitrary shell commands or unchecked filesystem paths.
 

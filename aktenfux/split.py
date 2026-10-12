@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,8 @@ from aktenfux.schema import (
 from aktenfux.storage import assert_within_base, sha256_file, sidecar_path_for
 
 logger = logging.getLogger(__name__)
+_WORKBENCH_DOCUMENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_WORKBENCH_DISPLAY_NAME_MAX_CHARS = 200
 
 
 class SplitError(RuntimeError):
@@ -42,6 +45,15 @@ class SourceSnapshot:
     sidecar: SidecarDocument
     source_bytes: bytes
     source_sha256: str
+    page_count: int
+
+
+@dataclass(frozen=True)
+class SplitDocumentSummary:
+    """Bounded read model shared by CLI and UI adapters."""
+
+    document_id: str
+    display_name: str
     page_count: int
 
 
@@ -235,8 +247,11 @@ def _find_source_by_document_id(split_root: Path, document_id: str) -> tuple[Pat
     raise SplitError(f"Document '{document_id}' not found in _Split.")
 
 
-def _read_snapshot(config: AktenfuxConfig, document_id: str) -> SourceSnapshot:
-    pdf_path, sidecar_path, sidecar = _find_source_by_document_id(config.split_path, document_id)
+def _read_validated_snapshot(
+    pdf_path: Path,
+    sidecar_path: Path,
+    sidecar: SidecarDocument,
+) -> SourceSnapshot:
     try:
         with pdf_path.open("rb") as fh:
             source_bytes = fh.read()
@@ -262,19 +277,53 @@ def _read_snapshot(config: AktenfuxConfig, document_id: str) -> SourceSnapshot:
     )
 
 
-def list_split_documents(config: AktenfuxConfig) -> list[tuple[str, str, int]]:
+def _read_snapshot(config: AktenfuxConfig, document_id: str) -> SourceSnapshot:
+    pdf_path, sidecar_path, sidecar = _find_source_by_document_id(
+        config.split_path, document_id
+    )
+    return _read_validated_snapshot(pdf_path, sidecar_path, sidecar)
+
+
+def _workbench_display_name(value: str, fallback: str) -> str:
+    cleaned = "".join(character if character.isprintable() else "�" for character in value)
+    cleaned = cleaned.strip()
+    if not cleaned:
+        cleaned = fallback
+    return cleaned[:_WORKBENCH_DISPLAY_NAME_MAX_CHARS]
+
+
+def list_split_documents(config: AktenfuxConfig) -> list[SplitDocumentSummary]:
     """Return stable document IDs and safe display metadata for eligible _Split PDFs."""
     _validate_split_roots(config, include_inbox=False)
-    entries: list[tuple[str, str, int]] = []
+    entries: list[SplitDocumentSummary] = []
+    seen_ids: set[str] = set()
     for pdf_path in sorted(config.split_path.glob("*.pdf")):
         try:
             _validate_direct_regular_file(pdf_path, root=config.split_path, suffix=".pdf")
-            sidecar = _read_sidecar_validated(sidecar_path_for(pdf_path))
-            document_id = sidecar.id
-            snapshot = _read_snapshot(config, document_id)
+            sidecar_path = sidecar_path_for(pdf_path)
+            _validate_direct_regular_file(
+                sidecar_path, root=config.split_path, suffix=".json"
+            )
+            sidecar = _read_sidecar_validated(sidecar_path)
+            if not _WORKBENCH_DOCUMENT_ID_PATTERN.fullmatch(sidecar.id):
+                raise SplitError("Candidate has an invalid document id.")
+            snapshot = _read_validated_snapshot(pdf_path, sidecar_path, sidecar)
         except (SplitError, ValueError, OSError):
+            logger.warning("Skipping invalid _Split workbench candidate.")
             continue
-        entries.append((document_id, sidecar.suggested_filename or pdf_path.name, snapshot.page_count))
+        if sidecar.id in seen_ids:
+            raise SplitError("Duplicate document id found in _Split.")
+        seen_ids.add(sidecar.id)
+        entries.append(
+            SplitDocumentSummary(
+                document_id=sidecar.id,
+                display_name=_workbench_display_name(
+                    sidecar.suggested_filename or pdf_path.name,
+                    pdf_path.name,
+                ),
+                page_count=snapshot.page_count,
+            )
+        )
     return entries
 
 
