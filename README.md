@@ -55,6 +55,11 @@ pip install -e .
 # Create config.yaml and working folders
 afu init
 
+# Or initialise a self-contained workspace at an explicit location. The target
+# is created if needed; config.yaml uses it as base_dir and folders are created
+# below it.
+afu init --target /path/to/Aktenfux
+
 # Edit config.yaml if needed (e.g. adjust base_dir).
 # Keep ollama_url on loopback; other endpoints receive OCR text and summaries.
 # dry_run is ON by default, but current scan and reprocess dry-run still write
@@ -124,6 +129,13 @@ python -m aktenfux approve <id>
 
 Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as needed:
 
+`afu init --target <directory>` creates a new self-contained workspace: it
+creates the directory if necessary, writes `config.yaml` there with an absolute
+`base_dir` pointing to that directory, and creates the working folders below
+it. If `config.yaml` already exists there, Aktenfux preserves it and uses its
+configured `base_dir`. Without `--target`, `afu init` keeps the documented
+default below for backward compatibility.
+
 | Key | Default | Description |
 |-----|---------|-------------|
 | `base_dir` | `~/Documents/Aktenfux` | Root folder for all working directories |
@@ -144,7 +156,7 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 
 | Command | Description |
 |---------|-------------|
-| `afu init` | Create config.yaml and working folders |
+| `afu init [--target DIRECTORY]` | Create config.yaml and working folders; an explicit target becomes the base directory for a new config |
 | `afu setup` | Check Ollama, model, and folder setup |
 | `afu scan` | Process PDFs from `_Inbox` |
 | `afu scan --dry-run` | Before inbox inspection, contact Ollama and discover models. Discovery failure or a declined pull stops. An accepted pull can fail with partial external state; its stream must report explicit success, after which the model is re-listed and must be verified. With any PDF and indexing enabled, the current MVP initializes/accesses SQLite; after successful analysis it writes unsafe model-named JSON (synthetic data only). |

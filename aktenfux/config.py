@@ -159,13 +159,20 @@ def load_config(config_path: Path | None = None) -> AktenfuxConfig:
     return AktenfuxConfig(data)
 
 
-def init_config(target_dir: Path | None = None) -> Path:
+def init_config(
+    target_dir: Path | None = None,
+    *,
+    base_dir: Path | None = None,
+) -> Path:
     """Copy config.example.yaml → config.yaml if it does not exist yet.
 
+    When *base_dir* is supplied for a new configuration, replace the example
+    workspace root while preserving the template's explanatory comments.
     Returns the path of the config file (whether newly created or pre-existing).
     """
     if target_dir is None:
         target_dir = _PACKAGE_ROOT
+    target_dir.mkdir(parents=True, exist_ok=True)
 
     example = _PACKAGE_ROOT / _EXAMPLE_FILENAME
     dest = target_dir / _CONFIG_FILENAME
@@ -179,5 +186,21 @@ def init_config(target_dir: Path | None = None) -> Path:
             "Cannot initialise configuration."
         )
 
-    shutil.copy2(example, dest)
+    if base_dir is None:
+        shutil.copy2(example, dest)
+        return dest
+
+    template = example.read_text(encoding="utf-8")
+    default_line = 'base_dir: "~/Documents/Aktenfux"'
+    replacement_line = yaml.safe_dump(
+        {"base_dir": str(base_dir.resolve())},
+        sort_keys=False,
+        width=4096,
+    ).strip()
+    if template.count(default_line) != 1:
+        raise ValueError("config.example.yaml must contain exactly one default base_dir")
+    dest.write_text(
+        template.replace(default_line, replacement_line, 1),
+        encoding="utf-8",
+    )
     return dest

@@ -79,7 +79,11 @@ def init(
         None,
         "--target",
         "-t",
-        help="Directory in which to create config.yaml (defaults to current directory).",
+        help=(
+            "Workspace directory in which to create config.yaml and working folders. "
+            "Without this option, config.yaml is created in the current directory "
+            "with the documented default base_dir."
+        ),
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -87,10 +91,14 @@ def init(
     _setup_logging(verbose)
     from aktenfux.config import init_config, load_config  # noqa: PLC0415
 
-    target_dir = target or Path.cwd()
-    config_file = init_config(target_dir)
+    target_dir = (target or Path.cwd()).resolve()
+    config_existed = (target_dir / "config.yaml").exists()
+    config_file = init_config(
+        target_dir,
+        base_dir=target_dir if target is not None else None,
+    )
 
-    if config_file.stat().st_size > 0 and config_file.exists():
+    if config_existed:
         console.print(f"[green]✓[/green] Config file ready: {config_file}")
     else:
         console.print(f"[green]✓[/green] Config created: {config_file}")
