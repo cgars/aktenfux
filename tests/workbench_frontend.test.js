@@ -5,16 +5,19 @@ const assert = require("node:assert/strict");
 const workbench = require("../aktenfux/workbench.js");
 
 class FakeNode {
-  constructor() {
+  constructor(tagName = "div") {
     this.children = [];
     this.className = "";
     this.checked = false;
     this.disabled = false;
     this.hidden = false;
+    this.isContentEditable = false;
     this.listeners = new Map();
     this.src = "";
     this.style = {};
+    this.tagName = tagName.toUpperCase();
     this.textContent = "";
+    this.focusCalls = 0;
     this.classList = {
       add: (...names) => {
         this.className = [...new Set(this.className.split(" ").filter(Boolean).concat(names))].join(" ");
@@ -32,6 +35,10 @@ class FakeNode {
 
   click() {
     this.listeners.get("click")?.({ target: this });
+  }
+
+  focus() {
+    this.focusCalls += 1;
   }
 
   replaceChildren(...children) {
@@ -58,12 +65,29 @@ function fakeDocument() {
     "refresh-preview",
   ];
   const nodes = Object.fromEntries(ids.map((id) => [id, new FakeNode()]));
+  const listeners = new Map();
+  const viewListeners = new Map();
+  const body = new FakeNode("body");
   return {
-    body: new FakeNode(),
+    activeElement: body,
+    body,
+    defaultView: {
+      addEventListener(name, listener) {
+        viewListeners.set(name, listener);
+      },
+      dispatch(name) {
+        viewListeners.get(name)?.();
+      },
+    },
     nodes,
-    addEventListener() {},
-    createElement() {
-      return new FakeNode();
+    addEventListener(name, listener) {
+      listeners.set(name, listener);
+    },
+    createElement(tagName) {
+      return new FakeNode(tagName);
+    },
+    dispatch(name, event) {
+      listeners.get(name)?.(event);
     },
     getElementById(id) {
       return nodes[id];
@@ -96,18 +120,29 @@ function executableState(overrides = {}) {
   };
 }
 
-test("page navigation changes the PDF fragment and stays bounded", () => {
+test("page navigation requests one exact preview page and stays bounded", () => {
   assert.equal(workbench.movePage(1, 8, -1), 1);
   assert.equal(workbench.movePage(1, 8, 1), 2);
   assert.equal(workbench.movePage(8, 8, 1), 8);
   assert.equal(
     workbench.pdfUrl("doc 001", 2),
-    "/api/split/documents/doc%20001/pdf#page=2"
+    "/api/split/documents/doc%20001/pdf?page=2#page=1&toolbar=0&navpanes=0&scrollbar=0&view=Fit"
   );
 });
 
 test("zoom and rotation produce one transform on the PDF frame", () => {
   assert.equal(workbench.viewerTransform(1.25, 90), "scale(1.25) rotate(90deg)");
+});
+
+test("viewer focus returns to the workbench and T ignores editable fields", () => {
+  const doc = fakeDocument();
+  doc.activeElement = doc.nodes["pdf-frame"];
+
+  assert.equal(workbench.restoreFocusFromViewer(doc, doc.nodes["pdf-frame"]), true);
+  assert.equal(doc.body.focusCalls, 1);
+  assert.equal(workbench.isEditableTarget(new FakeNode("input")), true);
+  assert.equal(workbench.isEditableTarget(new FakeNode("textarea")), true);
+  assert.equal(workbench.isEditableTarget(new FakeNode("button")), false);
 });
 
 test("boundary marker states the exact between-page consequence", () => {
@@ -201,9 +236,20 @@ test("controller navigates the PDF and cancels a stale document preview", async 
   const controller = workbench.startWorkbench(doc, fetchImpl);
   await flushTasks();
 
-  assert.equal(doc.nodes["pdf-frame"].src.endsWith("/doc001/pdf#page=1"), true);
+  assert.equal(
+    doc.nodes["pdf-frame"].src.endsWith(
+      "/doc001/pdf?page=1#page=1&toolbar=0&navpanes=0&scrollbar=0&view=Fit"
+    ),
+    true
+  );
   doc.nodes["next-page"].click();
-  assert.equal(doc.nodes["pdf-frame"].src.endsWith("/doc001/pdf#page=2"), true);
+  assert.equal(
+    doc.nodes["pdf-frame"].src.endsWith(
+      "/doc001/pdf?page=2#page=1&toolbar=0&navpanes=0&scrollbar=0&view=Fit"
+    ),
+    true
+  );
+  assert.equal(doc.nodes["page-info"].textContent, "Document page 2/4");
 
   controller.state.boundaries = [2];
   controller.state.confirmChecked = true;
@@ -218,7 +264,47 @@ test("controller navigates the PDF and cancels a stale document preview", async 
   assert.equal(controller.state.previewToken, null);
   assert.equal(controller.state.confirmChecked, false);
   assert.equal(doc.nodes["confirm-check"].checked, false);
-  assert.equal(doc.nodes["pdf-frame"].src.endsWith("/doc002/pdf#page=1"), true);
+  assert.equal(
+    doc.nodes["pdf-frame"].src.endsWith(
+      "/doc002/pdf?page=1#page=1&toolbar=0&navpanes=0&scrollbar=0&view=Fit"
+    ),
+    true
+  );
+});
+
+test("controller restores focus from the PDF and handles T outside form fields", async () => {
+  const doc = fakeDocument();
+  const documents = [{ id: "doc001", label: "First", page_count: 4 }];
+  let previewCalls = 0;
+  const fetchImpl = (url) => {
+    if (url === "/api/split/documents") {
+      return Promise.resolve(jsonResponse(true, documents));
+    }
+    if (url === "/api/split/preview") {
+      previewCalls += 1;
+      return Promise.resolve(jsonResponse(true, {
+        plan: { document_id: "doc001", parts: [] },
+        preview_token: "c".repeat(64),
+      }));
+    }
+    throw new Error(`unexpected request ${url}`);
+  };
+  const controller = workbench.startWorkbench(doc, fetchImpl);
+  await flushTasks();
+  doc.nodes["next-page"].click();
+
+  doc.activeElement = doc.nodes["pdf-frame"];
+  doc.defaultView.dispatch("blur");
+  assert.equal(doc.body.focusCalls, 1);
+
+  doc.dispatch("keydown", { key: "t", target: doc.body });
+  await flushTasks();
+  assert.deepEqual(controller.state.boundaries, [2]);
+  assert.equal(previewCalls, 1);
+
+  doc.dispatch("keydown", { key: "t", target: new FakeNode("input") });
+  assert.deepEqual(controller.state.boundaries, [2]);
+  assert.equal(previewCalls, 1);
 });
 
 test("controller blocks duplicate execution and recovers through a fresh preview", async () => {

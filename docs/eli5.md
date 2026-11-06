@@ -118,7 +118,10 @@ ticket and the index card before acting. It is protection for one trusted local
 user, not an account system for a shared or remotely exposed server.
 
 The browser's built-in PDF viewer displays the pages, so appearance can differ
-between browsers. Aktenfux itself controls the selected page, zoom, rotation,
+between browsers. Aktenfux sends that viewer only the one source page selected
+with its own Previous/Next controls. This makes the browser viewer's own page
+navigation harmless: it cannot silently move to another source page while the
+split marker still refers to the old one. Aktenfux also controls zoom, rotation,
 and the clearly labelled “Split before page N” marker. Changing the document or
 boundaries cancels the old preview and clears confirmation. A failure or
 cancellation also requires a fresh preview.

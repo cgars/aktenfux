@@ -10,6 +10,7 @@ import secrets
 from collections import deque
 from contextlib import asynccontextmanager
 from hmac import compare_digest
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -24,6 +25,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - permissive import for r
         "Install with 'pip install -e .'."
     ) from exc
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pypdf import PdfReader, PdfWriter
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from aktenfux.config import AktenfuxConfig, load_config
@@ -68,13 +70,14 @@ _INDEX_HTML = """<!doctype html>
     .controls { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
     .range-list { margin-top: 0.5rem; }
     .status { min-height: 1.25rem; font-size: 0.95rem; }
+    .viewer-help { margin: 0.55rem 0 0; color: #cbd5e1; font-size: 0.9rem; }
     .danger { color: #fca5a5; }
     .ok { color: #86efac; }
     .confirmer { display: flex; align-items: center; gap: 0.6rem; }
   </style>
   <script src="/workbench.js" defer></script>
 </head>
-<body>
+<body tabindex="-1">
   <div class="layout">
     <aside class="sidebar">
       <h2>Split queue</h2>
@@ -88,14 +91,15 @@ _INDEX_HTML = """<!doctype html>
           <button id="zoom-out" class="secondary" type="button">−</button>
           <button id="zoom-in" class="secondary" type="button">+</button>
           <button id="rotate" class="secondary" type="button">Rotate</button>
-          <button id="toggle-boundary" class="warning" type="button">Toggle boundary</button>
+          <button id="toggle-boundary" class="warning" type="button">Toggle boundary (T)</button>
           <button id="refresh-preview" class="secondary" type="button">Preview split</button>
           <span id="page-info">No document selected</span>
         </div>
+        <p class="viewer-help">Use these Aktenfux controls to select the document page. The embedded viewer receives only that page, so its own controls cannot change the split position.</p>
       </div>
       <div class="viewer-frame" id="viewer-frame">
         <div id="boundary-marker" class="boundary-marker" role="status" hidden></div>
-        <iframe id="pdf-frame" title="PDF viewer" src="about:blank"></iframe>
+        <iframe id="pdf-frame" title="Selected PDF page preview" src="about:blank" tabindex="-1"></iframe>
       </div>
       <div class="panel">
         <div class="status" id="message"></div>
@@ -343,6 +347,21 @@ def _security_headers() -> dict[str, str]:
     }
 
 
+def _single_page_pdf(source_bytes: bytes, page: int, page_count: int) -> bytes:
+    """Create an in-memory one-page preview without changing the source PDF."""
+    if page < 1 or page > page_count:
+        raise ValueError("Requested PDF page is out of range.")
+    try:
+        reader = PdfReader(BytesIO(source_bytes))
+        writer = PdfWriter()
+        writer.add_page(reader.pages[page - 1])
+        output = BytesIO()
+        writer.write(output)
+    except Exception as exc:  # noqa: BLE001 - convert parser failures at the adapter boundary
+        raise SplitError("Could not prepare the requested PDF page.") from exc
+    return output.getvalue()
+
+
 def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
     cfg = config or load_config()
     csrf_token = secrets.token_urlsafe(32)
@@ -412,7 +431,9 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
         ]
 
     @app.get("/api/split/documents/{document_id}/pdf")
-    async def serve_document_pdf(document_id: str) -> FileResponse:
+    async def serve_document_pdf(
+        document_id: str, page: int | None = None
+    ) -> Response:
         decoded_document_id = unquote(document_id)
         if not _is_valid_document_id(decoded_document_id):
             raise HTTPException(status_code=400, detail="Unexpected document identifier.")
@@ -430,7 +451,25 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
                 status_code=403,
                 detail="PDF path is outside the expected split root.",
             ) from exc
-        return FileResponse(path=resolved, media_type="application/pdf")
+        if page is None:
+            return FileResponse(path=resolved, media_type="application/pdf")
+        try:
+            preview_bytes = _single_page_pdf(
+                snapshot.source_bytes, page, snapshot.page_count
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except SplitError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return Response(
+            content=preview_bytes,
+            media_type="application/pdf",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": "inline",
+                "X-Aktenfux-Document-Page": str(page),
+            },
+        )
 
     @app.get("/api/split/documents/{document_id:path}")
     async def document_identifier_guard(document_id: str) -> dict[str, str]:

@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 import json
 import re
 import pytest
 from fastapi.testclient import TestClient
+from pypdf import PdfReader, PdfWriter
 
 import aktenfux.workbench as workbench_module
 from aktenfux.workbench import (
@@ -13,6 +15,7 @@ from aktenfux.workbench import (
     _validate_loopback_host,
     create_app,
 )
+from aktenfux.storage import sha256_file
 from tests.split_helpers import make_config, write_split_doc
 
 BASE_URL = "http://127.0.0.1:8000"
@@ -70,6 +73,9 @@ def test_workbench_page_serves_security_headers_and_external_javascript(tmp_path
     assert TOKEN_PATTERN.search(response.text)
     assert '<script src="/workbench.js" defer></script>' in response.text
     assert 'id="refresh-preview"' in response.text
+    assert 'id="pdf-frame"' in response.text
+    assert 'tabindex="-1"' in response.text
+    assert "The embedded viewer receives only that page" in response.text
     assert "default-src 'self'" in response.headers["content-security-policy"]
     assert response.headers["cache-control"] == "no-store"
     javascript = client.get("/workbench.js")
@@ -81,6 +87,8 @@ def test_workbench_page_serves_security_headers_and_external_javascript(tmp_path
 def test_workbench_lists_only_valid_split_documents_and_serves_pdf(tmp_path):
     cfg = make_config(tmp_path)
     pdf = write_split_doc(cfg.split_path, "bundle.pdf", "docbench000001", pages=6)
+    original_pdf_bytes = pdf.read_bytes()
+    original_sidecar_bytes = pdf.with_suffix(".json").read_bytes()
     (cfg.split_path / "broken.pdf").write_bytes(b"not a pdf")
     app = create_app(cfg)
     client = browser_client(app)
@@ -95,7 +103,55 @@ def test_workbench_lists_only_valid_split_documents_and_serves_pdf(tmp_path):
     assert pdf_response.status_code == 200, pdf_response.text
     assert pdf_response.headers["content-type"].startswith("application/pdf")
     assert pdf_response.content.startswith(b"%PDF")
-    assert pdf.read_bytes() == pdf_response.content
+    assert original_pdf_bytes == pdf_response.content
+
+    page_response = client.get(
+        "/api/split/documents/docbench000001/pdf", params={"page": 4}
+    )
+    assert page_response.status_code == 200, page_response.text
+    assert page_response.headers["content-type"].startswith("application/pdf")
+    assert page_response.headers["x-aktenfux-document-page"] == "4"
+    assert len(PdfReader(BytesIO(page_response.content)).pages) == 1
+    assert page_response.content != original_pdf_bytes
+    assert pdf.read_bytes() == original_pdf_bytes
+    assert pdf.with_suffix(".json").read_bytes() == original_sidecar_bytes
+
+
+@pytest.mark.parametrize("page", [0, 7, 5001])
+def test_workbench_rejects_preview_page_outside_document(tmp_path, page):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docpagebounds001", pages=6)
+    client = browser_client(create_app(cfg))
+
+    response = client.get(
+        "/api/split/documents/docpagebounds001/pdf", params={"page": page}
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Requested PDF page is out of range."
+
+
+def test_workbench_preview_contains_the_requested_source_page(tmp_path):
+    cfg = make_config(tmp_path)
+    pdf = write_split_doc(cfg.split_path, "sized.pdf", "docpageexact001", pages=3)
+    writer = PdfWriter()
+    for width in (100, 200, 300):
+        writer.add_blank_page(width=width, height=400)
+    with pdf.open("wb") as stream:
+        writer.write(stream)
+    sidecar = pdf.with_suffix(".json")
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    payload["sha256"] = sha256_file(pdf)
+    sidecar.write_text(json.dumps(payload), encoding="utf-8")
+    client = browser_client(create_app(cfg))
+
+    response = client.get(
+        "/api/split/documents/docpageexact001/pdf", params={"page": 2}
+    )
+
+    assert response.status_code == 200, response.text
+    preview_page = PdfReader(BytesIO(response.content)).pages[0]
+    assert float(preview_page.mediabox.width) == 200
 
 
 def test_workbench_bounds_and_text_sanitizes_display_names(tmp_path):

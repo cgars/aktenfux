@@ -23,7 +23,8 @@
   }
 
   function pdfUrl(documentId, page) {
-    return `/api/split/documents/${encodeURIComponent(documentId)}/pdf#page=${page}`;
+    const resource = `/api/split/documents/${encodeURIComponent(documentId)}/pdf?page=${page}`;
+    return `${resource}#page=1&toolbar=0&navpanes=0&scrollbar=0&view=Fit`;
   }
 
   function viewerTransform(zoom, rotation) {
@@ -68,6 +69,24 @@
 
   function setText(node, value) {
     node.textContent = String(value ?? "");
+  }
+
+  function isEditableTarget(target) {
+    const tagName = String(target?.tagName || "").toLowerCase();
+    return Boolean(
+      target?.isContentEditable ||
+      tagName === "input" ||
+      tagName === "select" ||
+      tagName === "textarea"
+    );
+  }
+
+  function restoreFocusFromViewer(doc, pdfFrame) {
+    if (doc.activeElement !== pdfFrame || typeof doc.body?.focus !== "function") {
+      return false;
+    }
+    doc.body.focus({ preventScroll: true });
+    return true;
   }
 
   function renderPreviewParts(container, plan, createElement) {
@@ -178,7 +197,7 @@
       setText(
         elements.pageInfo,
         enabled
-          ? `Page ${state.currentPage}/${selected.page_count}`
+          ? `Document page ${state.currentPage}/${selected.page_count}`
           : "No document selected"
       );
       elements.executeButton.disabled = !canExecute(state);
@@ -385,9 +404,12 @@
     });
     elements.executeButton.addEventListener("click", executePlan);
     doc.addEventListener("keydown", (event) => {
-      if (event.key.toLowerCase() === "t" && event.target === doc.body) {
+      if (event.key.toLowerCase() === "t" && !isEditableTarget(event.target)) {
         toggleBoundary();
       }
+    });
+    doc.defaultView?.addEventListener("blur", () => {
+      restoreFocusFromViewer(doc, elements.pdfFrame);
     });
 
     updateViewTransform();
@@ -405,9 +427,11 @@
     canExecute,
     clampPage,
     invalidatePlanState,
+    isEditableTarget,
     movePage,
     pdfUrl,
     renderPreviewParts,
+    restoreFocusFromViewer,
     setText,
     startWorkbench,
     viewerTransform,
