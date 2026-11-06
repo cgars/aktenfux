@@ -22,7 +22,10 @@ The letter and its index card belong together. The catalogue is useful, but it m
 For probable multi-document scans, Aktenfux now provides an explicit split step:
 you preview boundaries first, confirm the exact page ranges and output filenames,
 then Aktenfux writes new part PDFs to `_Inbox` while keeping the original PDF and
-index card in `_Split`. Before reading, it checks that the split tray really
+index card directly in `_Split`. A proposed future archive drawer remains written
+on the index card; it must not create sub-drawers inside the split tray because
+the split desk accepts only pairs placed directly on that tray. Before reading,
+it checks that the split tray really
 belongs to this archive and that the PDF still matches the hash on its index
 card. The parts are prepared together behind a batch marker;
 the inbox scanner ignores visible parts until the complete batch is ready. After

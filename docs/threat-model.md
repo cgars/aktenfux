@@ -228,8 +228,10 @@ These controls have important limits:
   replace an existing JSON file;
 - an absolute or traversing `sqlite_path` can create or update an index outside
   `base_dir` because it is not confined before database access;
-- current split execution accepts only direct-child PDFs/sidecars in `_Split`
-  and writes parts only as direct children in `_Inbox`; completed split retries
+- approval now stages positively identified split candidates as direct-child
+  PDF/sidecar pairs in `_Split`, preserving the suggested archive folder only as
+  sidecar metadata. Split execution accepts only those direct-child pairs and
+  writes parts only as direct children in `_Inbox`; completed split retries
   fail closed if previously published outputs are missing, so consumed files are
   not silently republished as duplicates; on filesystems without hard-link
   support, an abrupt termination during the exclusive fallback's individual
