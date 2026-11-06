@@ -25,6 +25,7 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "httpx2>=2.13,<2.14",
+    "reportlab>=4.4,<5",
 ]
 watch = [
     "watchdog>=4.0",

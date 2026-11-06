@@ -276,8 +276,11 @@ These controls have important limits:
   markup disabling, or display bounds;
 - FastAPI and Uvicorn now use reviewed minor-version ranges and the repository
   gate requires their upper bounds; the test-only Starlette client backend is
-  likewise bounded. The remaining Python runtime/build graph is not locked, and
-  model artifacts have no recorded integrity/provenance verification;
+  likewise bounded. Development-only ReportLab is bounded to its current major
+  version and used only to create an explicitly requested synthetic E2E-UAT
+  input, but its transitive graph and the remaining Python runtime/build graph
+  are not locked; model artifacts have no recorded integrity/provenance
+  verification;
 - PDF metadata rewriting uses a predictable sibling temporary path without
   exclusive/no-follow creation and can collide with or follow a pre-existing
   file or symlink;

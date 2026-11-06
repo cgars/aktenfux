@@ -396,4 +396,8 @@ does not yet provide a completely reproducible or offline installation. The CI
 installation step downloads packages and writes only to the ephemeral runner
 environment; no dependency cache is configured. `httpx2` is test-only and
 bounded to the reviewed Starlette TestClient-compatible minor series.
+`reportlab` is development-only, bounded to its current major version, and is
+used solely by the explicitly invoked synthetic E2E-UAT fixture generator; no
+Aktenfux runtime command imports it. Its transitive graph remains part of the
+unlocked development and CI supply chain.
 Actual Mermaid rendering remains in the separately gated architecture workflow.

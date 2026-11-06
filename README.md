@@ -96,6 +96,21 @@ afu status
 afu workbench
 ```
 
+For a true synthetic end-to-end UAT, install the development extras and create
+the input only through the initialized inbox:
+
+```bash
+pip install -e ".[dev]"
+python scripts/create_e2e_uat_pdf.py --workspace /path/to/Aktenfux
+afu scan --config /path/to/Aktenfux/config.yaml --no-dry-run
+```
+
+The helper creates one OCR-readable six-page PDF containing two unrelated
+logical documents with an expected boundary before page 4. It creates no
+sidecar and does not modify configuration or lifecycle state; those effects
+must occur through the normal scan, review, approval, workbench, and split
+workflow for the UAT to pass. It refuses to overwrite an existing PDF.
+
 All commands are also available as:
 
 ```bash
@@ -262,9 +277,11 @@ under pytest-managed temporary roots.
 The security-sensitive local-server dependencies use reviewed minor-version
 ranges (`fastapi>=0.143,<0.144` and `uvicorn>=0.54,<0.55`) rather than open lower
 bounds. The test-only `httpx2` range matches Starlette's maintained TestClient
-backend and is kept out of the runtime graph. The rest of the Python graph is
-not yet locked, so fully reproducible offline installation remains a release
-gate documented in the threat model.
+backend and is kept out of the runtime graph. The development-only `reportlab`
+range generates the synthetic E2E-UAT input and is not imported by Aktenfux
+runtime commands. The rest of the Python graph is not yet locked, so fully
+reproducible offline installation remains a release gate documented in the
+threat model.
 
 ---
 
