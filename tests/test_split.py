@@ -1028,6 +1028,52 @@ def test_execute_split_recovers_after_cleanup_failure_with_owned_temp_residue(tm
     assert not (cfg.imported_path / ".split-completed-transition").exists()
 
 
+def test_reconcile_completed_split_sources_accepts_finalized_cleanup_residue(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "cleanup-residue.pdf", "docsplit000000026", pages=5)
+    plan = plan_split("docsplit000000026", [3], cfg)
+    original_cleanup = split_module._cleanup_completed_transition_artifacts
+    triggered = {"done": False}
+
+    def fail_once_cleanup(*, operation_root, transition_root):
+        if not triggered["done"]:
+            triggered["done"] = True
+            raise SplitError("injected cleanup failure")
+        return original_cleanup(operation_root=operation_root, transition_root=transition_root)
+
+    monkeypatch.setattr(split_module, "_cleanup_completed_transition_artifacts", fail_once_cleanup)
+    with pytest.raises(SplitError, match="injected cleanup failure"):
+        execute_split(plan, cfg)
+
+    monkeypatch.setattr(split_module, "_cleanup_completed_transition_artifacts", original_cleanup)
+    retained_pdf = cfg.imported_path / f"cleanup-residue--completed-{plan.operation_id[:12]}.pdf"
+    retained_sidecar = retained_pdf.with_suffix(".json")
+    operation_root, _transition_root, journal_path = split_module._completed_transition_paths(  # noqa: SLF001
+        imported_root=cfg.imported_path,
+        operation_id=plan.operation_id,
+    )
+    staged_sidecar = operation_root / "source.json"
+    assert retained_sidecar.exists()
+    assert staged_sidecar.exists()
+    assert journal_path.exists()
+    assert not (cfg.split_path / "cleanup-residue.pdf").exists()
+    assert not (cfg.split_path / "cleanup-residue.json").exists()
+
+    retained_doc = read_sidecar(retained_pdf)
+    staged_doc = split_module._read_sidecar_validated(staged_sidecar)  # noqa: SLF001
+    assert retained_doc is not None
+    assert staged_doc.current_path != retained_doc.current_path
+
+    dry_run = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert len(dry_run.eligible) == 1
+    assert dry_run.issues == ()
+
+    apply = reconcile_completed_split_sources(cfg, apply_changes=True)
+    assert len(apply.transitioned) == 1
+    assert apply.issues == ()
+    assert not operation_root.exists()
+
+
 def test_list_completed_split_documents_reports_invalid_entries(tmp_path):
     cfg = make_config(tmp_path)
     cfg.split_path.mkdir(parents=True, exist_ok=True)

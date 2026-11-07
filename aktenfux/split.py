@@ -1914,6 +1914,32 @@ def _state_rank(state: str) -> int:
         raise SplitError("Completed transition journal state is invalid.") from exc
 
 
+def _sidecar_semantic_payload_without_current_path(sidecar: SidecarDocument) -> dict[str, Any]:
+    payload = sidecar.model_dump(mode="json")
+    payload.pop("current_path", None)
+    return payload
+
+
+def _validate_allowed_finalized_sidecar_current_path_drift(
+    *,
+    staged_sidecar: SidecarDocument,
+    snapshot_sidecar: SidecarDocument,
+    expected_split_path: str,
+    expected_imported_path: str,
+) -> None:
+    if _sidecar_semantic_payload_without_current_path(staged_sidecar) != _sidecar_semantic_payload_without_current_path(
+        snapshot_sidecar
+    ):
+        raise SplitError("sidecar staging copy semantic mismatch")
+    allowed_paths = {expected_split_path, expected_imported_path}
+    if staged_sidecar.current_path not in allowed_paths or snapshot_sidecar.current_path not in allowed_paths:
+        raise SplitError("sidecar staging copy current_path is invalid")
+    if staged_sidecar.current_path == snapshot_sidecar.current_path:
+        return
+    if staged_sidecar.current_path != expected_split_path or snapshot_sidecar.current_path != expected_imported_path:
+        raise SplitError("sidecar staging copy current_path drift is invalid")
+
+
 def _preflight_completed_transition_from_journal(
     *,
     config: AktenfuxConfig,
@@ -1960,8 +1986,25 @@ def _preflight_completed_transition_from_journal(
     stage_sidecar_present = False
     if stage_sidecar.exists():
         _validate_direct_regular_file(stage_sidecar, root=stage_root, suffix=".json")
-        if _sha256_file_bounded(stage_sidecar, label="completed transition staged sidecar") != source_sidecar_hash:
-            raise SplitError("sidecar staging copy hash mismatch")
+        stage_sidecar_hash = _sha256_file_bounded(stage_sidecar, label="completed transition staged sidecar")
+        if stage_sidecar_hash != source_sidecar_hash:
+            if journal.state != "finalized":
+                raise SplitError("sidecar staging copy hash mismatch")
+            staged_sidecar = _read_sidecar_validated(stage_sidecar)
+            _verify_completed_sidecar_identity(
+                stage_sidecar,
+                document_id=journal.document_id,
+                source_sha256=journal.source_sha256,
+                operation_id=journal.operation_id,
+            )
+            expected_split_path = str((config.split_path / journal.source_pdf).resolve())
+            expected_imported_path = str((config.imported_path / journal.retained_pdf).resolve())
+            _validate_allowed_finalized_sidecar_current_path_drift(
+                staged_sidecar=staged_sidecar,
+                snapshot_sidecar=snapshot.sidecar,
+                expected_split_path=expected_split_path,
+                expected_imported_path=expected_imported_path,
+            )
         stage_sidecar_present = True
     retained_pdf_present = False
     if retained_pdf.exists():
