@@ -10,9 +10,11 @@ from aktenfux.schema import (
     SplitBoundaryCandidate,
     SplitBoundaryEvidence,
     SplitBoundarySuggestion,
+    SplitOutputRecord,
+    SplitProvenanceRecord,
 )
 from aktenfux.split import SplitError
-from aktenfux.storage import read_sidecar
+from aktenfux.storage import read_sidecar, sha256_file
 from tests.split_helpers import make_config, write_split_doc
 
 runner = CliRunner()
@@ -69,6 +71,100 @@ def test_split_execute_after_confirmation(tmp_path):
     assert "Split complete" in result.output
     assert (cfg.inbox_path / "run--part-01.pdf").exists()
     assert (cfg.inbox_path / "run--part-02.pdf").exists()
+
+
+def test_split_completed_lists_retained_sources(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "retained.pdf", "docsplitcli000003b", pages=6)
+
+    with patch("aktenfux.cli._load_config", return_value=cfg):
+        split_result = runner.invoke(
+            app,
+            ["split", "docsplitcli000003b", "--before", "4", "--yes"],
+        )
+        assert split_result.exit_code == 0, split_result.output
+        result = runner.invoke(app, ["split-completed"])
+
+    assert result.exit_code == 0, result.output
+    assert "Retained completed split sources" in result.output
+    assert "Operation" in result.output
+
+
+def test_split_completed_fails_when_retained_entries_are_invalid(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.split_path.mkdir(parents=True, exist_ok=True)
+    cfg.imported_path.mkdir(parents=True, exist_ok=True)
+    (cfg.imported_path / "broken--completed-aaaaaaaaaaaa.pdf").write_bytes(b"%PDF-1.7")
+
+    with patch("aktenfux.cli._load_config", return_value=cfg):
+        result = runner.invoke(app, ["split-completed"])
+
+    assert result.exit_code == 1
+    assert "inspection found issues" in result.output.lower()
+
+
+def test_split_completed_fails_when_retained_sidecar_is_orphaned(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.split_path.mkdir(parents=True, exist_ok=True)
+    cfg.imported_path.mkdir(parents=True, exist_ok=True)
+    (cfg.imported_path / "orphan--completed-aaaaaaaaaaaa.json").write_text("{}", encoding="utf-8")
+
+    with patch("aktenfux.cli._load_config", return_value=cfg):
+        result = runner.invoke(app, ["split-completed"])
+
+    assert result.exit_code == 1
+    assert "no matching pdf" in result.output.lower()
+
+
+def test_split_reconcile_completed_dry_run_reports_eligible(tmp_path):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "legacy-cli.pdf", "docsplitcli000003c", pages=5)
+    # Build a legacy completed state directly in _Split.
+    from aktenfux.main import plan_split  # noqa: PLC0415
+    import aktenfux.split as split_module  # noqa: PLC0415
+
+    plan = plan_split("docsplitcli000003c", [3], cfg)
+    source_bytes = source.read_bytes()
+    outputs = []
+    cfg.inbox_path.mkdir(parents=True, exist_ok=True)
+    for part in plan.parts:
+        payload = split_module._part_pdf_bytes(  # noqa: SLF001
+            source_bytes,
+            start_page=part.start_page,
+            end_page=part.end_page,
+        )
+        output_path = cfg.inbox_path / part.destination_filename
+        output_path.write_bytes(payload)
+        outputs.append(
+            SplitOutputRecord(
+                part_number=part.part_number,
+                start_page=part.start_page,
+                end_page=part.end_page,
+                filename=part.destination_filename,
+                sha256=sha256_file(output_path),
+            )
+        )
+    sidecar = read_sidecar(source)
+    assert sidecar is not None
+    sidecar.split_operations = [
+        SplitProvenanceRecord(
+            operation_id=plan.operation_id,
+            source_sha256=plan.source_sha256,
+            source_page_count=plan.source_page_count,
+            boundaries=plan.boundaries,
+            outputs=outputs,
+            state="completed",
+            created_at_utc="2026-10-09T00:00:00Z",
+            completed_at_utc="2026-10-09T00:10:00Z",
+        )
+    ]
+    source.with_suffix(".json").write_text(sidecar.model_dump_json(indent=2), encoding="utf-8")
+
+    with patch("aktenfux.cli._load_config", return_value=cfg):
+        result = runner.invoke(app, ["split-reconcile-completed"])
+
+    assert result.exit_code == 0, result.output
+    assert "Eligible completed sources: 1" in result.output
 
 
 def test_split_suggest_prints_candidates_without_mutation(tmp_path):

@@ -401,6 +401,22 @@ def test_workbench_executes_exact_latest_plan_once(tmp_path):
     assert "already completed" in duplicate.json()["detail"].lower()
 
 
+def test_workbench_rejects_suggest_for_completed_source(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docexact002", pages=8)
+    client = browser_client(create_app(cfg))
+    preview = preview_document(client, "docexact002", boundaries=(4,))
+    execution = client.post(
+        "/api/split/execute",
+        json=execute_payload("docexact002", preview),
+    )
+    assert execution.status_code == 200, execution.text
+
+    suggest = client.post("/api/split/suggest", json={"document_id": "docexact002"})
+    assert suggest.status_code == 400
+    assert "already completed" in suggest.json()["detail"].lower()
+
+
 def test_identical_fresh_preview_invalidates_the_previous_token(tmp_path):
     cfg = make_config(tmp_path)
     write_split_doc(cfg.split_path, "bundle.pdf", "docnonce001", pages=8)
