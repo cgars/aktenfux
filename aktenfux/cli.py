@@ -472,30 +472,37 @@ def split_completed(
     from rich.table import Table  # noqa: PLC0415
 
     try:
-        entries = list_completed_split_documents(cfg)
+        result = list_completed_split_documents(cfg)
     except (FileNotFoundError, ValueError, SplitError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    if not entries:
+    if not result.entries and not result.issues:
         console.print("No retained completed split sources found.")
         return
 
-    table = Table(title="Retained completed split sources")
-    table.add_column("Document ID", style="cyan")
-    table.add_column("Retained PDF")
-    table.add_column("Completed at (UTC)")
-    table.add_column("Operation")
-    table.add_column("Outputs")
-    for entry in entries:
-        table.add_row(
-            _safe_terminal_text(entry.document_id),
-            _safe_terminal_text(entry.retained_pdf),
-            _safe_terminal_text(entry.completed_at_utc),
-            _safe_terminal_text(entry.operation_id),
-            _safe_terminal_text(", ".join(entry.outputs)),
-        )
-    console.print(table)
+    if result.entries:
+        table = Table(title="Retained completed split sources")
+        table.add_column("Document ID", style="cyan")
+        table.add_column("Retained PDF")
+        table.add_column("Completed at (UTC)")
+        table.add_column("Operation")
+        table.add_column("Outputs")
+        for entry in result.entries:
+            table.add_row(
+                _safe_terminal_text(entry.document_id),
+                _safe_terminal_text(entry.retained_pdf),
+                _safe_terminal_text(entry.completed_at_utc),
+                _safe_terminal_text(entry.operation_id),
+                _safe_terminal_text(", ".join(entry.outputs)),
+            )
+        console.print(table)
+
+    if result.issues:
+        err_console.print("[red]Retained completed-source inspection found issues:[/red]")
+        for issue in result.issues:
+            _print_untrusted_line("Issue: ", f"{issue.retained_pdf}: {issue.reason}")
+        raise typer.Exit(1)
 
 
 @app.command("split-reconcile-completed")

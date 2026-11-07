@@ -423,7 +423,7 @@ def suggest_split_boundaries(document_id: str, config: AktenfuxConfig) -> SplitB
     return _suggest_split_boundaries(document_id, config)
 
 
-def list_completed_split_documents(config: AktenfuxConfig) -> list["CompletedSplitSummary"]:
+def list_completed_split_documents(config: AktenfuxConfig) -> "CompletedSplitListResult":
     """List retained completed split sources from _Imported."""
     from aktenfux.split import list_completed_split_documents as _list_completed  # noqa: PLC0415
 

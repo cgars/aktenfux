@@ -39,6 +39,17 @@ _SUGGEST_MAX_CHARS_PER_PAGE = 1200
 _SUGGEST_MAX_PAYLOAD_BYTES = 80_000
 _SUGGEST_MAX_WARNINGS = 32
 _SUGGEST_TIMEOUT_SECONDS = 120.0
+_COMPLETED_TRANSITION_SCHEMA_VERSION = 1
+_COMPLETED_TRANSITION_STATES = (
+    "planned",
+    "pdf_staged",
+    "sidecar_staged",
+    "retained_pdf_published",
+    "retained_sidecar_published",
+    "source_pdf_removed",
+    "source_sidecar_removed",
+    "finalized",
+)
 
 
 class SplitError(RuntimeError):
@@ -81,6 +92,18 @@ class CompletedSplitSummary:
 
 
 @dataclass(frozen=True)
+class CompletedSplitListIssue:
+    retained_pdf: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class CompletedSplitListResult:
+    entries: tuple[CompletedSplitSummary, ...]
+    issues: tuple[CompletedSplitListIssue, ...]
+
+
+@dataclass(frozen=True)
 class CompletedSplitReconcileIssue:
     document_id: str
     source_pdf: str
@@ -93,6 +116,18 @@ class CompletedSplitReconcileResult:
     eligible: tuple[CompletedSplitSummary, ...]
     transitioned: tuple[CompletedSplitSummary, ...]
     issues: tuple[CompletedSplitReconcileIssue, ...]
+
+
+@dataclass(frozen=True)
+class CompletedTransitionJournal:
+    operation_id: str
+    document_id: str
+    source_sha256: str
+    source_pdf: str
+    source_sidecar: str
+    retained_pdf: str
+    retained_sidecar: str
+    state: str
 
 
 @dataclass(frozen=True)
@@ -369,6 +404,174 @@ def _completed_destination_paths(
     return destination_pdf, destination_pdf.with_suffix(".json")
 
 
+def _completed_transition_root(imported_root: Path) -> Path:
+    root = imported_root / ".split-completed-transition"
+    try:
+        assert_within_base(root, imported_root)
+    except ValueError as exc:
+        raise SplitError("Split completed transition path escaped _Imported.") from exc
+    return root
+
+
+def _completed_transition_paths(
+    *,
+    imported_root: Path,
+    operation_id: str,
+) -> tuple[Path, Path, Path]:
+    transition_root = _completed_transition_root(imported_root)
+    operation_root = transition_root / operation_id
+    journal_path = operation_root / "transition-state.json"
+    return operation_root, transition_root, journal_path
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    _write_text_atomic(path, json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _load_completed_transition_journal(journal_path: Path) -> CompletedTransitionJournal | None:
+    if journal_path.is_symlink():
+        raise SplitError("Completed transition journal must not be a symbolic link.")
+    if not journal_path.exists():
+        return None
+    if not journal_path.is_file():
+        raise SplitError("Completed transition journal is not a regular file.")
+    try:
+        payload = json.loads(journal_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise SplitError("Completed transition journal is invalid.") from exc
+    if not isinstance(payload, dict):
+        raise SplitError("Completed transition journal is invalid.")
+    if payload.get("schema_version") != _COMPLETED_TRANSITION_SCHEMA_VERSION:
+        raise SplitError("Completed transition journal schema version is invalid.")
+
+    required_fields = {
+        "operation_id",
+        "document_id",
+        "source_sha256",
+        "source_pdf",
+        "source_sidecar",
+        "retained_pdf",
+        "retained_sidecar",
+        "state",
+    }
+    if not required_fields.issubset(payload):
+        raise SplitError("Completed transition journal is missing required fields.")
+    state = payload["state"]
+    if state not in _COMPLETED_TRANSITION_STATES:
+        raise SplitError("Completed transition journal state is invalid.")
+    return CompletedTransitionJournal(
+        operation_id=str(payload["operation_id"]),
+        document_id=str(payload["document_id"]),
+        source_sha256=str(payload["source_sha256"]),
+        source_pdf=str(payload["source_pdf"]),
+        source_sidecar=str(payload["source_sidecar"]),
+        retained_pdf=str(payload["retained_pdf"]),
+        retained_sidecar=str(payload["retained_sidecar"]),
+        state=state,
+    )
+
+
+def _write_completed_transition_journal(
+    journal_path: Path,
+    journal: CompletedTransitionJournal,
+    *,
+    state: str,
+) -> CompletedTransitionJournal:
+    if state not in _COMPLETED_TRANSITION_STATES:
+        raise SplitError("Completed transition journal state is invalid.")
+    updated = CompletedTransitionJournal(
+        operation_id=journal.operation_id,
+        document_id=journal.document_id,
+        source_sha256=journal.source_sha256,
+        source_pdf=journal.source_pdf,
+        source_sidecar=journal.source_sidecar,
+        retained_pdf=journal.retained_pdf,
+        retained_sidecar=journal.retained_sidecar,
+        state=state,
+    )
+    _write_json_atomic(
+        journal_path,
+        {
+            "schema_version": _COMPLETED_TRANSITION_SCHEMA_VERSION,
+            "operation_id": updated.operation_id,
+            "document_id": updated.document_id,
+            "source_sha256": updated.source_sha256,
+            "source_pdf": updated.source_pdf,
+            "source_sidecar": updated.source_sidecar,
+            "retained_pdf": updated.retained_pdf,
+            "retained_sidecar": updated.retained_sidecar,
+            "state": updated.state,
+        },
+    )
+    return updated
+
+
+def _read_completed_transition_journal_for_operation(
+    *,
+    imported_root: Path,
+    operation_id: str,
+) -> CompletedTransitionJournal | None:
+    operation_root, _, journal_path = _completed_transition_paths(
+        imported_root=imported_root,
+        operation_id=operation_id,
+    )
+    if operation_root.is_symlink():
+        raise SplitError("Completed transition operation path must not be a symbolic link.")
+    journal = _load_completed_transition_journal(journal_path)
+    if journal is not None and journal.operation_id != operation_id:
+        raise SplitError("Completed transition journal operation ID mismatch.")
+    return journal
+
+
+def _list_completed_transition_journals(imported_root: Path) -> list[CompletedTransitionJournal]:
+    transition_root = _completed_transition_root(imported_root)
+    if transition_root.is_symlink():
+        raise SplitError("Completed transition root must not be a symbolic link.")
+    if not transition_root.exists():
+        return []
+    if not transition_root.is_dir():
+        raise SplitError("Completed transition root is not a directory.")
+    journals: list[CompletedTransitionJournal] = []
+    for operation_root in sorted(transition_root.iterdir()):
+        if operation_root.is_symlink() or not operation_root.is_dir():
+            raise SplitError("Completed transition operation path is invalid.")
+        journal = _load_completed_transition_journal(operation_root / "transition-state.json")
+        if journal is None:
+            continue
+        journals.append(journal)
+    return journals
+
+
+def _cleanup_completed_transition_artifacts(
+    *,
+    operation_root: Path,
+    transition_root: Path,
+) -> None:
+    if operation_root.is_symlink():
+        raise SplitError("Completed transition operation path must not be a symbolic link.")
+    if not operation_root.exists():
+        return
+    if not operation_root.is_dir():
+        raise SplitError("Completed transition operation path is not a directory.")
+    allowed = {"transition-state.json", "source.pdf", "source.json"}
+    try:
+        children = list(operation_root.iterdir())
+        for child in children:
+            if child.name not in allowed or child.is_symlink() or not child.is_file():
+                raise SplitError("Completed transition staging contains unexpected artifacts.")
+        for child in children:
+            child.unlink()
+        operation_root.rmdir()
+        try:
+            transition_root.rmdir()
+        except OSError:
+            pass
+    except SplitError:
+        raise
+    except OSError as exc:
+        raise SplitError("Could not clean completed transition staging data.") from exc
+
+
 def _plan_source_filename_matches_snapshot(plan_source_filename: str, snapshot_name: str, operation_id: str) -> bool:
     if plan_source_filename == snapshot_name:
         return True
@@ -414,6 +617,70 @@ def _read_validated_snapshot(
     )
 
 
+def _read_snapshot_from_transition_journal(
+    *,
+    config: AktenfuxConfig,
+    journal: CompletedTransitionJournal,
+    expected_document_id: str,
+    expected_operation_id: str,
+) -> SourceSnapshot:
+    if journal.document_id != expected_document_id:
+        raise SplitError("Completed transition journal document ID mismatch.")
+    if journal.operation_id != expected_operation_id:
+        raise SplitError("Completed transition journal operation ID mismatch.")
+    source_pdf = config.split_path / journal.source_pdf
+    source_sidecar = config.split_path / journal.source_sidecar
+    retained_pdf = config.imported_path / journal.retained_pdf
+    retained_sidecar = config.imported_path / journal.retained_sidecar
+
+    pdf_path: Path | None = None
+    sidecar_path: Path | None = None
+    lifecycle_root: Path | None = None
+    lifecycle_label: str | None = None
+
+    if source_sidecar.exists():
+        _validate_direct_regular_file(source_sidecar, root=config.split_path, suffix=".json")
+        sidecar_path = source_sidecar
+        lifecycle_root = config.split_path
+        lifecycle_label = "split"
+    elif retained_sidecar.exists():
+        _validate_direct_regular_file(retained_sidecar, root=config.imported_path, suffix=".json")
+        sidecar_path = retained_sidecar
+        lifecycle_root = config.imported_path
+        lifecycle_label = "imported"
+    else:
+        raise SplitError("Completed transition sidecar is missing from both split and imported roots.")
+
+    if source_pdf.exists():
+        _validate_direct_regular_file(source_pdf, root=config.split_path, suffix=".pdf")
+        pdf_path = source_pdf
+        lifecycle_root = config.split_path
+        lifecycle_label = "split"
+    elif retained_pdf.exists():
+        _validate_direct_regular_file(retained_pdf, root=config.imported_path, suffix=".pdf")
+        pdf_path = retained_pdf
+        lifecycle_root = config.imported_path
+        lifecycle_label = "imported"
+    else:
+        raise SplitError("Completed transition PDF is missing from both split and imported roots.")
+
+    if sidecar_path is None or pdf_path is None or lifecycle_root is None or lifecycle_label is None:
+        raise SplitError("Completed transition journal could not resolve source identity.")
+    sidecar = _read_sidecar_validated(sidecar_path)
+    completed = _completed_operation_for_document(sidecar, operation_id=journal.operation_id)
+    if completed is None:
+        raise SplitError("Completed transition sidecar is missing completed split provenance.")
+    if sidecar.sha256 != journal.source_sha256:
+        raise SplitError("Completed transition journal source hash mismatch.")
+    return _read_validated_snapshot(
+        pdf_path,
+        sidecar_path,
+        sidecar,
+        lifecycle_root=lifecycle_root,
+        lifecycle_label=lifecycle_label,
+    )
+
+
 def _read_snapshot(
     config: AktenfuxConfig,
     document_id: str,
@@ -421,6 +688,7 @@ def _read_snapshot(
     include_completed: bool,
     operation_id: str | None = None,
 ) -> SourceSnapshot:
+    imported_root = _validate_imported_root(config)
     active_match = _find_source_by_document_id(
         config.split_path,
         document_id=document_id,
@@ -442,6 +710,19 @@ def _read_snapshot(
             lifecycle_root=config.split_path,
             lifecycle_label="split",
         )
+
+    if include_completed and operation_id is not None:
+        transition_journal = _read_completed_transition_journal_for_operation(
+            imported_root=imported_root,
+            operation_id=operation_id,
+        )
+        if transition_journal is not None:
+            return _read_snapshot_from_transition_journal(
+                config=config,
+                journal=transition_journal,
+                expected_document_id=document_id,
+                expected_operation_id=operation_id,
+            )
 
     imported_match = _find_source_by_document_id(
         config.imported_path,
@@ -1165,48 +1446,6 @@ def _publish_output_from_stage(
         raise SplitError(f"Split output hash verification failed for '{final_path.name}'.")
 
 
-def _move_file_no_overwrite(source: Path, destination: Path, *, label: str) -> None:
-    if destination.exists():
-        raise SplitError(f"Destination collision for retained completed source {destination.name}.")
-    if source.is_symlink() or not source.is_file():
-        raise SplitError(f"Retained completed source {label} is missing or invalid.")
-    try:
-        source.replace(destination)
-        return
-    except OSError as exc:
-        if exc.errno != errno.EXDEV:
-            raise SplitError(f"Could not move retained completed source {label}.") from exc
-    try:
-        data = source.read_bytes()
-    except OSError as exc:
-        raise SplitError(f"Could not read retained completed source {label}.") from exc
-    _write_bytes_exclusive(destination, data)
-    try:
-        source.unlink()
-    except OSError as exc:
-        raise SplitError(f"Could not remove source {label} after copy.") from exc
-
-
-def _resolve_completed_transition_state(
-    *,
-    source_pdf: Path,
-    source_sidecar: Path,
-    retained_pdf: Path,
-    retained_sidecar: Path,
-) -> str:
-    source_pdf_exists = source_pdf.exists()
-    source_sidecar_exists = source_sidecar.exists()
-    retained_pdf_exists = retained_pdf.exists()
-    retained_sidecar_exists = retained_sidecar.exists()
-    if source_pdf_exists and source_sidecar_exists and not retained_pdf_exists and not retained_sidecar_exists:
-        return "initial"
-    if not source_pdf_exists and source_sidecar_exists and retained_pdf_exists and not retained_sidecar_exists:
-        return "pdf_moved"
-    if not source_pdf_exists and not source_sidecar_exists and retained_pdf_exists and retained_sidecar_exists:
-        return "completed"
-    raise SplitError("Retained completed source is in an ambiguous recovery state.")
-
-
 def _verify_completed_sidecar_identity(
     sidecar_path: Path, *, document_id: str, source_sha256: str, operation_id: str
 ) -> SidecarDocument:
@@ -1219,16 +1458,122 @@ def _verify_completed_sidecar_identity(
     return sidecar
 
 
+def _stage_transition_file(
+    stage_path: Path,
+    *,
+    expected_hash: str,
+    source_path: Path,
+    label: str,
+) -> None:
+    if stage_path.exists():
+        if stage_path.is_symlink() or not stage_path.is_file():
+            raise SplitError(f"Completed transition staged {label} is invalid.")
+        if _sha256_file_bounded(stage_path, label=f"completed transition staged {label}") != expected_hash:
+            raise SplitError(f"Completed transition staged {label} hash mismatch.")
+        return
+    if source_path.is_symlink() or not source_path.is_file():
+        raise SplitError(f"Completed transition source {label} is missing or invalid.")
+    try:
+        payload = source_path.read_bytes()
+    except OSError as exc:
+        raise SplitError(f"Could not read completed transition source {label}.") from exc
+    _write_bytes_exclusive(stage_path, payload)
+    if _sha256_file_bounded(stage_path, label=f"completed transition staged {label}") != expected_hash:
+        raise SplitError(f"Completed transition staged {label} hash verification failed.")
+
+
+def _publish_retained_from_stage(
+    stage_path: Path,
+    destination_path: Path,
+    *,
+    expected_hash: str,
+    root: Path,
+    label: str,
+) -> None:
+    if destination_path.suffix.lower() == ".pdf":
+        _validate_direct_destination_path(destination_path, root=root)
+    else:
+        try:
+            assert_within_base(destination_path, root)
+        except ValueError as exc:
+            raise SplitError(f"{destination_path.name} is outside the expected destination root.") from exc
+        if destination_path.parent.resolve() != root.resolve():
+            raise SplitError(f"{destination_path.name} must be written directly to {root.name}.")
+        if destination_path.suffix.lower() != ".json":
+            raise SplitError(f"{destination_path.name} has invalid extension; expected .json.")
+        if destination_path.exists() and (destination_path.is_symlink() or not destination_path.is_file()):
+            raise SplitError(f"Retained completed source {label} destination is invalid.")
+    if destination_path.exists():
+        if _sha256_file_bounded(destination_path, label=f"retained completed {label}") != expected_hash:
+            raise SplitError(f"Destination collision for retained completed source {destination_path.name}.")
+        return
+    try:
+        payload = stage_path.read_bytes()
+    except OSError as exc:
+        raise SplitError(f"Could not read completed transition staged {label}.") from exc
+    try:
+        _write_bytes_exclusive(destination_path, payload)
+    except SplitError:
+        if destination_path.exists() and _sha256_file_bounded(
+            destination_path, label=f"retained completed {label}"
+        ) == expected_hash:
+            return
+        raise
+    if _sha256_file_bounded(destination_path, label=f"retained completed {label}") != expected_hash:
+        raise SplitError(f"Retained completed source {label} hash verification failed.")
+
+
+def _remove_source_file_if_present(
+    source_path: Path,
+    *,
+    root: Path,
+    expected_hash: str,
+    label: str,
+) -> None:
+    if not source_path.exists():
+        return
+    if source_path.is_symlink() or not source_path.is_file():
+        raise SplitError(f"Retained completed source {label} is invalid.")
+    _validate_direct_regular_file(
+        source_path,
+        root=root,
+        suffix=".pdf" if source_path.suffix.lower() == ".pdf" else ".json",
+    )
+    if _sha256_file_bounded(source_path, label=f"completed transition source {label}") != expected_hash:
+        raise SplitError(f"Completed transition source {label} hash mismatch.")
+    try:
+        source_path.unlink()
+    except OSError as exc:
+        raise SplitError(f"Could not remove completed transition source {label}.") from exc
+
+
+def _build_completed_summary(
+    *,
+    sidecar: SidecarDocument,
+    operation: SplitProvenanceRecord,
+    retained_pdf_name: str,
+) -> CompletedSplitSummary:
+    return CompletedSplitSummary(
+        document_id=sidecar.id,
+        retained_pdf=retained_pdf_name,
+        source_sha256=sidecar.sha256,
+        operation_id=operation.operation_id,
+        completed_at_utc=operation.completed_at_utc or operation.created_at_utc,
+        outputs=tuple(item.filename for item in operation.outputs),
+    )
+
+
 def _retain_completed_source(
     *,
     config: AktenfuxConfig,
     snapshot: SourceSnapshot,
     operation: SplitProvenanceRecord,
+    source_filename: str,
 ) -> tuple[Path, Path]:
     imported_root = _validate_completed_roots(config, include_inbox=True)
     retained_pdf, retained_sidecar = _completed_destination_paths(
         imported_root=imported_root,
-        source_pdf_name=snapshot.pdf_name,
+        source_pdf_name=source_filename,
         operation_id=operation.operation_id,
     )
     _validate_direct_destination_path(retained_pdf, root=imported_root)
@@ -1241,58 +1586,146 @@ def _retain_completed_source(
     if retained_sidecar.suffix.lower() != ".json":
         raise SplitError(f"{retained_sidecar.name} has invalid extension; expected .json.")
 
-    source_pdf = config.split_path / snapshot.pdf_name
+    source_pdf = config.split_path / source_filename
     source_sidecar = sidecar_path_for(source_pdf)
-    if source_pdf.exists():
-        _validate_direct_regular_file(source_pdf, root=config.split_path, suffix=".pdf")
-    if source_sidecar.exists():
-        _validate_direct_regular_file(source_sidecar, root=config.split_path, suffix=".json")
-    if retained_pdf.exists():
-        _validate_direct_regular_file(retained_pdf, root=imported_root, suffix=".pdf")
-    if retained_sidecar.exists():
-        _validate_direct_regular_file(retained_sidecar, root=imported_root, suffix=".json")
-
-    state = _resolve_completed_transition_state(
-        source_pdf=source_pdf,
-        source_sidecar=source_sidecar,
-        retained_pdf=retained_pdf,
-        retained_sidecar=retained_sidecar,
+    operation_root, transition_root, journal_path = _completed_transition_paths(
+        imported_root=imported_root,
+        operation_id=operation.operation_id,
     )
     _ensure_directory(imported_root, label="imported")
-    if state == "initial":
-        if _sha256_file_bounded(source_pdf, label="split source") != snapshot.source_sha256:
-            raise SplitError("Source PDF hash changed before completed-source transition.")
-        _verify_completed_sidecar_identity(
-            source_sidecar,
+    _ensure_directory(transition_root, label="completed transition")
+    _ensure_directory(operation_root, label="completed transition operation")
+
+    journal = _load_completed_transition_journal(journal_path)
+    if journal is None:
+        journal = CompletedTransitionJournal(
+            operation_id=operation.operation_id,
             document_id=snapshot.sidecar.id,
             source_sha256=snapshot.source_sha256,
-            operation_id=operation.operation_id,
+            source_pdf=source_pdf.name,
+            source_sidecar=source_sidecar.name,
+            retained_pdf=retained_pdf.name,
+            retained_sidecar=retained_sidecar.name,
+            state="planned",
         )
-        _move_file_no_overwrite(source_pdf, retained_pdf, label="PDF")
-        state = _resolve_completed_transition_state(
-            source_pdf=source_pdf,
-            source_sidecar=source_sidecar,
-            retained_pdf=retained_pdf,
-            retained_sidecar=retained_sidecar,
+        journal = _write_completed_transition_journal(
+            journal_path,
+            journal,
+            state="planned",
         )
-    if state == "pdf_moved":
-        if _sha256_file_bounded(retained_pdf, label="retained split source") != snapshot.source_sha256:
-            raise SplitError("Retained completed source PDF no longer matches authoritative hash.")
-        _verify_completed_sidecar_identity(
+    else:
+        if (
+            journal.operation_id != operation.operation_id
+            or journal.document_id != snapshot.sidecar.id
+            or journal.source_sha256 != snapshot.source_sha256
+            or journal.source_pdf != source_pdf.name
+            or journal.source_sidecar != source_sidecar.name
+            or journal.retained_pdf != retained_pdf.name
+            or journal.retained_sidecar != retained_sidecar.name
+        ):
+            raise SplitError("Completed transition journal does not match this operation.")
+
+    stage_pdf = operation_root / "source.pdf"
+    stage_sidecar = operation_root / "source.json"
+
+    def sidecar_hash_for_recovery() -> str:
+        if source_sidecar.exists():
+            return _sha256_file_bounded(source_sidecar, label="split sidecar")
+        if retained_sidecar.exists():
+            return _sha256_file_bounded(retained_sidecar, label="retained split sidecar")
+        if stage_sidecar.exists():
+            return _sha256_file_bounded(stage_sidecar, label="completed transition staged sidecar")
+        raise SplitError("Completed transition sidecar is missing from source, stage, and retained paths.")
+
+    source_sidecar_hash = sidecar_hash_for_recovery()
+
+    if journal.state == "planned":
+        if source_pdf.exists():
+            _validate_direct_regular_file(source_pdf, root=config.split_path, suffix=".pdf")
+            if _sha256_file_bounded(source_pdf, label="split source") != snapshot.source_sha256:
+                raise SplitError("Source PDF hash changed before completed-source transition.")
+        if source_sidecar.exists():
+            _verify_completed_sidecar_identity(
+                source_sidecar,
+                document_id=snapshot.sidecar.id,
+                source_sha256=snapshot.source_sha256,
+                operation_id=operation.operation_id,
+            )
+            source_sidecar_hash = sidecar_hash_for_recovery()
+        _stage_transition_file(
+            stage_pdf,
+            expected_hash=snapshot.source_sha256,
+            source_path=source_pdf if source_pdf.exists() else retained_pdf,
+            label="PDF",
+        )
+        journal = _write_completed_transition_journal(journal_path, journal, state="pdf_staged")
+    if journal.state == "pdf_staged":
+        source_sidecar_hash = sidecar_hash_for_recovery()
+        _stage_transition_file(
+            stage_sidecar,
+            expected_hash=source_sidecar_hash,
+            source_path=source_sidecar if source_sidecar.exists() else retained_sidecar,
+            label="sidecar",
+        )
+        journal = _write_completed_transition_journal(journal_path, journal, state="sidecar_staged")
+    if journal.state == "sidecar_staged":
+        _publish_retained_from_stage(
+            stage_pdf,
+            retained_pdf,
+            expected_hash=snapshot.source_sha256,
+            root=imported_root,
+            label="PDF",
+        )
+        journal = _write_completed_transition_journal(
+            journal_path,
+            journal,
+            state="retained_pdf_published",
+        )
+    if journal.state == "retained_pdf_published":
+        _publish_retained_from_stage(
+            stage_sidecar,
+            retained_sidecar,
+            expected_hash=source_sidecar_hash,
+            root=imported_root,
+            label="sidecar",
+        )
+        journal = _write_completed_transition_journal(
+            journal_path,
+            journal,
+            state="retained_sidecar_published",
+        )
+    if journal.state == "retained_sidecar_published":
+        _remove_source_file_if_present(
+            source_pdf,
+            root=config.split_path,
+            expected_hash=snapshot.source_sha256,
+            label="PDF",
+        )
+        journal = _write_completed_transition_journal(
+            journal_path,
+            journal,
+            state="source_pdf_removed",
+        )
+    if journal.state == "source_pdf_removed":
+        _remove_source_file_if_present(
             source_sidecar,
-            document_id=snapshot.sidecar.id,
-            source_sha256=snapshot.source_sha256,
-            operation_id=operation.operation_id,
+            root=config.split_path,
+            expected_hash=source_sidecar_hash,
+            label="sidecar",
         )
-        _move_file_no_overwrite(source_sidecar, retained_sidecar, label="sidecar")
-        state = _resolve_completed_transition_state(
-            source_pdf=source_pdf,
-            source_sidecar=source_sidecar,
-            retained_pdf=retained_pdf,
-            retained_sidecar=retained_sidecar,
+        journal = _write_completed_transition_journal(
+            journal_path,
+            journal,
+            state="source_sidecar_removed",
         )
-    if state != "completed":
-        raise SplitError("Retained completed-source transition did not complete.")
+    if journal.state == "source_sidecar_removed":
+        journal = _write_completed_transition_journal(
+            journal_path,
+            journal,
+            state="finalized",
+        )
+    if journal.state != "finalized":
+        raise SplitError("Completed transition did not reach finalized state.")
 
     if _sha256_file_bounded(retained_pdf, label="retained split source") != snapshot.source_sha256:
         raise SplitError("Retained completed source PDF no longer matches authoritative hash.")
@@ -1306,15 +1739,20 @@ def _retain_completed_source(
     if retained_sidecar_doc.current_path != retained_path_text:
         retained_sidecar_doc.current_path = retained_path_text
         _write_sidecar_atomic(retained_sidecar_doc, retained_sidecar)
+    _cleanup_completed_transition_artifacts(
+        operation_root=operation_root,
+        transition_root=transition_root,
+    )
     return retained_pdf, retained_sidecar
 
 
-def list_completed_split_documents(config: AktenfuxConfig) -> list[CompletedSplitSummary]:
-    """Return retained completed split sources from _Imported."""
+def list_completed_split_documents(config: AktenfuxConfig) -> CompletedSplitListResult:
+    """Return retained completed split sources from _Imported with bounded issues."""
     imported_root = _validate_completed_roots(config, include_inbox=False)
     if not imported_root.exists():
-        return []
+        return CompletedSplitListResult(entries=tuple(), issues=tuple())
     entries: list[CompletedSplitSummary] = []
+    issues: list[CompletedSplitListIssue] = []
     seen_ids: set[str] = set()
     for pdf_path in sorted(imported_root.glob("*.pdf")):
         try:
@@ -1345,18 +1783,109 @@ def list_completed_split_documents(config: AktenfuxConfig) -> list[CompletedSpli
                 raise SplitError("Duplicate document id found in retained completed sources.")
             seen_ids.add(sidecar.id)
             entries.append(
-                CompletedSplitSummary(
-                    document_id=sidecar.id,
-                    retained_pdf=pdf_path.name,
-                    source_sha256=sidecar.sha256,
-                    operation_id=operation.operation_id,
-                    completed_at_utc=operation.completed_at_utc or operation.created_at_utc,
-                    outputs=tuple(item.filename for item in operation.outputs),
+                _build_completed_summary(
+                    sidecar=sidecar,
+                    operation=operation,
+                    retained_pdf_name=pdf_path.name,
                 )
             )
-        except SplitError:
-            continue
-    return entries
+        except SplitError as exc:
+            issues.append(
+                CompletedSplitListIssue(
+                    retained_pdf=pdf_path.name,
+                    reason=str(exc),
+                )
+            )
+    return CompletedSplitListResult(entries=tuple(entries), issues=tuple(issues))
+
+
+def _validate_completed_outputs(
+    *,
+    config: AktenfuxConfig,
+    operation: SplitProvenanceRecord,
+) -> None:
+    for output in operation.outputs:
+        if output.sha256 is None:
+            raise SplitError(f"missing output hash for {output.filename}")
+        final_path = config.inbox_path / output.filename
+        _validate_direct_destination_path(final_path, root=config.inbox_path)
+        if not final_path.exists():
+            raise SplitError(f"missing output {output.filename}")
+        if _sha256_file_bounded(final_path, label="completed split output") != output.sha256:
+            raise SplitError(f"output hash mismatch for {output.filename}")
+
+
+def _state_rank(state: str) -> int:
+    try:
+        return _COMPLETED_TRANSITION_STATES.index(state)
+    except ValueError as exc:
+        raise SplitError("Completed transition journal state is invalid.") from exc
+
+
+def _preflight_completed_transition_from_journal(
+    *,
+    config: AktenfuxConfig,
+    journal: CompletedTransitionJournal,
+) -> tuple[SourceSnapshot, SplitProvenanceRecord, CompletedSplitSummary]:
+    snapshot = _read_snapshot_from_transition_journal(
+        config=config,
+        journal=journal,
+        expected_document_id=journal.document_id,
+        expected_operation_id=journal.operation_id,
+    )
+    sidecar = snapshot.sidecar
+    operation = _completed_operation_for_document(sidecar, operation_id=journal.operation_id)
+    if operation is None:
+        raise SplitError("completed operation missing in sidecar")
+    _validate_completed_outputs(config=config, operation=operation)
+    imported_root = _validate_imported_root(config)
+    retained_pdf, retained_sidecar = _completed_destination_paths(
+        imported_root=imported_root,
+        source_pdf_name=journal.source_pdf,
+        operation_id=journal.operation_id,
+    )
+    source_pdf = config.split_path / journal.source_pdf
+    source_sidecar = config.split_path / journal.source_sidecar
+    stage_root, _, _journal_path = _completed_transition_paths(
+        imported_root=imported_root,
+        operation_id=journal.operation_id,
+    )
+    stage_pdf = stage_root / "source.pdf"
+    stage_sidecar = stage_root / "source.json"
+
+    rank = _state_rank(journal.state)
+    if rank >= _state_rank("pdf_staged"):
+        if not stage_pdf.exists():
+            raise SplitError("pdf staging copy missing")
+        if _sha256_file_bounded(stage_pdf, label="completed transition staged PDF") != journal.source_sha256:
+            raise SplitError("pdf staging copy hash mismatch")
+    if rank >= _state_rank("sidecar_staged") and not stage_sidecar.exists():
+        raise SplitError("sidecar staging copy missing")
+    if rank >= _state_rank("retained_pdf_published"):
+        if not retained_pdf.exists():
+            raise SplitError("retained PDF missing")
+        if _sha256_file_bounded(retained_pdf, label="retained completed PDF") != journal.source_sha256:
+            raise SplitError("retained PDF hash mismatch")
+    if rank >= _state_rank("retained_sidecar_published") and not retained_sidecar.exists():
+        raise SplitError("retained sidecar missing")
+    if rank >= _state_rank("retained_sidecar_published") and retained_sidecar.exists():
+        _verify_completed_sidecar_identity(
+            retained_sidecar,
+            document_id=journal.document_id,
+            source_sha256=journal.source_sha256,
+            operation_id=journal.operation_id,
+        )
+    if rank >= _state_rank("source_pdf_removed") and source_pdf.exists():
+        raise SplitError("source PDF cleanup incomplete")
+    if rank >= _state_rank("source_sidecar_removed") and source_sidecar.exists():
+        raise SplitError("source sidecar cleanup incomplete")
+
+    summary = _build_completed_summary(
+        sidecar=sidecar,
+        operation=operation,
+        retained_pdf_name=retained_pdf.name,
+    )
+    return snapshot, operation, summary
 
 
 def reconcile_completed_split_sources(
@@ -1365,18 +1894,83 @@ def reconcile_completed_split_sources(
     apply_changes: bool,
 ) -> CompletedSplitReconcileResult:
     """Dry-run-first reconciliation for completed split sources still in _Split."""
-    _validate_completed_roots(config, include_inbox=True)
+    imported_root = _validate_completed_roots(config, include_inbox=True)
     eligible: list[CompletedSplitSummary] = []
     transitioned: list[CompletedSplitSummary] = []
     issues: list[CompletedSplitReconcileIssue] = []
+    seen_operations: set[str] = set()
+
+    journals: list[CompletedTransitionJournal] = []
+    try:
+        journals = _list_completed_transition_journals(imported_root)
+    except SplitError as exc:
+        issues.append(
+            CompletedSplitReconcileIssue(
+                document_id="(unknown)",
+                source_pdf="(transition-journal)",
+                reason=str(exc),
+            )
+        )
 
     if not config.split_path.exists():
+        if journals:
+            for journal in journals:
+                try:
+                    snapshot, operation, summary = _preflight_completed_transition_from_journal(
+                        config=config,
+                        journal=journal,
+                    )
+                    seen_operations.add(journal.operation_id)
+                    eligible.append(summary)
+                    if apply_changes:
+                        _retain_completed_source(
+                            config=config,
+                            snapshot=snapshot,
+                            operation=operation,
+                            source_filename=journal.source_pdf,
+                        )
+                        transitioned.append(summary)
+                except SplitError as exc:
+                    issues.append(
+                        CompletedSplitReconcileIssue(
+                            document_id=journal.document_id,
+                            source_pdf=journal.source_pdf,
+                            reason=str(exc),
+                        )
+                    )
         return CompletedSplitReconcileResult(
             dry_run=not apply_changes,
-            eligible=tuple(),
-            transitioned=tuple(),
-            issues=tuple(),
+            eligible=tuple(eligible),
+            transitioned=tuple(transitioned),
+            issues=tuple(issues),
         )
+
+    for journal in journals:
+        try:
+            snapshot, operation, summary = _preflight_completed_transition_from_journal(
+                config=config,
+                journal=journal,
+            )
+            if summary.operation_id in seen_operations:
+                raise SplitError("duplicate completed transition journal operation")
+            seen_operations.add(summary.operation_id)
+            eligible.append(summary)
+            if apply_changes:
+                _retain_completed_source(
+                    config=config,
+                    snapshot=snapshot,
+                    operation=operation,
+                    source_filename=journal.source_pdf,
+                )
+                transitioned.append(summary)
+        except SplitError as exc:
+            issues.append(
+                CompletedSplitReconcileIssue(
+                    document_id=journal.document_id,
+                    source_pdf=journal.source_pdf,
+                    reason=str(exc),
+                )
+            )
 
     for pdf_path in sorted(config.split_path.glob("*.pdf")):
         document_id = "(unknown)"
@@ -1388,6 +1982,8 @@ def reconcile_completed_split_sources(
             document_id = sidecar.id
             operation = _completed_operation_for_document(sidecar)
             if operation is None:
+                continue
+            if operation.operation_id in seen_operations:
                 continue
             if len([op for op in sidecar.split_operations if op.state == "completed"]) != 1:
                 raise SplitError("multiple completed split operations")
@@ -1417,30 +2013,41 @@ def reconcile_completed_split_sources(
             )
             if snapshot.source_sha256 != sidecar.sha256:
                 raise SplitError("sidecar/source hash mismatch")
-            for output in operation.outputs:
-                if output.sha256 is None:
-                    raise SplitError(f"missing output hash for {output.filename}")
-                final_path = config.inbox_path / output.filename
-                _validate_direct_destination_path(final_path, root=config.inbox_path)
-                if not final_path.exists():
-                    raise SplitError(f"missing output {output.filename}")
-                if _sha256_file_bounded(final_path, label="completed split output") != output.sha256:
-                    raise SplitError(f"output hash mismatch for {output.filename}")
-            summary = CompletedSplitSummary(
-                document_id=sidecar.id,
-                retained_pdf=_completed_destination_paths(
-                    imported_root=config.imported_path,
-                    source_pdf_name=pdf_path.name,
-                    operation_id=operation.operation_id,
-                )[0].name,
-                source_sha256=sidecar.sha256,
+            _validate_completed_outputs(config=config, operation=operation)
+            retained_pdf, retained_sidecar = _completed_destination_paths(
+                imported_root=imported_root,
+                source_pdf_name=pdf_path.name,
                 operation_id=operation.operation_id,
-                completed_at_utc=operation.completed_at_utc or operation.created_at_utc,
-                outputs=tuple(item.filename for item in operation.outputs),
             )
+            retained_pdf_exists = retained_pdf.exists()
+            retained_sidecar_exists = retained_sidecar.exists()
+            if retained_pdf_exists != retained_sidecar_exists:
+                raise SplitError("retained destination pair is partial and requires recovery via journal.")
+            if retained_pdf_exists:
+                if _sha256_file_bounded(retained_pdf, label="retained split source") != sidecar.sha256:
+                    raise SplitError("retained destination PDF collision")
+                _verify_completed_sidecar_identity(
+                    retained_sidecar,
+                    document_id=sidecar.id,
+                    source_sha256=sidecar.sha256,
+                    operation_id=operation.operation_id,
+                )
+            summary = _build_completed_summary(
+                sidecar=sidecar,
+                operation=operation,
+                retained_pdf_name=retained_pdf.name,
+            )
+            if summary.operation_id in seen_operations:
+                raise SplitError("duplicate completed operation candidate")
+            seen_operations.add(summary.operation_id)
             eligible.append(summary)
             if apply_changes:
-                _retain_completed_source(config=config, snapshot=snapshot, operation=operation)
+                _retain_completed_source(
+                    config=config,
+                    snapshot=snapshot,
+                    operation=operation,
+                    source_filename=pdf_path.name,
+                )
                 transitioned.append(summary)
         except SplitError as exc:
             issues.append(
@@ -1580,8 +2187,12 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
                     sha256=output.sha256,
                 )
             )
-        if snapshot.lifecycle_label == "split":
-            _retain_completed_source(config=config, snapshot=snapshot, operation=operation)
+        _retain_completed_source(
+            config=config,
+            snapshot=snapshot,
+            operation=operation,
+            source_filename=plan.source_filename,
+        )
         return SplitResult(
             operation_id=operation.operation_id,
             document_id=plan.document_id,
@@ -1699,7 +2310,12 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
         publish_journal_path,
         expected_outputs=expected_output_names,
     )
-    _retain_completed_source(config=config, snapshot=snapshot, operation=operation)
+    _retain_completed_source(
+        config=config,
+        snapshot=snapshot,
+        operation=operation,
+        source_filename=plan.source_filename,
+    )
 
     outputs: list[SplitPartResult] = []
     for output in operation.outputs:
