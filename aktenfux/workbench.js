@@ -152,6 +152,9 @@
       suggestions: null,
       suggestedBoundaries: [],
       selectedSuggestionBoundaries: new Set(),
+      suggestionSourceSha256: null,
+      suggestionSourcePageCount: null,
+      documentIdentityById: new Map(),
       pendingSuggest: false,
       suggestController: null,
       suggestSequence: 0,
@@ -225,10 +228,25 @@
       state.suggestions = null;
       state.suggestedBoundaries = [];
       state.selectedSuggestionBoundaries = new Set();
+      state.suggestionSourceSha256 = null;
+      state.suggestionSourcePageCount = null;
       state.pendingSuggest = false;
       state.suggestSequence += 1;
       setSuggestionStatus("");
       setText(elements.suggestionList, "Select a document, then request suggestions.");
+    }
+
+    function currentDocumentIdentity() {
+      return state.documentIdentityById.get(state.currentDocumentId) || null;
+    }
+
+    function suggestionMatchesCurrentDocumentIdentity() {
+      const identity = currentDocumentIdentity();
+      if (!identity || !state.suggestionSourceSha256) return false;
+      return (
+        identity.source_sha256 === state.suggestionSourceSha256 &&
+        identity.page_count === state.suggestionSourcePageCount
+      );
     }
 
     function abortPreview() {
@@ -335,7 +353,14 @@
       });
       if (!response.ok) throw new Error("Could not load documents.");
       const documents = await response.json();
+      const priorIdentity = currentDocumentIdentity();
       state.documents = documents;
+      state.documentIdentityById = new Map(
+        documents.map((item) => [
+          item.id,
+          { source_sha256: item.source_sha256, page_count: item.page_count },
+        ])
+      );
       const retained = documents.some((item) => item.id === state.currentDocumentId);
       if (!retained) {
         invalidatePreview();
@@ -343,6 +368,25 @@
         state.currentDocumentId = documents[0]?.id || null;
         state.currentPage = 1;
         state.boundaries = [];
+      } else {
+        const currentIdentity = currentDocumentIdentity();
+        const identityChanged = Boolean(
+          priorIdentity &&
+          currentIdentity &&
+          (priorIdentity.source_sha256 !== currentIdentity.source_sha256 ||
+            priorIdentity.page_count !== currentIdentity.page_count)
+        );
+        if (identityChanged) {
+          invalidatePreview();
+          invalidateSuggestions();
+          setSuggestionStatus("Suggestion became stale because the source changed.", "error");
+        } else if (
+          state.suggestionSourceSha256 &&
+          !suggestionMatchesCurrentDocumentIdentity()
+        ) {
+          invalidateSuggestions();
+          setSuggestionStatus("Suggestion became stale because the source changed.", "error");
+        }
       }
       renderDocumentList();
       showCurrentPage();
@@ -403,7 +447,16 @@
       const candidates = Array.isArray(suggestion?.candidates) ? suggestion.candidates : [];
       elements.suggestionList.replaceChildren();
       if (!candidates.length) {
-        setText(elements.suggestionList, "No reliable suggestion available. You can continue manually.");
+        const empty = doc.createElement("div");
+        setText(empty, "No reliable suggestion available. You can continue manually.");
+        elements.suggestionList.appendChild(empty);
+        if (Array.isArray(suggestion?.warnings) && suggestion.warnings.length) {
+          suggestion.warnings.forEach((warningValue) => {
+            const warningRow = doc.createElement("div");
+            setText(warningRow, `Warning: ${warningValue}`);
+            elements.suggestionList.appendChild(warningRow);
+          });
+        }
         updateViewerUi();
         return;
       }
@@ -430,9 +483,11 @@
         elements.suggestionList.appendChild(wrapper);
       });
       if (Array.isArray(suggestion?.warnings) && suggestion.warnings.length) {
-        const warning = doc.createElement("div");
-        setText(warning, suggestion.warnings.join(" | "));
-        elements.suggestionList.appendChild(warning);
+        suggestion.warnings.forEach((warningValue) => {
+          const warningRow = doc.createElement("div");
+          setText(warningRow, `Warning: ${warningValue}`);
+          elements.suggestionList.appendChild(warningRow);
+        });
       }
       updateViewerUi();
     }
@@ -461,8 +516,27 @@
         const body = await response.json();
         if (sequence !== state.suggestSequence) return;
         if (!response.ok) throw new Error(body.detail || "Suggestion failed.");
+        const identity = currentDocumentIdentity();
+        const responseSourceSha = body.suggestion?.source_sha256;
+        const responsePageCount = body.suggestion?.source_page_count;
+        if (
+          !identity ||
+          identity.source_sha256 !== responseSourceSha ||
+          identity.page_count !== responsePageCount
+        ) {
+          state.suggestions = null;
+          state.suggestedBoundaries = [];
+          state.selectedSuggestionBoundaries = new Set();
+          state.suggestionSourceSha256 = null;
+          state.suggestionSourcePageCount = null;
+          setSuggestionStatus("Suggestion became stale because the source changed.", "error");
+          setText(elements.suggestionList, "Suggestion became stale; request a fresh suggestion.");
+          return;
+        }
         state.suggestions = body.suggestion;
         state.suggestedBoundaries = (body.suggestion?.candidates || []).map((item) => item.before_page);
+        state.suggestionSourceSha256 = responseSourceSha;
+        state.suggestionSourcePageCount = responsePageCount;
         setSuggestionStatus(
           state.suggestedBoundaries.length
             ? "Suggestions available. Select candidates to apply."
@@ -539,8 +613,19 @@
       }
     }
 
-    function applySuggestionsToManualBoundaries() {
+    async function applySuggestionsToManualBoundaries() {
       if (!state.selectedSuggestionBoundaries.size || state.pendingExecute || state.pendingSuggest) {
+        return;
+      }
+      try {
+        await loadDocuments();
+      } catch (error) {
+        setSuggestionStatus(error?.message || "Could not refresh source identity.", "error");
+        return;
+      }
+      if (!suggestionMatchesCurrentDocumentIdentity()) {
+        invalidateSuggestions();
+        setSuggestionStatus("Suggestion became stale because the source changed.", "error");
         return;
       }
       applySelectedSuggestions(state);

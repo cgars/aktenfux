@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from io import BytesIO
 import json
 import re
@@ -546,7 +548,8 @@ def test_workbench_validates_loopback_binding() -> None:
 
 def test_workbench_suggest_endpoint_returns_bounded_payload(tmp_path, monkeypatch):
     cfg = make_config(tmp_path)
-    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0001", pages=6)
+    pdf = write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0001", pages=6)
+    source_sha256 = sha256_file(pdf)
     app = create_app(cfg)
     client = browser_client(app)
 
@@ -555,7 +558,7 @@ def test_workbench_suggest_endpoint_returns_bounded_payload(tmp_path, monkeypatc
         "suggest_split_boundaries",
         lambda document_id, config: {
             "document_id": "docsuggestapi0001",
-            "source_sha256": "a" * 64,
+            "source_sha256": source_sha256,
             "source_page_count": 6,
             "suggestion_provider": "ollama:qwen3:8b",
             "candidates": [
@@ -603,5 +606,142 @@ def test_workbench_blocks_duplicate_inflight_suggestion(tmp_path):
     app.state.in_flight_suggestions.add("docsuggestapi0003")
 
     response = client.post("/api/split/suggest", json={"document_id": "docsuggestapi0003"})
+
+    assert response.status_code == 409
+
+
+def test_workbench_suggest_rejects_duplicate_concurrent_request(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    pdf = write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0004", pages=6)
+    source_sha256 = sha256_file(pdf)
+    app = create_app(cfg)
+    first_client = browser_client(app)
+    second_client = browser_client(app)
+    entered = threading.Event()
+    release = threading.Event()
+    call_count = {"value": 0}
+    count_lock = threading.Lock()
+
+    def slow_suggest(document_id, config):
+        with count_lock:
+            call_count["value"] += 1
+        entered.set()
+        release.wait(timeout=2)
+        return {
+            "document_id": document_id,
+            "source_sha256": source_sha256,
+            "source_page_count": 6,
+            "suggestion_provider": "ollama:qwen3:8b",
+            "candidates": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(workbench_module, "suggest_split_boundaries", slow_suggest)
+    first_response: dict[str, int] = {}
+
+    def run_first_request():
+        response = first_client.post("/api/split/suggest", json={"document_id": "docsuggestapi0004"})
+        first_response["status_code"] = response.status_code
+
+    worker = threading.Thread(target=run_first_request)
+    worker.start()
+    assert entered.wait(timeout=1)
+    second = second_client.post("/api/split/suggest", json={"document_id": "docsuggestapi0004"})
+    release.set()
+    worker.join(timeout=2)
+
+    assert second.status_code == 409
+    assert first_response["status_code"] == 200
+    assert call_count["value"] == 1
+
+
+def test_workbench_suggest_timeout_clears_inflight_state(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    pdf = write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0005", pages=6)
+    source_sha256 = sha256_file(pdf)
+    app = create_app(cfg)
+    client = browser_client(app)
+    monkeypatch.setattr(workbench_module, "SUGGEST_ROUTE_TIMEOUT_SECONDS", 0.01)
+
+    def slow_suggest(document_id, config):
+        time.sleep(0.2)
+        return {
+            "document_id": document_id,
+            "source_sha256": source_sha256,
+            "source_page_count": 6,
+            "suggestion_provider": "ollama:qwen3:8b",
+            "candidates": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(workbench_module, "suggest_split_boundaries", slow_suggest)
+    response = client.post("/api/split/suggest", json={"document_id": "docsuggestapi0005"})
+
+    assert response.status_code == 504
+    assert "docsuggestapi0005" not in app.state.in_flight_suggestions
+
+
+def test_workbench_suggest_cancellation_clears_inflight_state(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0006", pages=6)
+    app = create_app(cfg)
+    client = browser_client(app, raise_server_exceptions=False)
+
+    def cancelled_suggest(document_id, config):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(workbench_module, "suggest_split_boundaries", cancelled_suggest)
+    response = client.post("/api/split/suggest", json={"document_id": "docsuggestapi0006"})
+
+    assert response.status_code == 500
+    assert "docsuggestapi0006" not in app.state.in_flight_suggestions
+
+
+def test_workbench_rejects_stale_suggestion_source_identity(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0007", pages=6)
+    app = create_app(cfg)
+    client = browser_client(app)
+
+    monkeypatch.setattr(
+        workbench_module,
+        "suggest_split_boundaries",
+        lambda document_id, config: {
+            "document_id": document_id,
+            "source_sha256": "b" * 64,
+            "source_page_count": 6,
+            "suggestion_provider": "ollama:qwen3:8b",
+            "candidates": [],
+            "warnings": [],
+        },
+    )
+
+    response = client.post("/api/split/suggest", json={"document_id": "docsuggestapi0007"})
+
+    assert response.status_code == 409
+
+
+def test_workbench_rejects_same_id_source_replacement_before_suggestion_response(
+    tmp_path, monkeypatch
+):
+    cfg = make_config(tmp_path)
+    pdf = write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0008", pages=6)
+    app = create_app(cfg)
+    client = browser_client(app)
+
+    def stale_after_replacement(document_id, config):
+        old_hash = sha256_file(pdf)
+        pdf.write_bytes(pdf.read_bytes() + b"changed")
+        return {
+            "document_id": document_id,
+            "source_sha256": old_hash,
+            "source_page_count": 6,
+            "suggestion_provider": "ollama:qwen3:8b",
+            "candidates": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(workbench_module, "suggest_split_boundaries", stale_after_replacement)
+    response = client.post("/api/split/suggest", json={"document_id": "docsuggestapi0008"})
 
     assert response.status_code == 409

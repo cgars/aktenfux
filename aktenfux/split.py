@@ -20,6 +20,7 @@ from pypdf import PdfReader, PdfWriter
 from aktenfux.config import AktenfuxConfig
 from aktenfux.schema import (
     SidecarDocument,
+    SplitBoundaryProviderResponse,
     SplitBoundarySuggestion,
     SplitOutputRecord,
     SplitPartPlan,
@@ -61,6 +62,7 @@ class SplitDocumentSummary:
     document_id: str
     display_name: str
     page_count: int
+    source_sha256: str
 
 
 @dataclass(frozen=True)
@@ -336,6 +338,7 @@ def list_split_documents(config: AktenfuxConfig) -> list[SplitDocumentSummary]:
                     pdf_path.name,
                 ),
                 page_count=snapshot.page_count,
+                source_sha256=snapshot.source_sha256,
             )
         )
     return entries
@@ -448,32 +451,29 @@ def suggest_split_boundaries(
     except Exception as exc:  # noqa: BLE001
         raise SplitError("Split suggestion failed.") from exc
 
-    if not isinstance(provider_payload, dict):
-        raise SplitError("The split suggestion provider returned an invalid split suggestion payload.")
-    candidates = provider_payload.get("candidates", [])
-    warnings = provider_payload.get("warnings", [])
-    if not isinstance(candidates, list) or not isinstance(warnings, list):
-        raise SplitError("The split suggestion provider returned an invalid split suggestion payload.")
-    normalized_candidates: list[dict[str, Any]] = []
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            raise SplitError("The split suggestion provider returned an invalid split suggestion payload.")
-        normalized_candidates.append(candidate)
-    normalized_candidates.sort(
-        key=lambda candidate: (
-            candidate.get("before_page")
-            if isinstance(candidate.get("before_page"), int)
-            else 0
-        )
-    )
+    try:
+        provider_response = SplitBoundaryProviderResponse.model_validate(provider_payload)
+    except Exception as exc:  # noqa: BLE001
+        raise SplitError(
+            "The split suggestion provider returned an invalid split suggestion payload."
+        ) from exc
+
+    latest_snapshot = _read_snapshot(config, document_id)
+    if (
+        latest_snapshot.source_sha256 != snapshot.source_sha256
+        or latest_snapshot.page_count != snapshot.page_count
+    ):
+        raise SplitError("Split suggestion became stale because the source changed.")
 
     suggestion_payload = {
         "document_id": snapshot.sidecar.id,
         "source_sha256": snapshot.source_sha256,
         "source_page_count": snapshot.page_count,
         "suggestion_provider": f"ollama:{config.ollama_model}",
-        "candidates": normalized_candidates,
-        "warnings": [*extraction_warnings, *warnings],
+        "candidates": [
+            candidate.model_dump(mode="json") for candidate in provider_response.candidates
+        ],
+        "warnings": [*extraction_warnings, *provider_response.warnings],
     }
     try:
         return SplitBoundarySuggestion.model_validate(suggestion_payload)

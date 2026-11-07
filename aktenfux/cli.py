@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -18,6 +19,7 @@ app = typer.Typer(
 )
 console = Console()
 err_console = Console(stderr=True)
+_ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))")
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -31,6 +33,18 @@ def _setup_logging(verbose: bool = False) -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+
+def _safe_terminal_text(value: object) -> str:
+    text = str(value)
+    text = _ANSI_ESCAPE_RE.sub("", text)
+    text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    text = "".join(character if character.isprintable() else "�" for character in text)
+    return " ".join(text.split())
+
+
+def _print_untrusted_line(prefix: str, value: object) -> None:
+    console.print(f"{prefix}{_safe_terminal_text(value)}", markup=False, highlight=False)
 
 
 # ---------------------------------------------------------------------------
@@ -417,25 +431,27 @@ def split_suggest(
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    console.print(f"[bold]Split suggestions for {suggestion.document_id}[/bold]")
-    console.print(f"Source sha256: {suggestion.source_sha256}")
-    console.print(f"Source pages: {suggestion.source_page_count}")
-    console.print(f"Provider: {suggestion.suggestion_provider}")
+    console.print(f"[bold]Split suggestions for {_safe_terminal_text(suggestion.document_id)}[/bold]")
+    _print_untrusted_line("Source sha256: ", suggestion.source_sha256)
+    _print_untrusted_line("Source pages: ", suggestion.source_page_count)
+    _print_untrusted_line("Provider: ", suggestion.suggestion_provider)
     if suggestion.candidates:
         for candidate in suggestion.candidates:
-            evidence = ", ".join(
-                f"p.{item.page}: {item.cue}" for item in candidate.evidence
-            ) or "no evidence"
-            console.print(
-                f"  • Split before page {candidate.before_page} "
-                f"(confidence {candidate.confidence:.2f})"
+            _print_untrusted_line(
+                "  • ",
+                f"Split before page {candidate.before_page} "
+                f"(confidence {candidate.confidence:.2f})",
             )
-            console.print(f"    reason: {candidate.rationale}")
-            console.print(f"    evidence: {evidence}")
+            _print_untrusted_line("    reason: ", candidate.rationale)
+            if candidate.evidence:
+                for item in candidate.evidence:
+                    _print_untrusted_line("    evidence: ", f"p.{item.page}: {item.cue}")
+            else:
+                _print_untrusted_line("    evidence: ", "no evidence")
     else:
         console.print("No reliable split boundaries were suggested.")
     for warning in suggestion.warnings:
-        console.print(f"[yellow]Warning:[/yellow] {warning}")
+        _print_untrusted_line("Warning: ", warning)
     console.print("[green]No files were changed.[/green]")
 
 

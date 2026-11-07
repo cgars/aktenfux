@@ -122,3 +122,35 @@ def test_split_suggest_reports_no_candidates(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "No reliable split boundaries were suggested." in result.output
+
+
+def test_split_suggest_sanitizes_untrusted_terminal_text(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "suggest.pdf", "docsplitcli000006", pages=6)
+    suggestion = SplitBoundarySuggestion(
+        document_id="docsplitcli000006",
+        source_sha256="c" * 64,
+        source_page_count=6,
+        suggestion_provider="ollama:[danger]\x1b[31mprovider\x1b[0m",
+        candidates=[
+            SplitBoundaryCandidate(
+                before_page=4,
+                confidence=0.84,
+                rationale="[bold]line1[/bold]\nline2\twith-tab\x07",
+                evidence=[SplitBoundaryEvidence(page=4, cue="cue\x1b]8;;http://evil\x07link\x1b]8;;\x07")],
+            )
+        ],
+        warnings=["[yellow]warn[/yellow]\nsecond-line"],
+    )
+
+    with (
+        patch("aktenfux.cli._load_config", return_value=cfg),
+        patch("aktenfux.main.suggest_split_boundaries", return_value=suggestion),
+    ):
+        result = runner.invoke(app, ["split-suggest", "docsplitcli000006"])
+
+    assert result.exit_code == 0, result.output
+    assert "\x1b[" not in result.output
+    assert "[bold]line1[/bold]" in result.output
+    assert "line2 with-tab�" in result.output
+    assert "warn[/yellow] second-line" in result.output

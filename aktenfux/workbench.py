@@ -40,6 +40,7 @@ from aktenfux.split import (
 )
 
 MAX_REQUEST_BODY_BYTES = 128 * 1024
+SUGGEST_ROUTE_TIMEOUT_SECONDS = 180.0
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _DOCUMENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _WORKBENCH_JS = Path(__file__).with_name("workbench.js").read_text(encoding="utf-8")
@@ -325,6 +326,7 @@ class SplitDocumentDTO(BaseModel):
     label: str
     name: str
     page_count: int
+    source_sha256: str
     pdf_url: str
 
 
@@ -438,6 +440,7 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
                 label=entry.display_name,
                 name=entry.display_name,
                 page_count=entry.page_count,
+                source_sha256=entry.source_sha256,
                 pdf_url=f"/api/split/documents/{entry.document_id}/pdf",
             )
             for entry in entries
@@ -540,9 +543,14 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
                 )
             app.state.in_flight_suggestions.add(request.document_id)
         try:
-            suggestion = suggest_split_boundaries(request.document_id, cfg)
+            suggestion = await asyncio.wait_for(
+                asyncio.to_thread(suggest_split_boundaries, request.document_id, cfg),
+                timeout=SUGGEST_ROUTE_TIMEOUT_SECONDS,
+            )
         except (SplitError, ValueError, FileNotFoundError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except TimeoutError as exc:
+            raise HTTPException(status_code=504, detail="Split suggestion timed out.") from exc
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -559,6 +567,18 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
                 payload = SplitBoundarySuggestion.model_validate(suggestion).model_dump(mode="json")
             except Exception as exc:  # noqa: BLE001
                 raise HTTPException(status_code=500, detail="Split suggestion payload is invalid.") from exc
+        try:
+            snapshot = get_split_document_snapshot(cfg, request.document_id)
+        except (SplitError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if (
+            payload["source_sha256"] != snapshot.source_sha256
+            or payload["source_page_count"] != snapshot.page_count
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Split suggestion became stale because the source changed.",
+            )
         return {"suggestion": payload}
 
     @app.post("/api/split/execute")

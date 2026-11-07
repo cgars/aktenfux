@@ -263,9 +263,40 @@ def test_execute_split_recovers_after_output_write_failure(tmp_path, monkeypatch
     assert all((cfg.inbox_path / item.filename).exists() for item in result.outputs)
 
 
-def test_suggest_split_boundaries_returns_sorted_candidates(tmp_path):
+def test_suggest_split_boundaries_accepts_strict_sorted_candidates(tmp_path):
     cfg = make_config(tmp_path)
     write_split_doc(cfg.split_path, "bundle.pdf", "docsuggest00000001", pages=6)
+
+    def provider(prompt, config):
+        return {
+            "candidates": [
+                {
+                    "before_page": 3,
+                    "confidence": 0.88,
+                    "rationale": "The sender and invoice number reset on page 3.",
+                    "evidence": [{"page": 3, "cue": "Invoice no. 2026-33"}],
+                },
+                {
+                    "before_page": 5,
+                    "confidence": 0.6,
+                    "rationale": "A new salutation begins on page 5.",
+                    "evidence": [{"page": 5, "cue": "Dear Ms. Doe"}],
+                },
+            ],
+            "warnings": ["Page 6 has little extractable text."],
+        }
+
+    result = suggest_split_boundaries("docsuggest00000001", cfg, provider=provider)
+
+    assert result.document_id == "docsuggest00000001"
+    assert result.source_page_count == 6
+    assert [item.before_page for item in result.candidates] == [3, 5]
+    assert "Page 6 has little extractable text." in result.warnings
+
+
+def test_suggest_split_boundaries_rejects_unsorted_provider_candidates(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggest00000001b", pages=6)
 
     def provider(prompt, config):
         return {
@@ -283,15 +314,11 @@ def test_suggest_split_boundaries_returns_sorted_candidates(tmp_path):
                     "evidence": [{"page": 3, "cue": "Invoice no. 2026-33"}],
                 },
             ],
-            "warnings": ["Page 6 has little extractable text."],
+            "warnings": [],
         }
 
-    result = suggest_split_boundaries("docsuggest00000001", cfg, provider=provider)
-
-    assert result.document_id == "docsuggest00000001"
-    assert result.source_page_count == 6
-    assert [item.before_page for item in result.candidates] == [3, 5]
-    assert "Page 6 has little extractable text." in result.warnings
+    with pytest.raises(SplitError, match="invalid split suggestion payload"):
+        suggest_split_boundaries("docsuggest00000001b", cfg, provider=provider)
 
 
 def test_suggest_split_boundaries_rejects_invalid_candidate_boundaries(tmp_path):
@@ -314,6 +341,137 @@ def test_suggest_split_boundaries_rejects_invalid_candidate_boundaries(tmp_path)
         suggest_split_boundaries("docsuggest00000002", cfg, provider=provider)
 
 
+@pytest.mark.parametrize(
+    "provider_payload",
+    [
+        {
+            "candidates": [
+                {
+                    "before_page": "4",
+                    "confidence": 0.5,
+                    "rationale": "string boundary",
+                    "evidence": [{"page": 4, "cue": "cue"}],
+                }
+            ],
+            "warnings": [],
+        },
+        {
+            "candidates": [
+                {
+                    "before_page": 4,
+                    "confidence": True,
+                    "rationale": "bool confidence",
+                    "evidence": [{"page": 4, "cue": "cue"}],
+                }
+            ],
+            "warnings": [],
+        },
+        {
+            "candidates": [
+                {
+                    "before_page": 4,
+                    "confidence": 85,
+                    "rationale": "percentage confidence",
+                    "evidence": [{"page": 4, "cue": "cue"}],
+                }
+            ],
+            "warnings": [],
+        },
+        {
+            "candidates": [
+                {
+                    "before_page": 4,
+                    "confidence": 0.5,
+                    "rationale": "   ",
+                    "evidence": [{"page": 4, "cue": "cue"}],
+                }
+            ],
+            "warnings": [],
+        },
+        {
+            "candidates": [
+                {
+                    "before_page": 4,
+                    "confidence": 0.5,
+                    "rationale": "ok",
+                    "evidence": [{"page": 4, "cue": "   "}],
+                }
+            ],
+            "warnings": [],
+        },
+        {
+            "candidates": [
+                {
+                    "before_page": 4,
+                    "confidence": 0.5,
+                    "rationale": "ok",
+                    "evidence": [{"page": 7, "cue": "out of range"}],
+                }
+            ],
+            "warnings": [],
+        },
+        {
+            "candidates": [
+                {
+                    "before_page": 4,
+                    "confidence": float("nan"),
+                    "rationale": "nan",
+                    "evidence": [{"page": 4, "cue": "cue"}],
+                }
+            ],
+            "warnings": [],
+        },
+        {
+            "candidates": [
+                {
+                    "before_page": 4,
+                    "confidence": 0.5,
+                    "rationale": "ok",
+                    "evidence": [{"page": 4, "cue": "cue"}],
+                    "unexpected": "extra",
+                }
+            ],
+            "warnings": [],
+        },
+        {
+            "candidates": [],
+            "warnings": ["   "],
+        },
+        {
+            "candidates": [],
+            "warnings": [],
+            "unexpected": "top-level",
+        },
+        {
+            "candidates": [
+                {
+                    "before_page": 4,
+                    "confidence": 0.5,
+                    "rationale": "ok",
+                    "evidence": [{"page": 4, "cue": "cue"}],
+                },
+                {
+                    "before_page": 4,
+                    "confidence": 0.6,
+                    "rationale": "duplicate",
+                    "evidence": [{"page": 4, "cue": "cue"}],
+                },
+            ],
+            "warnings": [],
+        },
+    ],
+)
+def test_suggest_split_boundaries_rejects_adversarial_provider_payload(tmp_path, provider_payload):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggest00000002b", pages=6)
+
+    def provider(prompt, config):
+        return provider_payload
+
+    with pytest.raises(SplitError, match="invalid split suggestion payload"):
+        suggest_split_boundaries("docsuggest00000002b", cfg, provider=provider)
+
+
 def test_suggest_split_boundaries_never_mutates_sidecar(tmp_path):
     cfg = make_config(tmp_path)
     source = write_split_doc(cfg.split_path, "bundle.pdf", "docsuggest00000003", pages=6)
@@ -326,6 +484,69 @@ def test_suggest_split_boundaries_never_mutates_sidecar(tmp_path):
 
     assert result.candidates == []
     assert source.with_suffix(".json").read_text(encoding="utf-8") == sidecar_before
+
+
+def test_suggest_split_boundaries_rejects_stale_source_after_provider_response(tmp_path):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "bundle.pdf", "docsuggest00000004", pages=6)
+
+    def provider(prompt, config):
+        source.write_bytes(source.read_bytes() + b"stale")
+        return {"candidates": [], "warnings": []}
+
+    with pytest.raises(SplitError, match="authoritative sidecar|became stale"):
+        suggest_split_boundaries("docsuggest00000004", cfg, provider=provider)
+
+
+def test_suggest_split_boundaries_rejects_provider_limit_violations(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggest00000005", pages=6)
+
+    oversized_rationale = "x" * 241
+    oversized_warning = "w" * 241
+    too_many_evidence = [{"page": 4, "cue": f"cue-{idx}"} for idx in range(9)]
+    too_many_candidates = [
+        {
+            "before_page": 2 if idx % 2 == 0 else 3,
+            "confidence": 0.5,
+            "rationale": f"candidate-{idx}",
+            "evidence": [],
+        }
+        for idx in range(65)
+    ]
+    payloads = [
+        {
+            "candidates": [
+                {
+                    "before_page": 4,
+                    "confidence": 0.5,
+                    "rationale": oversized_rationale,
+                    "evidence": [],
+                }
+            ],
+            "warnings": [],
+        },
+        {
+            "candidates": [
+                {
+                    "before_page": 4,
+                    "confidence": 0.5,
+                    "rationale": "ok",
+                    "evidence": too_many_evidence,
+                }
+            ],
+            "warnings": [],
+        },
+        {"candidates": [], "warnings": [oversized_warning]},
+        {"candidates": too_many_candidates, "warnings": []},
+    ]
+
+    for payload in payloads:
+        def provider(prompt, config, returned=payload):
+            return returned
+
+        with pytest.raises(SplitError, match="invalid split suggestion payload"):
+            suggest_split_boundaries("docsuggest00000005", cfg, provider=provider)
 
 
 def test_execute_split_recovers_after_final_completion_write_failure(tmp_path, monkeypatch):
