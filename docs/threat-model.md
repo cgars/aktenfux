@@ -182,14 +182,16 @@ The current implementation includes useful controls:
 - `afu split-suggest` and `POST /api/split/suggest` are read-only for Aktenfux storage: they validate one `_Split` source snapshot, pass bounded page evidence through the inference boundary, and return bounded advisory candidates/warnings only;
 - `afu split` requires explicit boundaries and confirmation, revalidates source
   identity (document ID, sidecar/PDF SHA-256, page count, boundaries), validates
-  `_Split` and `_Inbox` as distinct direct non-link children of `base_dir`,
-  records recoverable split provenance in the source sidecar, stages outputs
-  under `_Inbox/.split-staging/<operation-id>/`, and publishes part PDFs to
+  `_Split`, `_Inbox`, and `_Imported` as distinct direct non-link children of
+  `base_dir`, records recoverable split provenance in the source sidecar, stages
+  outputs under `_Inbox/.split-staging/<operation-id>/`, and publishes part PDFs to
   `_Inbox` with exclusive no-overwrite creation and a durable batch journal;
   hard-link publication is atomic where supported, an exclusive fallback covers
   filesystems without hard links, the inbox scanner skips all journal-listed
-  parts while publishing, and successful completion removes staged document
-  copies and journal data;
+  parts while publishing, successful completion removes staged document copies
+  and journal data, and the completed source PDF/sidecar pair transitions out
+  of active `_Split` into retained `_Imported` state via recoverable no-overwrite
+  pairing rules;
 - the focused split workbench binds only to explicitly validated loopback
   addresses; validates Hosts; requires a per-process page token and an exact
   Origin/Host/port match when a browser Origin is present; stream-limits request

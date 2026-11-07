@@ -50,6 +50,8 @@ class SourceSnapshot:
     pdf_path: Path
     pdf_name: str
     sidecar_path: Path
+    lifecycle_root: Path
+    lifecycle_label: str
     sidecar: SidecarDocument
     source_bytes: bytes
     source_sha256: str
@@ -64,6 +66,33 @@ class SplitDocumentSummary:
     display_name: str
     page_count: int
     source_sha256: str
+
+
+@dataclass(frozen=True)
+class CompletedSplitSummary:
+    """Read-only summary for retained completed split sources."""
+
+    document_id: str
+    retained_pdf: str
+    source_sha256: str
+    operation_id: str
+    completed_at_utc: str
+    outputs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompletedSplitReconcileIssue:
+    document_id: str
+    source_pdf: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class CompletedSplitReconcileResult:
+    dry_run: bool
+    eligible: tuple[CompletedSplitSummary, ...]
+    transitioned: tuple[CompletedSplitSummary, ...]
+    issues: tuple[CompletedSplitReconcileIssue, ...]
 
 
 @dataclass(frozen=True)
@@ -205,6 +234,44 @@ def _validate_split_roots(config: AktenfuxConfig, *, include_inbox: bool) -> Non
         raise SplitError("Could not verify split and inbox root identity.") from exc
 
 
+def _validate_imported_root(config: AktenfuxConfig) -> Path:
+    return _validate_lifecycle_root(
+        base_dir=config.base_dir,
+        root=config.imported_path,
+        configured_name=config.imported_dir,
+        label="imported",
+        must_exist=False,
+    )
+
+
+def _validate_completed_roots(config: AktenfuxConfig, *, include_inbox: bool) -> Path:
+    _validate_split_roots(config, include_inbox=include_inbox)
+    imported_root = _validate_imported_root(config)
+    resolved_split = config.split_path.resolve()
+    if imported_root == resolved_split:
+        raise SplitError("Configured imported and split roots must be distinct.")
+    try:
+        if config.imported_path.exists() and os.path.samefile(config.imported_path, config.split_path):
+            raise SplitError("Configured imported and split roots must not alias each other.")
+    except SplitError:
+        raise
+    except OSError as exc:
+        raise SplitError("Could not verify imported and split root identity.") from exc
+    if include_inbox:
+        resolved_inbox = config.inbox_path.resolve()
+        if imported_root == resolved_inbox:
+            raise SplitError("Configured imported and inbox roots must be distinct.")
+        try:
+            if config.imported_path.exists() and config.inbox_path.exists():
+                if os.path.samefile(config.imported_path, config.inbox_path):
+                    raise SplitError("Configured imported and inbox roots must not alias each other.")
+        except SplitError:
+            raise
+        except OSError as exc:
+            raise SplitError("Could not verify imported and inbox root identity.") from exc
+    return imported_root
+
+
 def _validate_direct_regular_file(path: Path, *, root: Path, suffix: str) -> None:
     try:
         assert_within_base(path, root)
@@ -244,30 +311,81 @@ def _read_sidecar_validated(sidecar_path: Path) -> SidecarDocument:
         raise SplitError(f"Sidecar for {sidecar_path.stem}.pdf is invalid.") from exc
 
 
-def _find_source_by_document_id(split_root: Path, document_id: str) -> tuple[Path, Path, SidecarDocument]:
-    if not split_root.exists():
-        raise SplitError("_Split directory is missing.")
+def _find_source_by_document_id(
+    root: Path,
+    *,
+    document_id: str,
+    root_label: str,
+) -> tuple[Path, Path, SidecarDocument] | None:
+    if not root.exists():
+        return None
 
-    for pdf_path in sorted(split_root.glob("*.pdf")):
+    matches: list[tuple[Path, Path, SidecarDocument]] = []
+    for pdf_path in sorted(root.glob("*.pdf")):
         try:
-            _validate_direct_regular_file(pdf_path, root=split_root, suffix=".pdf")
+            _validate_direct_regular_file(pdf_path, root=root, suffix=".pdf")
             sidecar_path = sidecar_path_for(pdf_path)
-            _validate_direct_regular_file(sidecar_path, root=split_root, suffix=".json")
+            _validate_direct_regular_file(sidecar_path, root=root, suffix=".json")
             sidecar = _read_sidecar_validated(sidecar_path)
         except SplitError as exc:
-            logger.warning("Skipping invalid _Split candidate '%s': %s", pdf_path.name, exc)
+            logger.warning("Skipping invalid %s candidate '%s': %s", root_label, pdf_path.name, exc)
             continue
-
         if sidecar.id == document_id:
-            return pdf_path, sidecar_path, sidecar
+            matches.append((pdf_path, sidecar_path, sidecar))
 
-    raise SplitError(f"Document '{document_id}' not found in _Split.")
+    if len(matches) > 1:
+        raise SplitError(f"Duplicate document id found in {root_label}.")
+    return matches[0] if matches else None
+
+
+def _completed_operation_for_document(
+    sidecar: SidecarDocument, *, operation_id: str | None = None
+) -> SplitProvenanceRecord | None:
+    completed = [
+        operation
+        for operation in sidecar.split_operations
+        if operation.state == "completed"
+        and (operation_id is None or operation.operation_id == operation_id)
+    ]
+    if not completed:
+        return None
+    if operation_id is None and len(completed) > 1:
+        raise SplitError("Document has multiple completed split operations and needs reconciliation.")
+    return completed[-1]
+
+
+def _completed_suffix(operation_id: str) -> str:
+    return f"--completed-{operation_id[:12]}"
+
+
+def _completed_destination_paths(
+    *,
+    imported_root: Path,
+    source_pdf_name: str,
+    operation_id: str,
+) -> tuple[Path, Path]:
+    source = Path(source_pdf_name)
+    destination_pdf = imported_root / f"{source.stem}{_completed_suffix(operation_id)}.pdf"
+    return destination_pdf, destination_pdf.with_suffix(".json")
+
+
+def _plan_source_filename_matches_snapshot(plan_source_filename: str, snapshot_name: str, operation_id: str) -> bool:
+    if plan_source_filename == snapshot_name:
+        return True
+    suffix = f"{_completed_suffix(operation_id)}.pdf"
+    if not snapshot_name.endswith(suffix):
+        return False
+    derived = f"{snapshot_name[: -len(suffix)]}.pdf"
+    return plan_source_filename == derived
 
 
 def _read_validated_snapshot(
     pdf_path: Path,
     sidecar_path: Path,
     sidecar: SidecarDocument,
+    *,
+    lifecycle_root: Path,
+    lifecycle_label: str,
 ) -> SourceSnapshot:
     try:
         with pdf_path.open("rb") as fh:
@@ -287,6 +405,8 @@ def _read_validated_snapshot(
         pdf_path=pdf_path,
         pdf_name=pdf_path.name,
         sidecar_path=sidecar_path,
+        lifecycle_root=lifecycle_root,
+        lifecycle_label=lifecycle_label,
         sidecar=sidecar,
         source_bytes=source_bytes,
         source_sha256=source_sha256,
@@ -294,11 +414,62 @@ def _read_validated_snapshot(
     )
 
 
-def _read_snapshot(config: AktenfuxConfig, document_id: str) -> SourceSnapshot:
-    pdf_path, sidecar_path, sidecar = _find_source_by_document_id(
-        config.split_path, document_id
+def _read_snapshot(
+    config: AktenfuxConfig,
+    document_id: str,
+    *,
+    include_completed: bool,
+    operation_id: str | None = None,
+) -> SourceSnapshot:
+    active_match = _find_source_by_document_id(
+        config.split_path,
+        document_id=document_id,
+        root_label="_Split",
     )
-    return _read_validated_snapshot(pdf_path, sidecar_path, sidecar)
+    if active_match is not None:
+        pdf_path, sidecar_path, sidecar = active_match
+        completed = _completed_operation_for_document(sidecar, operation_id=operation_id)
+        if completed is not None and not include_completed:
+            raise SplitError(
+                f"Document '{document_id}' is already completed; inspect retained sources in _Imported."
+            )
+        if completed is not None and operation_id is not None and completed.operation_id != operation_id:
+            raise SplitError("Only an exact retry of the completed split operation is allowed.")
+        return _read_validated_snapshot(
+            pdf_path,
+            sidecar_path,
+            sidecar,
+            lifecycle_root=config.split_path,
+            lifecycle_label="split",
+        )
+
+    imported_match = _find_source_by_document_id(
+        config.imported_path,
+        document_id=document_id,
+        root_label="_Imported",
+    )
+    if imported_match is None:
+        raise SplitError(f"Document '{document_id}' not found in _Split.")
+
+    imported_pdf, imported_sidecar_path, imported_sidecar = imported_match
+    completed = _completed_operation_for_document(imported_sidecar, operation_id=operation_id)
+    if completed is None:
+        raise SplitError(
+            f"Document '{document_id}' is retained in _Imported but has no completed split provenance."
+        )
+    if not include_completed:
+        raise SplitError(
+            f"Document '{document_id}' is already completed; inspect retained sources in _Imported."
+        )
+    if operation_id is not None and completed.operation_id != operation_id:
+        raise SplitError("Only an exact retry of the completed split operation is allowed.")
+    return _read_validated_snapshot(
+        imported_pdf,
+        imported_sidecar_path,
+        imported_sidecar,
+        lifecycle_root=config.imported_path,
+        lifecycle_label="imported",
+    )
 
 
 def _workbench_display_name(value: str, fallback: str) -> str:
@@ -324,7 +495,15 @@ def list_split_documents(config: AktenfuxConfig) -> list[SplitDocumentSummary]:
             sidecar = _read_sidecar_validated(sidecar_path)
             if not _WORKBENCH_DOCUMENT_ID_PATTERN.fullmatch(sidecar.id):
                 raise SplitError("Candidate has an invalid document id.")
-            snapshot = _read_validated_snapshot(pdf_path, sidecar_path, sidecar)
+            if _completed_operation_for_document(sidecar) is not None:
+                continue
+            snapshot = _read_validated_snapshot(
+                pdf_path,
+                sidecar_path,
+                sidecar,
+                lifecycle_root=config.split_path,
+                lifecycle_label="split",
+            )
         except (SplitError, ValueError, OSError):
             logger.warning("Skipping invalid _Split workbench candidate.")
             continue
@@ -348,7 +527,7 @@ def list_split_documents(config: AktenfuxConfig) -> list[SplitDocumentSummary]:
 def get_split_document_snapshot(config: AktenfuxConfig, document_id: str) -> SourceSnapshot:
     """Return the validated source snapshot for a _Split document."""
     _validate_split_roots(config, include_inbox=False)
-    return _read_snapshot(config, document_id)
+    return _read_snapshot(config, document_id, include_completed=False)
 
 
 def _bounded_page_evidence(snapshot: SourceSnapshot) -> tuple[list[PageEvidence], list[str]]:
@@ -531,7 +710,7 @@ def suggest_split_boundaries(
     """Return advisory split-boundary suggestions for one validated _Split document."""
 
     _validate_split_roots(config, include_inbox=False)
-    snapshot = _read_snapshot(config, document_id)
+    snapshot = _read_snapshot(config, document_id, include_completed=False)
     if snapshot.page_count < 2:
         raise SplitError("Single-page PDFs cannot have split boundaries suggested.")
 
@@ -571,7 +750,7 @@ def suggest_split_boundaries(
                     "(evidence outside analysed page range)."
                 )
 
-    latest_snapshot = _read_snapshot(config, document_id)
+    latest_snapshot = _read_snapshot(config, document_id, include_completed=False)
     if (
         latest_snapshot.source_sha256 != snapshot.source_sha256
         or latest_snapshot.page_count != snapshot.page_count
@@ -736,14 +915,20 @@ def _validate_plan_against_source(plan: SplitPlan, snapshot: SourceSnapshot) -> 
         raise SplitError("Single-page PDFs cannot be split.")
 
     normalized_boundaries = _normalize_boundaries(plan.boundaries, snapshot.page_count)
-    expected_parts = _build_parts(snapshot.pdf_path.stem, snapshot.page_count, normalized_boundaries)
+    expected_parts = _build_parts(
+        Path(plan.source_filename).stem, snapshot.page_count, normalized_boundaries
+    )
     expected_operation_id = _deterministic_operation_id(
         snapshot.sidecar.id, snapshot.source_sha256, snapshot.page_count, normalized_boundaries
     )
 
     if plan.document_id != snapshot.sidecar.id:
         raise SplitError("Split plan document identity mismatch.")
-    if plan.source_filename != snapshot.pdf_name:
+    if not _plan_source_filename_matches_snapshot(
+        plan.source_filename,
+        snapshot.pdf_name,
+        plan.operation_id,
+    ):
         raise SplitError("Split plan source filename mismatch.")
     if plan.source_sha256 != snapshot.source_sha256 or plan.source_page_count != snapshot.page_count:
         raise SplitError("Split plan source identity mismatch.")
@@ -980,10 +1165,303 @@ def _publish_output_from_stage(
         raise SplitError(f"Split output hash verification failed for '{final_path.name}'.")
 
 
+def _move_file_no_overwrite(source: Path, destination: Path, *, label: str) -> None:
+    if destination.exists():
+        raise SplitError(f"Destination collision for retained completed source {destination.name}.")
+    if source.is_symlink() or not source.is_file():
+        raise SplitError(f"Retained completed source {label} is missing or invalid.")
+    try:
+        source.replace(destination)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise SplitError(f"Could not move retained completed source {label}.") from exc
+    try:
+        data = source.read_bytes()
+    except OSError as exc:
+        raise SplitError(f"Could not read retained completed source {label}.") from exc
+    _write_bytes_exclusive(destination, data)
+    try:
+        source.unlink()
+    except OSError as exc:
+        raise SplitError(f"Could not remove source {label} after copy.") from exc
+
+
+def _resolve_completed_transition_state(
+    *,
+    source_pdf: Path,
+    source_sidecar: Path,
+    retained_pdf: Path,
+    retained_sidecar: Path,
+) -> str:
+    source_pdf_exists = source_pdf.exists()
+    source_sidecar_exists = source_sidecar.exists()
+    retained_pdf_exists = retained_pdf.exists()
+    retained_sidecar_exists = retained_sidecar.exists()
+    if source_pdf_exists and source_sidecar_exists and not retained_pdf_exists and not retained_sidecar_exists:
+        return "initial"
+    if not source_pdf_exists and source_sidecar_exists and retained_pdf_exists and not retained_sidecar_exists:
+        return "pdf_moved"
+    if not source_pdf_exists and not source_sidecar_exists and retained_pdf_exists and retained_sidecar_exists:
+        return "completed"
+    raise SplitError("Retained completed source is in an ambiguous recovery state.")
+
+
+def _verify_completed_sidecar_identity(
+    sidecar_path: Path, *, document_id: str, source_sha256: str, operation_id: str
+) -> SidecarDocument:
+    sidecar = _read_sidecar_validated(sidecar_path)
+    if sidecar.id != document_id or sidecar.sha256 != source_sha256:
+        raise SplitError("Retained completed source sidecar identity mismatch.")
+    operation = _completed_operation_for_document(sidecar, operation_id=operation_id)
+    if operation is None:
+        raise SplitError("Retained completed source sidecar is missing completed split provenance.")
+    return sidecar
+
+
+def _retain_completed_source(
+    *,
+    config: AktenfuxConfig,
+    snapshot: SourceSnapshot,
+    operation: SplitProvenanceRecord,
+) -> tuple[Path, Path]:
+    imported_root = _validate_completed_roots(config, include_inbox=True)
+    retained_pdf, retained_sidecar = _completed_destination_paths(
+        imported_root=imported_root,
+        source_pdf_name=snapshot.pdf_name,
+        operation_id=operation.operation_id,
+    )
+    _validate_direct_destination_path(retained_pdf, root=imported_root)
+    try:
+        assert_within_base(retained_sidecar, imported_root)
+    except ValueError as exc:
+        raise SplitError(f"{retained_sidecar.name} is outside the expected destination root.") from exc
+    if retained_sidecar.parent.resolve() != imported_root.resolve():
+        raise SplitError(f"{retained_sidecar.name} must be written directly to {imported_root.name}.")
+    if retained_sidecar.suffix.lower() != ".json":
+        raise SplitError(f"{retained_sidecar.name} has invalid extension; expected .json.")
+
+    source_pdf = config.split_path / snapshot.pdf_name
+    source_sidecar = sidecar_path_for(source_pdf)
+    if source_pdf.exists():
+        _validate_direct_regular_file(source_pdf, root=config.split_path, suffix=".pdf")
+    if source_sidecar.exists():
+        _validate_direct_regular_file(source_sidecar, root=config.split_path, suffix=".json")
+    if retained_pdf.exists():
+        _validate_direct_regular_file(retained_pdf, root=imported_root, suffix=".pdf")
+    if retained_sidecar.exists():
+        _validate_direct_regular_file(retained_sidecar, root=imported_root, suffix=".json")
+
+    state = _resolve_completed_transition_state(
+        source_pdf=source_pdf,
+        source_sidecar=source_sidecar,
+        retained_pdf=retained_pdf,
+        retained_sidecar=retained_sidecar,
+    )
+    _ensure_directory(imported_root, label="imported")
+    if state == "initial":
+        if _sha256_file_bounded(source_pdf, label="split source") != snapshot.source_sha256:
+            raise SplitError("Source PDF hash changed before completed-source transition.")
+        _verify_completed_sidecar_identity(
+            source_sidecar,
+            document_id=snapshot.sidecar.id,
+            source_sha256=snapshot.source_sha256,
+            operation_id=operation.operation_id,
+        )
+        _move_file_no_overwrite(source_pdf, retained_pdf, label="PDF")
+        state = _resolve_completed_transition_state(
+            source_pdf=source_pdf,
+            source_sidecar=source_sidecar,
+            retained_pdf=retained_pdf,
+            retained_sidecar=retained_sidecar,
+        )
+    if state == "pdf_moved":
+        if _sha256_file_bounded(retained_pdf, label="retained split source") != snapshot.source_sha256:
+            raise SplitError("Retained completed source PDF no longer matches authoritative hash.")
+        _verify_completed_sidecar_identity(
+            source_sidecar,
+            document_id=snapshot.sidecar.id,
+            source_sha256=snapshot.source_sha256,
+            operation_id=operation.operation_id,
+        )
+        _move_file_no_overwrite(source_sidecar, retained_sidecar, label="sidecar")
+        state = _resolve_completed_transition_state(
+            source_pdf=source_pdf,
+            source_sidecar=source_sidecar,
+            retained_pdf=retained_pdf,
+            retained_sidecar=retained_sidecar,
+        )
+    if state != "completed":
+        raise SplitError("Retained completed-source transition did not complete.")
+
+    if _sha256_file_bounded(retained_pdf, label="retained split source") != snapshot.source_sha256:
+        raise SplitError("Retained completed source PDF no longer matches authoritative hash.")
+    retained_sidecar_doc = _verify_completed_sidecar_identity(
+        retained_sidecar,
+        document_id=snapshot.sidecar.id,
+        source_sha256=snapshot.source_sha256,
+        operation_id=operation.operation_id,
+    )
+    retained_path_text = str(retained_pdf.resolve())
+    if retained_sidecar_doc.current_path != retained_path_text:
+        retained_sidecar_doc.current_path = retained_path_text
+        _write_sidecar_atomic(retained_sidecar_doc, retained_sidecar)
+    return retained_pdf, retained_sidecar
+
+
+def list_completed_split_documents(config: AktenfuxConfig) -> list[CompletedSplitSummary]:
+    """Return retained completed split sources from _Imported."""
+    imported_root = _validate_completed_roots(config, include_inbox=False)
+    if not imported_root.exists():
+        return []
+    entries: list[CompletedSplitSummary] = []
+    seen_ids: set[str] = set()
+    for pdf_path in sorted(imported_root.glob("*.pdf")):
+        try:
+            _validate_direct_regular_file(pdf_path, root=imported_root, suffix=".pdf")
+            sidecar_path = sidecar_path_for(pdf_path)
+            _validate_direct_regular_file(sidecar_path, root=imported_root, suffix=".json")
+            sidecar = _read_sidecar_validated(sidecar_path)
+            operation = _completed_operation_for_document(sidecar)
+            if operation is None:
+                continue
+            _validate_operation_record(
+                operation,
+                expected_operation_id=operation.operation_id,
+                expected_source_sha256=sidecar.sha256,
+                expected_page_count=operation.source_page_count,
+                expected_boundaries=operation.boundaries,
+                expected_parts=[
+                    SplitPartPlan(
+                        part_number=item.part_number,
+                        start_page=item.start_page,
+                        end_page=item.end_page,
+                        destination_filename=item.filename,
+                    )
+                    for item in operation.outputs
+                ],
+            )
+            if sidecar.id in seen_ids:
+                raise SplitError("Duplicate document id found in retained completed sources.")
+            seen_ids.add(sidecar.id)
+            entries.append(
+                CompletedSplitSummary(
+                    document_id=sidecar.id,
+                    retained_pdf=pdf_path.name,
+                    source_sha256=sidecar.sha256,
+                    operation_id=operation.operation_id,
+                    completed_at_utc=operation.completed_at_utc or operation.created_at_utc,
+                    outputs=tuple(item.filename for item in operation.outputs),
+                )
+            )
+        except SplitError:
+            continue
+    return entries
+
+
+def reconcile_completed_split_sources(
+    config: AktenfuxConfig,
+    *,
+    apply_changes: bool,
+) -> CompletedSplitReconcileResult:
+    """Dry-run-first reconciliation for completed split sources still in _Split."""
+    _validate_completed_roots(config, include_inbox=True)
+    eligible: list[CompletedSplitSummary] = []
+    transitioned: list[CompletedSplitSummary] = []
+    issues: list[CompletedSplitReconcileIssue] = []
+
+    if not config.split_path.exists():
+        return CompletedSplitReconcileResult(
+            dry_run=not apply_changes,
+            eligible=tuple(),
+            transitioned=tuple(),
+            issues=tuple(),
+        )
+
+    for pdf_path in sorted(config.split_path.glob("*.pdf")):
+        document_id = "(unknown)"
+        try:
+            _validate_direct_regular_file(pdf_path, root=config.split_path, suffix=".pdf")
+            sidecar_path = sidecar_path_for(pdf_path)
+            _validate_direct_regular_file(sidecar_path, root=config.split_path, suffix=".json")
+            sidecar = _read_sidecar_validated(sidecar_path)
+            document_id = sidecar.id
+            operation = _completed_operation_for_document(sidecar)
+            if operation is None:
+                continue
+            if len([op for op in sidecar.split_operations if op.state == "completed"]) != 1:
+                raise SplitError("multiple completed split operations")
+            expected_parts = [
+                SplitPartPlan(
+                    part_number=item.part_number,
+                    start_page=item.start_page,
+                    end_page=item.end_page,
+                    destination_filename=item.filename,
+                )
+                for item in operation.outputs
+            ]
+            _validate_operation_record(
+                operation,
+                expected_operation_id=operation.operation_id,
+                expected_source_sha256=sidecar.sha256,
+                expected_page_count=operation.source_page_count,
+                expected_boundaries=operation.boundaries,
+                expected_parts=expected_parts,
+            )
+            snapshot = _read_validated_snapshot(
+                pdf_path,
+                sidecar_path,
+                sidecar,
+                lifecycle_root=config.split_path,
+                lifecycle_label="split",
+            )
+            if snapshot.source_sha256 != sidecar.sha256:
+                raise SplitError("sidecar/source hash mismatch")
+            for output in operation.outputs:
+                if output.sha256 is None:
+                    raise SplitError(f"missing output hash for {output.filename}")
+                final_path = config.inbox_path / output.filename
+                _validate_direct_destination_path(final_path, root=config.inbox_path)
+                if not final_path.exists():
+                    raise SplitError(f"missing output {output.filename}")
+                if _sha256_file_bounded(final_path, label="completed split output") != output.sha256:
+                    raise SplitError(f"output hash mismatch for {output.filename}")
+            summary = CompletedSplitSummary(
+                document_id=sidecar.id,
+                retained_pdf=_completed_destination_paths(
+                    imported_root=config.imported_path,
+                    source_pdf_name=pdf_path.name,
+                    operation_id=operation.operation_id,
+                )[0].name,
+                source_sha256=sidecar.sha256,
+                operation_id=operation.operation_id,
+                completed_at_utc=operation.completed_at_utc or operation.created_at_utc,
+                outputs=tuple(item.filename for item in operation.outputs),
+            )
+            eligible.append(summary)
+            if apply_changes:
+                _retain_completed_source(config=config, snapshot=snapshot, operation=operation)
+                transitioned.append(summary)
+        except SplitError as exc:
+            issues.append(
+                CompletedSplitReconcileIssue(
+                    document_id=document_id,
+                    source_pdf=pdf_path.name,
+                    reason=str(exc),
+                )
+            )
+
+    return CompletedSplitReconcileResult(
+        dry_run=not apply_changes,
+        eligible=tuple(eligible),
+        transitioned=tuple(transitioned),
+        issues=tuple(issues),
+    )
+
 def plan_split(document_id: str, boundaries: list[int], config: AktenfuxConfig) -> SplitPlan:
     """Return a read-only split plan for a document staged in _Split."""
     _validate_split_roots(config, include_inbox=False)
-    snapshot = _read_snapshot(config, document_id)
+    snapshot = _read_snapshot(config, document_id, include_completed=False)
     if snapshot.page_count < 2:
         raise SplitError("Single-page PDFs cannot be split.")
 
@@ -1006,7 +1484,12 @@ def plan_split(document_id: str, boundaries: list[int], config: AktenfuxConfig) 
 def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
     """Execute a split plan with recoverable, idempotent semantics."""
     _validate_split_roots(config, include_inbox=True)
-    snapshot = _read_snapshot(config, plan.document_id)
+    snapshot = _read_snapshot(
+        config,
+        plan.document_id,
+        include_completed=True,
+        operation_id=plan.operation_id,
+    )
     expected_parts = _validate_plan_against_source(plan, snapshot)
     expected_operation_id = _deterministic_operation_id(
         snapshot.sidecar.id, snapshot.source_sha256, snapshot.page_count, plan.boundaries
@@ -1097,10 +1580,12 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
                     sha256=output.sha256,
                 )
             )
+        if snapshot.lifecycle_label == "split":
+            _retain_completed_source(config=config, snapshot=snapshot, operation=operation)
         return SplitResult(
             operation_id=operation.operation_id,
             document_id=plan.document_id,
-            source_filename=snapshot.pdf_name,
+            source_filename=plan.source_filename,
             source_sha256=snapshot.source_sha256,
             source_page_count=snapshot.page_count,
             boundaries=plan.boundaries,
@@ -1214,6 +1699,7 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
         publish_journal_path,
         expected_outputs=expected_output_names,
     )
+    _retain_completed_source(config=config, snapshot=snapshot, operation=operation)
 
     outputs: list[SplitPartResult] = []
     for output in operation.outputs:
@@ -1232,7 +1718,7 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
     return SplitResult(
         operation_id=operation.operation_id,
         document_id=plan.document_id,
-        source_filename=snapshot.pdf_name,
+        source_filename=plan.source_filename,
         source_sha256=snapshot.source_sha256,
         source_page_count=snapshot.page_count,
         boundaries=plan.boundaries,

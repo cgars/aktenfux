@@ -459,6 +459,96 @@ def split_suggest(
     console.print("[green]No files were changed.[/green]")
 
 
+@app.command("split-completed")
+def split_completed(
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """List retained completed split sources."""
+    _setup_logging(verbose)
+    cfg = _load_config(config_path, dry_run=None)
+    from aktenfux.main import list_completed_split_documents  # noqa: PLC0415
+    from aktenfux.split import SplitError  # noqa: PLC0415
+    from rich.table import Table  # noqa: PLC0415
+
+    try:
+        entries = list_completed_split_documents(cfg)
+    except (FileNotFoundError, ValueError, SplitError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    if not entries:
+        console.print("No retained completed split sources found.")
+        return
+
+    table = Table(title="Retained completed split sources")
+    table.add_column("Document ID", style="cyan")
+    table.add_column("Retained PDF")
+    table.add_column("Completed at (UTC)")
+    table.add_column("Operation")
+    table.add_column("Outputs")
+    for entry in entries:
+        table.add_row(
+            _safe_terminal_text(entry.document_id),
+            _safe_terminal_text(entry.retained_pdf),
+            _safe_terminal_text(entry.completed_at_utc),
+            _safe_terminal_text(entry.operation_id),
+            _safe_terminal_text(", ".join(entry.outputs)),
+        )
+    console.print(table)
+
+
+@app.command("split-reconcile-completed")
+def split_reconcile_completed(
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Apply completed-source transitions. Without this flag, only preview.",
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Do not ask for confirmation when --apply is set."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Reconcile already-completed split sources left in _Split."""
+    _setup_logging(verbose)
+    cfg = _load_config(config_path, dry_run=None)
+    from aktenfux.main import reconcile_completed_split_sources  # noqa: PLC0415
+    from aktenfux.split import SplitError  # noqa: PLC0415
+
+    if apply and not yes:
+        if not typer.confirm(
+            "Move eligible completed split sources from _Split to _Imported?"
+        ):
+            console.print("[yellow]Cancelled.[/yellow]")
+            return
+
+    try:
+        result = reconcile_completed_split_sources(cfg, apply_changes=apply)
+    except (FileNotFoundError, ValueError, SplitError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"Eligible completed sources: {len(result.eligible)}"
+        + (f" | Transitioned: {len(result.transitioned)}" if apply else "")
+        + f" | Issues: {len(result.issues)}"
+    )
+    for entry in result.eligible:
+        _print_untrusted_line(
+            "Eligible: ",
+            f"{entry.document_id} -> _Imported/{entry.retained_pdf} (operation {entry.operation_id})",
+        )
+    for issue in result.issues:
+        _print_untrusted_line(
+            "Issue: ",
+            f"{issue.source_pdf} ({issue.document_id}): {issue.reason}",
+        )
+    if not apply:
+        console.print(
+            "[green]Dry-run only.[/green] Re-run with --apply (and optional --yes) to mutate state."
+        )
+
+
 @app.command()
 def workbench(
     config_path: Optional[Path] = typer.Option(None, "--config", "-c"),

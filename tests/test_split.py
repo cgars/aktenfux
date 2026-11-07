@@ -20,6 +20,11 @@ from aktenfux.schema import (
     SplitProvenanceRecord,
 )
 from aktenfux.split import SplitError, execute_split, plan_split, suggest_split_boundaries
+from aktenfux.split import (
+    list_completed_split_documents,
+    list_split_documents,
+    reconcile_completed_split_sources,
+)
 from aktenfux.storage import read_sidecar, sha256_file
 from tests.split_helpers import make_config, pdf_bytes, write_split_doc
 
@@ -66,9 +71,11 @@ def test_execute_split_writes_parts_and_records_provenance(tmp_path):
     output_paths = [cfg.inbox_path / output.filename for output in result.outputs]
     assert all(path.exists() for path in output_paths)
     assert [len(PdfReader(str(path)).pages) for path in output_paths] == [2, 3]
-    assert sha256_file(source) == source_hash_before
+    retained_pdf = cfg.imported_path / f"source--completed-{result.operation_id[:12]}.pdf"
+    assert not source.exists()
+    assert sha256_file(retained_pdf) == source_hash_before
 
-    sidecar = read_sidecar(source)
+    sidecar = read_sidecar(retained_pdf)
     assert sidecar is not None
     assert len(sidecar.split_operations) == 1
     operation = sidecar.split_operations[0]
@@ -76,6 +83,40 @@ def test_execute_split_writes_parts_and_records_provenance(tmp_path):
     assert operation.state == "completed"
     assert operation.completed_at_utc is not None
     assert all(output.sha256 is not None for output in operation.outputs)
+
+
+def test_execute_split_moves_completed_source_to_imported_and_rejects_new_plan(tmp_path):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "source.pdf", "docsplit000000004b", pages=5)
+    plan = plan_split("docsplit000000004b", [3], cfg)
+
+    result = execute_split(plan, cfg)
+
+    retained_pdf = cfg.imported_path / f"source--completed-{result.operation_id[:12]}.pdf"
+    retained_sidecar = retained_pdf.with_suffix(".json")
+    assert not source.exists()
+    assert not source.with_suffix(".json").exists()
+    assert retained_pdf.exists()
+    assert retained_sidecar.exists()
+    assert list_split_documents(cfg) == []
+    completed = list_completed_split_documents(cfg)
+    assert [entry.document_id for entry in completed] == ["docsplit000000004b"]
+    with pytest.raises(SplitError, match="already completed"):
+        plan_split("docsplit000000004b", [4], cfg)
+    with pytest.raises(SplitError, match="already completed"):
+        suggest_split_boundaries("docsplit000000004b", cfg, provider=lambda *_: {"candidates": []})
+
+
+def test_execute_split_exact_retry_reads_retained_completed_source(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "retry.pdf", "docsplit000000004c", pages=5)
+    plan = plan_split("docsplit000000004c", [3], cfg)
+
+    first = execute_split(plan, cfg)
+    second = execute_split(plan, cfg)
+
+    assert first.operation_id == second.operation_id
+    assert [entry.filename for entry in second.outputs] == [entry.filename for entry in first.outputs]
 
 
 def test_execute_split_rejects_tampered_sidecar_output_ranges(tmp_path):
@@ -151,6 +192,84 @@ def test_execute_split_does_not_republish_completed_outputs(tmp_path):
 
     with pytest.raises(SplitError, match="refusing to republish"):
         execute_split(plan, cfg)
+
+
+def _write_legacy_completed_split_in_split_root(cfg, *, name: str, doc_id: str):
+    source = write_split_doc(cfg.split_path, name, doc_id, pages=5)
+    plan = plan_split(doc_id, [3], cfg)
+    source_bytes = source.read_bytes()
+    outputs = []
+    cfg.inbox_path.mkdir(parents=True, exist_ok=True)
+    for part in plan.parts:
+        part_payload = split_module._part_pdf_bytes(  # noqa: SLF001
+            source_bytes,
+            start_page=part.start_page,
+            end_page=part.end_page,
+        )
+        output_path = cfg.inbox_path / part.destination_filename
+        output_path.write_bytes(part_payload)
+        outputs.append(
+            SplitOutputRecord(
+                part_number=part.part_number,
+                start_page=part.start_page,
+                end_page=part.end_page,
+                filename=part.destination_filename,
+                sha256=sha256_file(output_path),
+            )
+        )
+    sidecar = read_sidecar(source)
+    assert sidecar is not None
+    sidecar.split_operations = [
+        SplitProvenanceRecord(
+            operation_id=plan.operation_id,
+            source_sha256=plan.source_sha256,
+            source_page_count=plan.source_page_count,
+            boundaries=plan.boundaries,
+            outputs=outputs,
+            state="completed",
+            created_at_utc="2026-10-09T00:00:00Z",
+            completed_at_utc="2026-10-09T00:10:00Z",
+        )
+    ]
+    source.with_suffix(".json").write_text(sidecar.model_dump_json(indent=2), encoding="utf-8")
+    return source, plan
+
+
+def test_reconcile_completed_split_sources_supports_dry_run_and_apply(tmp_path):
+    cfg = make_config(tmp_path)
+    source, plan = _write_legacy_completed_split_in_split_root(
+        cfg,
+        name="legacy.pdf",
+        doc_id="docsplitlegacy00001",
+    )
+
+    dry_run = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert len(dry_run.eligible) == 1
+    assert dry_run.transitioned == ()
+    assert dry_run.issues == ()
+    assert source.exists()
+
+    apply = reconcile_completed_split_sources(cfg, apply_changes=True)
+    assert len(apply.transitioned) == 1
+    retained_pdf = cfg.imported_path / f"legacy--completed-{plan.operation_id[:12]}.pdf"
+    assert retained_pdf.exists()
+    assert not source.exists()
+
+
+def test_reconcile_completed_split_sources_reports_missing_outputs(tmp_path):
+    cfg = make_config(tmp_path)
+    _source, _plan = _write_legacy_completed_split_in_split_root(
+        cfg,
+        name="legacy-missing.pdf",
+        doc_id="docsplitlegacy00002",
+    )
+    first_output = next(cfg.inbox_path.glob("legacy-missing--part-01.pdf"))
+    first_output.unlink()
+
+    result = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert len(result.eligible) == 0
+    assert len(result.issues) == 1
+    assert "missing output" in result.issues[0].reason
 
 
 def test_execute_split_rejects_untracked_destination_collision(tmp_path):
@@ -745,7 +864,8 @@ def test_execute_split_recovers_after_final_completion_write_failure(tmp_path, m
     monkeypatch.setattr(split_module, "_write_sidecar_atomic", original_write_sidecar)
     result = execute_split(plan, cfg)
     assert len(result.outputs) == 2
-    sidecar = read_sidecar(cfg.split_path / "recover-complete.pdf")
+    retained_pdf = cfg.imported_path / f"recover-complete--completed-{result.operation_id[:12]}.pdf"
+    sidecar = read_sidecar(retained_pdf)
     assert sidecar is not None
     assert sidecar.split_operations[0].state == "completed"
 

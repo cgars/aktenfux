@@ -421,3 +421,21 @@ def suggest_split_boundaries(document_id: str, config: AktenfuxConfig) -> SplitB
     from aktenfux.split import suggest_split_boundaries as _suggest_split_boundaries  # noqa: PLC0415
 
     return _suggest_split_boundaries(document_id, config)
+
+
+def list_completed_split_documents(config: AktenfuxConfig) -> list["CompletedSplitSummary"]:
+    """List retained completed split sources from _Imported."""
+    from aktenfux.split import list_completed_split_documents as _list_completed  # noqa: PLC0415
+
+    return _list_completed(config)
+
+
+def reconcile_completed_split_sources(
+    config: AktenfuxConfig,
+    *,
+    apply_changes: bool,
+) -> "CompletedSplitReconcileResult":
+    """Reconcile already-completed split sources that still reside in _Split."""
+    from aktenfux.split import reconcile_completed_split_sources as _reconcile  # noqa: PLC0415
+
+    return _reconcile(config, apply_changes=apply_changes)
