@@ -1950,28 +1950,47 @@ def _preflight_completed_transition_from_journal(
     stage_pdf = stage_root / "source.pdf"
     stage_sidecar = stage_root / "source.json"
 
-    rank = _state_rank(journal.state)
-    if rank >= _state_rank("pdf_staged"):
-        if not stage_pdf.exists():
-            raise SplitError("pdf staging copy missing")
+    source_sidecar_hash = _sha256_file_bounded(snapshot.sidecar_path, label="completed transition sidecar")
+    stage_pdf_present = False
+    if stage_pdf.exists():
+        _validate_direct_regular_file(stage_pdf, root=stage_root, suffix=".pdf")
         if _sha256_file_bounded(stage_pdf, label="completed transition staged PDF") != journal.source_sha256:
             raise SplitError("pdf staging copy hash mismatch")
-    if rank >= _state_rank("sidecar_staged") and not stage_sidecar.exists():
-        raise SplitError("sidecar staging copy missing")
-    if rank >= _state_rank("retained_pdf_published"):
-        if not retained_pdf.exists():
-            raise SplitError("retained PDF missing")
+        stage_pdf_present = True
+    stage_sidecar_present = False
+    if stage_sidecar.exists():
+        _validate_direct_regular_file(stage_sidecar, root=stage_root, suffix=".json")
+        if _sha256_file_bounded(stage_sidecar, label="completed transition staged sidecar") != source_sidecar_hash:
+            raise SplitError("sidecar staging copy hash mismatch")
+        stage_sidecar_present = True
+    retained_pdf_present = False
+    if retained_pdf.exists():
+        _validate_direct_regular_file(retained_pdf, root=imported_root, suffix=".pdf")
         if _sha256_file_bounded(retained_pdf, label="retained completed PDF") != journal.source_sha256:
             raise SplitError("retained PDF hash mismatch")
-    if rank >= _state_rank("retained_sidecar_published") and not retained_sidecar.exists():
-        raise SplitError("retained sidecar missing")
-    if rank >= _state_rank("retained_sidecar_published") and retained_sidecar.exists():
+        retained_pdf_present = True
+    retained_sidecar_present = False
+    if retained_sidecar.exists():
+        _validate_direct_regular_file(retained_sidecar, root=imported_root, suffix=".json")
+        if _sha256_file_bounded(retained_sidecar, label="retained completed sidecar") != source_sidecar_hash:
+            raise SplitError("retained sidecar hash mismatch")
         _verify_completed_sidecar_identity(
             retained_sidecar,
             document_id=journal.document_id,
             source_sha256=journal.source_sha256,
             operation_id=journal.operation_id,
         )
+        retained_sidecar_present = True
+
+    rank = _state_rank(journal.state)
+    if rank >= _state_rank("pdf_staged") and not stage_pdf_present:
+        raise SplitError("pdf staging copy missing")
+    if rank >= _state_rank("sidecar_staged") and not stage_sidecar_present:
+        raise SplitError("sidecar staging copy missing")
+    if rank >= _state_rank("retained_pdf_published") and not retained_pdf_present:
+        raise SplitError("retained PDF missing")
+    if rank >= _state_rank("retained_sidecar_published") and not retained_sidecar_present:
+        raise SplitError("retained sidecar missing")
     if rank >= _state_rank("source_pdf_removed") and source_pdf.exists():
         raise SplitError("source PDF cleanup incomplete")
     if rank >= _state_rank("source_sidecar_removed") and source_sidecar.exists():
@@ -2083,6 +2102,8 @@ def reconcile_completed_split_sources(
     for pdf_path in split_pdf_paths:
         document_id = "(unknown)"
         try:
+            if not pdf_path.exists():
+                continue
             _validate_direct_regular_file(pdf_path, root=config.split_path, suffix=".pdf")
             sidecar_path = sidecar_path_for(pdf_path)
             _validate_direct_regular_file(sidecar_path, root=config.split_path, suffix=".json")
@@ -2120,6 +2141,8 @@ def reconcile_completed_split_sources(
             if retained_pdf_exists != retained_sidecar_exists:
                 raise SplitError("retained destination pair is partial and requires recovery via journal.")
             if retained_pdf_exists:
+                _validate_direct_regular_file(retained_pdf, root=imported_root, suffix=".pdf")
+                _validate_direct_regular_file(retained_sidecar, root=imported_root, suffix=".json")
                 if _sha256_file_bounded(retained_pdf, label="retained split source") != sidecar.sha256:
                     raise SplitError("retained destination PDF collision")
                 _verify_completed_sidecar_identity(

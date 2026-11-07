@@ -306,6 +306,32 @@ def test_reconcile_completed_split_sources_reports_orphan_split_sidecars(tmp_pat
     assert "no matching PDF" in result.issues[0].reason
 
 
+def test_reconcile_completed_split_sources_dry_run_reports_symlinked_retained_pair(tmp_path):
+    cfg = make_config(tmp_path)
+    source, plan = _write_legacy_completed_split_in_split_root(
+        cfg,
+        name="legacy-symlink.pdf",
+        doc_id="docsplitlegacy00007",
+    )
+    retained_pdf = cfg.imported_path / f"legacy-symlink--completed-{plan.operation_id[:12]}.pdf"
+    retained_sidecar = retained_pdf.with_suffix(".json")
+    cfg.imported_path.mkdir(parents=True, exist_ok=True)
+    try:
+        retained_pdf.symlink_to(source)
+        retained_sidecar.symlink_to(source.with_suffix(".json"))
+    except (NotImplementedError, OSError):
+        pytest.skip("Symlinks are not available on this platform.")
+
+    result = reconcile_completed_split_sources(cfg, apply_changes=False)
+
+    assert result.eligible == ()
+    assert len(result.issues) == 1
+    assert (
+        "symbolic link" in result.issues[0].reason
+        or "outside the expected lifecycle root" in result.issues[0].reason
+    )
+
+
 def test_execute_split_rejects_untracked_destination_collision(tmp_path):
     cfg = make_config(tmp_path)
     write_split_doc(cfg.split_path, "collision.pdf", "docsplit000000009", pages=6)
@@ -1074,6 +1100,59 @@ def test_reconcile_completed_split_sources_recovers_journal_only_candidate(tmp_p
     retained_pdf = cfg.imported_path / f"legacy-journal--completed-{plan.operation_id[:12]}.pdf"
     assert retained_pdf.exists()
     assert not (cfg.split_path / "legacy-journal.json").exists()
+
+
+def test_reconcile_completed_split_sources_dry_run_detects_stale_journal_retained_pdf_collision(
+    tmp_path, monkeypatch
+):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "legacy-stale-collision.pdf", "docsplitlegacy00008", pages=5)
+    plan = plan_split("docsplitlegacy00008", [3], cfg)
+    original_write_journal = split_module._write_completed_transition_journal
+
+    def fail_before_retained_pdf_state(journal_path, journal, *, state):
+        if state == "retained_pdf_published":
+            raise SplitError("injected stop before retained_pdf_published journal write")
+        return original_write_journal(journal_path, journal, state=state)
+
+    monkeypatch.setattr(split_module, "_write_completed_transition_journal", fail_before_retained_pdf_state)
+    with pytest.raises(SplitError, match="retained_pdf_published"):
+        execute_split(plan, cfg)
+    monkeypatch.setattr(split_module, "_write_completed_transition_journal", original_write_journal)
+
+    retained_pdf = cfg.imported_path / f"legacy-stale-collision--completed-{plan.operation_id[:12]}.pdf"
+    assert retained_pdf.exists()
+    retained_pdf.write_bytes(pdf_bytes(1))
+
+    result = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert result.eligible == ()
+    assert len(result.issues) >= 1
+    assert any("retained pdf hash mismatch" in issue.reason.lower() for issue in result.issues)
+
+
+def test_reconcile_completed_split_sources_dry_run_accepts_valid_stale_journal_artifact(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "legacy-stale-valid.pdf", "docsplitlegacy00009", pages=5)
+    plan = plan_split("docsplitlegacy00009", [3], cfg)
+    original_write_journal = split_module._write_completed_transition_journal
+
+    def fail_before_retained_pdf_state(journal_path, journal, *, state):
+        if state == "retained_pdf_published":
+            raise SplitError("injected stop before retained_pdf_published journal write")
+        return original_write_journal(journal_path, journal, state=state)
+
+    monkeypatch.setattr(split_module, "_write_completed_transition_journal", fail_before_retained_pdf_state)
+    with pytest.raises(SplitError, match="retained_pdf_published"):
+        execute_split(plan, cfg)
+    monkeypatch.setattr(split_module, "_write_completed_transition_journal", original_write_journal)
+
+    dry_run = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert len(dry_run.eligible) == 1
+    assert dry_run.issues == ()
+
+    apply = reconcile_completed_split_sources(cfg, apply_changes=True)
+    assert len(apply.transitioned) == 1
+    assert apply.issues == ()
 
 
 def test_concurrent_execute_split_attempts_do_not_overwrite_retained_outputs(tmp_path, monkeypatch):
