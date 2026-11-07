@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 from io import BytesIO
 import json
 import re
+from typing import Any
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 from pypdf import PdfReader, PdfWriter
 
@@ -598,18 +599,6 @@ def test_workbench_suggest_clears_inflight_on_failure(tmp_path, monkeypatch):
     assert "docsuggestapi0002" not in app.state.in_flight_suggestions
 
 
-def test_workbench_blocks_duplicate_inflight_suggestion(tmp_path):
-    cfg = make_config(tmp_path)
-    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0003", pages=6)
-    app = create_app(cfg)
-    client = browser_client(app)
-    app.state.in_flight_suggestions.add("docsuggestapi0003")
-
-    response = client.post("/api/split/suggest", json={"document_id": "docsuggestapi0003"})
-
-    assert response.status_code == 409
-
-
 def test_workbench_suggest_rejects_duplicate_concurrent_request(tmp_path, monkeypatch):
     cfg = make_config(tmp_path)
     pdf = write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0004", pages=6)
@@ -655,46 +644,178 @@ def test_workbench_suggest_rejects_duplicate_concurrent_request(tmp_path, monkey
     assert call_count["value"] == 1
 
 
-def test_workbench_suggest_timeout_clears_inflight_state(tmp_path, monkeypatch):
+def test_workbench_suggest_timeout_keeps_reservation_until_worker_finishes(
+    tmp_path, monkeypatch
+):
     cfg = make_config(tmp_path)
     pdf = write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0005", pages=6)
     source_sha256 = sha256_file(pdf)
     app = create_app(cfg)
-    client = browser_client(app)
-    monkeypatch.setattr(workbench_module, "SUGGEST_ROUTE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(workbench_module, "SUGGEST_ROUTE_TIMEOUT_SECONDS", 0.05)
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    counters = {"calls": 0, "active": 0, "max_active": 0}
+    counter_lock = threading.Lock()
 
-    def slow_suggest(document_id, config):
-        time.sleep(0.2)
-        return {
-            "document_id": document_id,
-            "source_sha256": source_sha256,
-            "source_page_count": 6,
-            "suggestion_provider": "ollama:qwen3:8b",
-            "candidates": [],
-            "warnings": [],
-        }
+    def slow_suggest(document_id: str, config: Any) -> dict[str, Any]:
+        with counter_lock:
+            counters["calls"] += 1
+            counters["active"] += 1
+            counters["max_active"] = max(counters["max_active"], counters["active"])
+        entered.set()
+        try:
+            release.wait(timeout=2)
+            return {
+                "document_id": document_id,
+                "source_sha256": source_sha256,
+                "source_page_count": 6,
+                "suggestion_provider": "ollama:qwen3:8b",
+                "candidates": [],
+                "warnings": [],
+            }
+        finally:
+            with counter_lock:
+                counters["active"] -= 1
+            finished.set()
 
     monkeypatch.setattr(workbench_module, "suggest_split_boundaries", slow_suggest)
-    response = client.post("/api/split/suggest", json={"document_id": "docsuggestapi0005"})
 
-    assert response.status_code == 504
-    assert "docsuggestapi0005" not in app.state.in_flight_suggestions
+    async def run_sequence() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
+            root = await client.get("/")
+            token_match = TOKEN_PATTERN.search(root.text)
+            assert token_match is not None
+            token = token_match.group(1)
+            headers = {"Origin": BASE_URL, "X-Aktenfux-CSRF": token}
+
+            first = await client.post(
+                "/api/split/suggest",
+                json={"document_id": "docsuggestapi0005"},
+                headers=headers,
+            )
+            assert first.status_code == 504
+            assert entered.is_set()
+            assert "docsuggestapi0005" in app.state.in_flight_suggestions
+            with counter_lock:
+                assert counters["calls"] == 1
+                assert counters["active"] == 1
+
+            second = await client.post(
+                "/api/split/suggest",
+                json={"document_id": "docsuggestapi0005"},
+                headers=headers,
+            )
+            assert second.status_code == 409
+            with counter_lock:
+                assert counters["calls"] == 1
+                assert counters["max_active"] == 1
+
+            release.set()
+            assert await asyncio.to_thread(finished.wait, 1)
+            for _ in range(20):
+                if "docsuggestapi0005" not in app.state.in_flight_suggestions:
+                    break
+                await asyncio.sleep(0.01)
+            assert "docsuggestapi0005" not in app.state.in_flight_suggestions
+
+            third = await client.post(
+                "/api/split/suggest",
+                json={"document_id": "docsuggestapi0005"},
+                headers=headers,
+            )
+            assert third.status_code == 200
+            with counter_lock:
+                assert counters["calls"] == 2
+
+    asyncio.run(run_sequence())
 
 
-def test_workbench_suggest_cancellation_clears_inflight_state(tmp_path, monkeypatch):
+def test_workbench_suggest_cancelled_request_keeps_reservation_until_worker_finishes(
+    tmp_path, monkeypatch
+):
     cfg = make_config(tmp_path)
-    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0006", pages=6)
+    pdf = write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0006", pages=6)
+    source_sha256 = sha256_file(pdf)
     app = create_app(cfg)
-    client = browser_client(app, raise_server_exceptions=False)
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    call_count = {"value": 0}
+    count_lock = threading.Lock()
 
-    def cancelled_suggest(document_id, config):
-        raise asyncio.CancelledError
+    def slow_suggest(document_id: str, config: Any) -> dict[str, Any]:
+        with count_lock:
+            call_count["value"] += 1
+        entered.set()
+        try:
+            release.wait(timeout=2)
+            return {
+                "document_id": document_id,
+                "source_sha256": source_sha256,
+                "source_page_count": 6,
+                "suggestion_provider": "ollama:qwen3:8b",
+                "candidates": [],
+                "warnings": [],
+            }
+        finally:
+            finished.set()
 
-    monkeypatch.setattr(workbench_module, "suggest_split_boundaries", cancelled_suggest)
-    response = client.post("/api/split/suggest", json={"document_id": "docsuggestapi0006"})
+    monkeypatch.setattr(workbench_module, "suggest_split_boundaries", slow_suggest)
 
-    assert response.status_code == 500
-    assert "docsuggestapi0006" not in app.state.in_flight_suggestions
+    async def run_sequence() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
+            root = await client.get("/")
+            token_match = TOKEN_PATTERN.search(root.text)
+            assert token_match is not None
+            token = token_match.group(1)
+            headers = {"Origin": BASE_URL, "X-Aktenfux-CSRF": token}
+
+            request_task = asyncio.create_task(
+                client.post(
+                    "/api/split/suggest",
+                    json={"document_id": "docsuggestapi0006"},
+                    headers=headers,
+                )
+            )
+            assert await asyncio.to_thread(entered.wait, 1)
+            request_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request_task
+
+            assert "docsuggestapi0006" in app.state.in_flight_suggestions
+            with count_lock:
+                assert call_count["value"] == 1
+
+            second = await client.post(
+                "/api/split/suggest",
+                json={"document_id": "docsuggestapi0006"},
+                headers=headers,
+            )
+            assert second.status_code == 409
+            with count_lock:
+                assert call_count["value"] == 1
+
+            release.set()
+            assert await asyncio.to_thread(finished.wait, 1)
+            for _ in range(20):
+                if "docsuggestapi0006" not in app.state.in_flight_suggestions:
+                    break
+                await asyncio.sleep(0.01)
+            assert "docsuggestapi0006" not in app.state.in_flight_suggestions
+
+            third = await client.post(
+                "/api/split/suggest",
+                json={"document_id": "docsuggestapi0006"},
+                headers=headers,
+            )
+            assert third.status_code == 200
+            with count_lock:
+                assert call_count["value"] == 2
+
+    asyncio.run(run_sequence())
 
 
 def test_workbench_rejects_stale_suggestion_source_identity(tmp_path, monkeypatch):

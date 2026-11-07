@@ -399,6 +399,7 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
     app.state.in_flight: set[str] = set()
     app.state.in_flight_documents: set[str] = set()
     app.state.in_flight_suggestions: set[str] = set()
+    app.state.suggestion_tasks: dict[str, asyncio.Task[Any]] = {}
 
     async def ensure_lock() -> asyncio.Lock:
         if app.state.execute_lock is None:
@@ -536,15 +537,40 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
     async def suggest(request: SuggestRequest) -> dict[str, Any]:
         lock = await ensure_lock()
         async with lock:
-            if request.document_id in app.state.in_flight_suggestions:
+            existing_task = app.state.suggestion_tasks.get(request.document_id)
+            if existing_task is not None and existing_task.done():
+                app.state.suggestion_tasks.pop(request.document_id, None)
+                app.state.in_flight_suggestions.discard(request.document_id)
+                existing_task = None
+            if existing_task is not None:
                 raise HTTPException(
                     status_code=409,
                     detail="A split suggestion request is already in progress for this document.",
                 )
+            worker_task = asyncio.create_task(
+                asyncio.to_thread(suggest_split_boundaries, request.document_id, cfg),
+                name=f"suggest:{request.document_id}",
+            )
+            app.state.suggestion_tasks[request.document_id] = worker_task
             app.state.in_flight_suggestions.add(request.document_id)
+
+        def finalize_suggestion_task(task: asyncio.Task[Any]) -> None:
+            try:
+                task.exception()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+            finally:
+                current_task = app.state.suggestion_tasks.get(request.document_id)
+                if current_task is task:
+                    app.state.suggestion_tasks.pop(request.document_id, None)
+                    app.state.in_flight_suggestions.discard(request.document_id)
+
+        worker_task.add_done_callback(finalize_suggestion_task)
         try:
             suggestion = await asyncio.wait_for(
-                asyncio.to_thread(suggest_split_boundaries, request.document_id, cfg),
+                asyncio.shield(worker_task),
                 timeout=SUGGEST_ROUTE_TIMEOUT_SECONDS,
             )
         except (SplitError, ValueError, FileNotFoundError) as exc:
@@ -558,8 +584,6 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
                 status_code=500,
                 detail="Split suggestion failed unexpectedly.",
             ) from exc
-        finally:
-            app.state.in_flight_suggestions.discard(request.document_id)
         if isinstance(suggestion, SplitBoundarySuggestion):
             payload = suggestion.model_dump(mode="json")
         else:
