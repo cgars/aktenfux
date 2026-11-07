@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -18,6 +19,7 @@ app = typer.Typer(
 )
 console = Console()
 err_console = Console(stderr=True)
+_ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))")
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -31,6 +33,18 @@ def _setup_logging(verbose: bool = False) -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+
+def _safe_terminal_text(value: object) -> str:
+    text = str(value)
+    text = _ANSI_ESCAPE_RE.sub("", text)
+    text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    text = "".join(character if character.isprintable() else "�" for character in text)
+    return " ".join(text.split())
+
+
+def _print_untrusted_line(prefix: str, value: object) -> None:
+    console.print(f"{prefix}{_safe_terminal_text(value)}", markup=False, highlight=False)
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +409,54 @@ def split(
             f"  • _Inbox/{output.filename} "
             f"(pages {output.start_page}-{output.end_page}, sha256={output.sha256})"
         )
+
+
+@app.command("split-suggest")
+def split_suggest(
+    doc_id: str = typer.Argument(..., help="Document ID staged in _Split."),
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    dry_run: Optional[bool] = typer.Option(None, "--dry-run/--no-dry-run"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Suggest advisory page-level split boundaries without mutating files."""
+    _setup_logging(verbose)
+    cfg = _load_config(config_path, dry_run)
+
+    from aktenfux.main import suggest_split_boundaries  # noqa: PLC0415
+    from aktenfux.split import SplitError  # noqa: PLC0415
+
+    try:
+        suggestion = suggest_split_boundaries(doc_id, cfg)
+    except (FileNotFoundError, ValueError, SplitError) as exc:
+        err_console.print(
+            f"Error: {_safe_terminal_text(exc)}",
+            markup=False,
+            highlight=False,
+        )
+        raise typer.Exit(1) from exc
+
+    console.print(f"[bold]Split suggestions for {_safe_terminal_text(suggestion.document_id)}[/bold]")
+    _print_untrusted_line("Source sha256: ", suggestion.source_sha256)
+    _print_untrusted_line("Source pages: ", suggestion.source_page_count)
+    _print_untrusted_line("Provider: ", suggestion.suggestion_provider)
+    if suggestion.candidates:
+        for candidate in suggestion.candidates:
+            _print_untrusted_line(
+                "  • ",
+                f"Split before page {candidate.before_page} "
+                f"(confidence {candidate.confidence:.2f})",
+            )
+            _print_untrusted_line("    reason: ", candidate.rationale)
+            if candidate.evidence:
+                for item in candidate.evidence:
+                    _print_untrusted_line("    evidence: ", f"p.{item.page}: {item.cue}")
+            else:
+                _print_untrusted_line("    evidence: ", "no evidence")
+    else:
+        console.print("No reliable split boundaries were suggested.")
+    for warning in suggestion.warnings:
+        _print_untrusted_line("Warning: ", warning)
+    console.print("[green]No files were changed.[/green]")
 
 
 @app.command()

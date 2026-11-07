@@ -7,6 +7,7 @@ from unittest.mock import call, patch
 import pytest
 
 from aktenfux.llm import (
+    _SPLIT_SUGGEST_SYSTEM_PROMPT,
     _SUMMARIZE_SYSTEM_PROMPT,
     _JSON_FIELD_CONSTRAINTS,
     _JSON_SCHEMA_TEMPLATE,
@@ -48,6 +49,17 @@ _PLAIN_SUMMARY = (
     "This is an invoice from Test GmbH dated 2026-01-15 for a software license. "
     "Total amount: EUR 500. No action required."
 )
+
+
+def test_split_suggestion_prompt_defines_before_page_as_new_document_start():
+    prompt = _SPLIT_SUGGEST_SYSTEM_PROMPT
+
+    assert "first physical PDF page of the new logical document" in prompt
+    assert "not the final page of the preceding document" in prompt
+    assert "invoice ends on page 3 and a contract starts on page 4" in prompt
+    assert "return before_page 4, never 3" in prompt
+    assert "preceding part ending on page N-1" in prompt
+    assert "new part beginning on page N" in prompt
 
 
 class TestBuildSummarizePrompt:

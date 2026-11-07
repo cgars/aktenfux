@@ -110,6 +110,14 @@ already in `_Split`, lets you mark a cut before a page, previews the exact outpu
 parts, and requires you to confirm that exact preview before writing anything.
 The browser adapter calls the same split services as the CLI.
 
+There is now a separate advisory step: you can explicitly ask for “Suggest
+boundaries.” Aktenfux sends bounded page-level cues to the configured model and
+may return proposals like “split before page 4,” with short reasons and evidence
+references. These are suggestions only: they are untrusted, not preselected, and
+cannot execute a split. You still choose which suggestions to apply, can edit
+them manually, and must generate a fresh exact preview plus explicit confirmation
+before any files are written.
+
 The window listens only on the local computer. Each started process gives its
 own page a random security token; write requests must return that token, come
 from the same browser origin when an Origin header is present, and carry the

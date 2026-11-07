@@ -29,16 +29,18 @@ from pypdf import PdfReader, PdfWriter
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from aktenfux.config import AktenfuxConfig, load_config
-from aktenfux.schema import SplitPlan
+from aktenfux.schema import SplitBoundarySuggestion, SplitPlan
 from aktenfux.split import (
     SplitError,
     execute_split,
     get_split_document_snapshot,
     list_split_documents,
     plan_split,
+    suggest_split_boundaries,
 )
 
 MAX_REQUEST_BODY_BYTES = 128 * 1024
+SUGGEST_ROUTE_TIMEOUT_SECONDS = 180.0
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _DOCUMENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _WORKBENCH_JS = Path(__file__).with_name("workbench.js").read_text(encoding="utf-8")
@@ -92,6 +94,8 @@ _INDEX_HTML = """<!doctype html>
           <button id="zoom-in" class="secondary" type="button">+</button>
           <button id="rotate" class="secondary" type="button">Rotate</button>
           <button id="toggle-boundary" class="warning" type="button">Toggle boundary (T)</button>
+          <button id="suggest-boundaries" class="secondary" type="button">Suggest boundaries</button>
+          <button id="apply-suggestions" class="secondary" type="button">Apply selected suggestions</button>
           <button id="refresh-preview" class="secondary" type="button">Preview split</button>
           <span id="page-info">No document selected</span>
         </div>
@@ -103,6 +107,9 @@ _INDEX_HTML = """<!doctype html>
       </div>
       <div class="panel">
         <div class="status" id="message"></div>
+        <h3>Boundary suggestions</h3>
+        <div class="status" id="suggestion-status"></div>
+        <div id="suggestion-list" class="range-list">Select a document, then request suggestions.</div>
         <h3>Result preview</h3>
         <div id="preview-list" class="range-list">Select a document to preview.</div>
         <div class="confirmer">
@@ -308,11 +315,18 @@ class ExecuteRequest(BaseModel):
         return value
 
 
+class SuggestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    document_id: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
 class SplitDocumentDTO(BaseModel):
     id: str
     label: str
     name: str
     page_count: int
+    source_sha256: str
     pdf_url: str
 
 
@@ -384,6 +398,8 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
     app.state.execute_lock: asyncio.Lock | None = None
     app.state.in_flight: set[str] = set()
     app.state.in_flight_documents: set[str] = set()
+    app.state.in_flight_suggestions: set[str] = set()
+    app.state.suggestion_tasks: dict[str, asyncio.Task[Any]] = {}
 
     async def ensure_lock() -> asyncio.Lock:
         if app.state.execute_lock is None:
@@ -425,6 +441,7 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
                 label=entry.display_name,
                 name=entry.display_name,
                 page_count=entry.page_count,
+                source_sha256=entry.source_sha256,
                 pdf_url=f"/api/split/documents/{entry.document_id}/pdf",
             )
             for entry in entries
@@ -515,6 +532,78 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
             "plan": plan.model_dump(mode="json"),
             "preview_token": token,
         }
+
+    @app.post("/api/split/suggest")
+    async def suggest(request: SuggestRequest) -> dict[str, Any]:
+        lock = await ensure_lock()
+        async with lock:
+            existing_task = app.state.suggestion_tasks.get(request.document_id)
+            if existing_task is not None and existing_task.done():
+                app.state.suggestion_tasks.pop(request.document_id, None)
+                app.state.in_flight_suggestions.discard(request.document_id)
+                existing_task = None
+            if existing_task is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A split suggestion request is already in progress for this document.",
+                )
+            worker_task = asyncio.create_task(
+                asyncio.to_thread(suggest_split_boundaries, request.document_id, cfg),
+                name=f"suggest:{request.document_id}",
+            )
+            app.state.suggestion_tasks[request.document_id] = worker_task
+            app.state.in_flight_suggestions.add(request.document_id)
+
+        def finalize_suggestion_task(task: asyncio.Task[Any]) -> None:
+            try:
+                task.exception()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+            finally:
+                current_task = app.state.suggestion_tasks.get(request.document_id)
+                if current_task is task:
+                    app.state.suggestion_tasks.pop(request.document_id, None)
+                    app.state.in_flight_suggestions.discard(request.document_id)
+
+        worker_task.add_done_callback(finalize_suggestion_task)
+        try:
+            suggestion = await asyncio.wait_for(
+                asyncio.shield(worker_task),
+                timeout=SUGGEST_ROUTE_TIMEOUT_SECONDS,
+            )
+        except (SplitError, ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except TimeoutError as exc:
+            raise HTTPException(status_code=504, detail="Split suggestion timed out.") from exc
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail="Split suggestion failed unexpectedly.",
+            ) from exc
+        if isinstance(suggestion, SplitBoundarySuggestion):
+            payload = suggestion.model_dump(mode="json")
+        else:
+            try:
+                payload = SplitBoundarySuggestion.model_validate(suggestion).model_dump(mode="json")
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=500, detail="Split suggestion payload is invalid.") from exc
+        try:
+            snapshot = get_split_document_snapshot(cfg, request.document_id)
+        except (SplitError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if (
+            payload["source_sha256"] != snapshot.source_sha256
+            or payload["source_page_count"] != snapshot.page_count
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Split suggestion became stale because the source changed.",
+            )
+        return {"suggestion": payload}
 
     @app.post("/api/split/execute")
     async def execute(request: ExecuteRequest) -> dict[str, Any]:

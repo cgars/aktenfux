@@ -63,6 +63,10 @@ function fakeDocument() {
     "rotate",
     "toggle-boundary",
     "refresh-preview",
+    "suggest-boundaries",
+    "apply-suggestions",
+    "suggestion-status",
+    "suggestion-list",
   ];
   const nodes = Object.fromEntries(ids.map((id) => [id, new FakeNode()]));
   const listeners = new Map();
@@ -353,4 +357,320 @@ test("controller blocks duplicate execution and recovers through a fresh preview
   assert.equal(previewCalls, 1);
   assert.equal(controller.state.previewToken, "b".repeat(64));
   assert.equal(controller.state.confirmChecked, false);
+});
+
+test("suggestion rendering stays text-only and leaves candidates unselected", () => {
+  const rows = [];
+  const container = {
+    replaceChildren() {
+      rows.length = 0;
+    },
+    appendChild(child) {
+      rows.push(child);
+    },
+  };
+  const createElement = () => new FakeNode("div");
+  const suggestion = {
+    candidates: [
+      {
+        before_page: 4,
+        confidence: 0.92,
+        rationale: '<img src=x onerror="globalThis.pwned=true">',
+        evidence: [{ page: 4, cue: "From: Example Corp" }],
+      },
+    ],
+  };
+
+  workbench.renderSuggestionCandidates(container, suggestion, createElement);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].textContent.includes("Split before page 4"), true);
+  assert.equal(globalThis.pwned, undefined);
+});
+
+test("applying selected suggestions invalidates stale preview state", () => {
+  const state = executableState({
+    boundaries: [2],
+    suggestedBoundaries: [4, 6],
+    selectedSuggestionBoundaries: new Set([6]),
+  });
+
+  workbench.applySelectedSuggestions(state);
+
+  assert.deepEqual(state.boundaries, [2, 6]);
+  assert.equal(state.preview, null);
+  assert.equal(state.previewToken, null);
+  assert.equal(state.confirmChecked, false);
+});
+
+test("controller suggestion pending disables duplicate submit and renders warnings without candidates", async () => {
+  const doc = fakeDocument();
+  const documents = [{ id: "doc001", label: "First", page_count: 4, source_sha256: "a".repeat(64) }];
+  let resolveSuggest;
+  let suggestCalls = 0;
+  const fetchImpl = (url) => {
+    if (url === "/api/split/documents") {
+      return Promise.resolve(jsonResponse(true, documents));
+    }
+    if (url === "/api/split/suggest") {
+      suggestCalls += 1;
+      return new Promise((resolve) => { resolveSuggest = resolve; });
+    }
+    throw new Error(`unexpected request ${url}`);
+  };
+  const controller = workbench.startWorkbench(doc, fetchImpl);
+  await flushTasks();
+
+  doc.nodes["suggest-boundaries"].click();
+  assert.equal(doc.nodes["suggest-boundaries"].disabled, true);
+  doc.nodes["suggest-boundaries"].click();
+  assert.equal(suggestCalls, 1);
+  resolveSuggest(jsonResponse(true, {
+    suggestion: {
+      document_id: "doc001",
+      source_sha256: "a".repeat(64),
+      source_page_count: 4,
+      suggestion_provider: "ollama:test",
+      candidates: [],
+      warnings: ["Page 1 had no extractable text."],
+    },
+  }));
+  await flushTasks();
+
+  assert.equal(doc.nodes["suggestion-list"].children.length, 2);
+  assert.equal(doc.nodes["suggestion-list"].children[1].textContent.includes("Page 1 had no extractable text."), true);
+  assert.equal(controller.state.selectedSuggestionBoundaries.size, 0);
+});
+
+test("controller suggestion response is ignored after document switch", async () => {
+  const doc = fakeDocument();
+  const documents = [
+    { id: "doc001", label: "First", page_count: 4, source_sha256: "a".repeat(64) },
+    { id: "doc002", label: "Second", page_count: 3, source_sha256: "b".repeat(64) },
+  ];
+  let rejectSuggest;
+  const fetchImpl = (url, options = {}) => {
+    if (url === "/api/split/documents") return Promise.resolve(jsonResponse(true, documents));
+    if (url === "/api/split/suggest") {
+      return new Promise((resolve, reject) => {
+        options.signal.addEventListener("abort", () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+        rejectSuggest = reject;
+      });
+    }
+    throw new Error(`unexpected request ${url}`);
+  };
+  const controller = workbench.startWorkbench(doc, fetchImpl);
+  await flushTasks();
+
+  doc.nodes["suggest-boundaries"].click();
+  await flushTasks();
+  await controller.selectDocument("doc002");
+  await flushTasks();
+
+  assert.equal(controller.state.currentDocumentId, "doc002");
+  assert.equal(controller.state.suggestions, null);
+  assert.equal(controller.state.pendingSuggest, false);
+  assert.equal(rejectSuggest !== undefined, true);
+});
+
+test("controller clears suggestion identity after replacement request failure", async () => {
+  const doc = fakeDocument();
+  const documents = [{ id: "doc001", label: "First", page_count: 8, source_sha256: "a".repeat(64) }];
+  let suggestCalls = 0;
+  const fetchImpl = (url) => {
+    if (url === "/api/split/documents") return Promise.resolve(jsonResponse(true, documents));
+    if (url === "/api/split/suggest") {
+      suggestCalls += 1;
+      if (suggestCalls === 1) {
+        return Promise.resolve(jsonResponse(true, {
+          suggestion: {
+            document_id: "doc001",
+            source_sha256: "a".repeat(64),
+            source_page_count: 8,
+            suggestion_provider: "ollama:test",
+            candidates: [{ before_page: 4, confidence: 0.8, rationale: "first", evidence: [] }],
+            warnings: [],
+          },
+        }));
+      }
+      return Promise.resolve(jsonResponse(false, { detail: "Suggestion failed intentionally." }));
+    }
+    throw new Error(`unexpected request ${url}`);
+  };
+  const controller = workbench.startWorkbench(doc, fetchImpl);
+  await flushTasks();
+
+  doc.nodes["suggest-boundaries"].click();
+  await flushTasks();
+  assert.equal(controller.state.suggestionSourceSha256, "a".repeat(64));
+  assert.equal(controller.state.suggestionSourcePageCount, 8);
+  assert.equal(controller.state.suggestions !== null, true);
+  const firstCheckbox = doc.nodes["suggestion-list"].children[0].children[0];
+  firstCheckbox.checked = true;
+  firstCheckbox.listeners.get("change")();
+  assert.equal(controller.state.selectedSuggestionBoundaries.size, 1);
+
+  doc.nodes["suggest-boundaries"].click();
+  await flushTasks();
+
+  assert.equal(controller.state.suggestionSourceSha256, null);
+  assert.equal(controller.state.suggestionSourcePageCount, null);
+  assert.equal(controller.state.suggestions, null);
+  assert.equal(controller.state.suggestedBoundaries.length, 0);
+  assert.equal(controller.state.selectedSuggestionBoundaries.size, 0);
+  assert.equal(controller.state.pendingSuggest, false);
+  controller.state.currentPage = 2;
+  doc.nodes["toggle-boundary"].click();
+  assert.deepEqual(controller.state.boundaries, [2]);
+});
+
+test("controller applies only selected suggestions and triggers fresh preview", async () => {
+  const doc = fakeDocument();
+  const documents = [{ id: "doc001", label: "First", page_count: 8, source_sha256: "a".repeat(64) }];
+  let previewCalls = 0;
+  const fetchImpl = (url) => {
+    if (url === "/api/split/documents") return Promise.resolve(jsonResponse(true, documents));
+    if (url === "/api/split/suggest") {
+      return Promise.resolve(jsonResponse(true, {
+        suggestion: {
+          document_id: "doc001",
+          source_sha256: "a".repeat(64),
+          source_page_count: 8,
+          suggestion_provider: "ollama:test",
+          candidates: [
+            { before_page: 4, confidence: 0.8, rationale: "first", evidence: [] },
+            { before_page: 6, confidence: 0.7, rationale: "second", evidence: [] },
+          ],
+          warnings: [],
+        },
+      }));
+    }
+    if (url === "/api/split/preview") {
+      previewCalls += 1;
+      return Promise.resolve(jsonResponse(true, {
+        plan: { document_id: "doc001", parts: [] },
+        preview_token: "d".repeat(64),
+      }));
+    }
+    throw new Error(`unexpected request ${url}`);
+  };
+  const controller = workbench.startWorkbench(doc, fetchImpl);
+  await flushTasks();
+
+  doc.nodes["suggest-boundaries"].click();
+  await flushTasks();
+
+  const firstRow = doc.nodes["suggestion-list"].children[0];
+  const firstCheckbox = firstRow.children[0];
+  assert.equal(firstCheckbox.checked, false);
+  firstCheckbox.checked = true;
+  firstCheckbox.listeners.get("change")();
+  controller.state.preview = { old: true };
+  controller.state.previewToken = "e".repeat(64);
+  controller.state.confirmChecked = true;
+  doc.nodes["apply-suggestions"].click();
+  await flushTasks();
+  await flushTasks();
+
+  assert.deepEqual(controller.state.boundaries, [4]);
+  assert.equal(controller.state.previewToken, "d".repeat(64));
+  assert.equal(controller.state.confirmChecked, false);
+  assert.equal(previewCalls >= 1, true);
+});
+
+test("controller invalidates stale suggestion on same-id source change", async () => {
+  const doc = fakeDocument();
+  const initialDocuments = [{ id: "doc001", label: "First", page_count: 8, source_sha256: "a".repeat(64) }];
+  const changedDocuments = [{ id: "doc001", label: "First", page_count: 8, source_sha256: "b".repeat(64) }];
+  let listCalls = 0;
+  const fetchImpl = (url) => {
+    if (url === "/api/split/documents") {
+      listCalls += 1;
+      return Promise.resolve(jsonResponse(true, listCalls > 1 ? changedDocuments : initialDocuments));
+    }
+    if (url === "/api/split/suggest") {
+      return Promise.resolve(jsonResponse(true, {
+        suggestion: {
+          document_id: "doc001",
+          source_sha256: "a".repeat(64),
+          source_page_count: 8,
+          suggestion_provider: "ollama:test",
+          candidates: [
+            { before_page: 4, confidence: 0.8, rationale: "first", evidence: [] },
+          ],
+          warnings: [],
+        },
+      }));
+    }
+    throw new Error(`unexpected request ${url}`);
+  };
+  const controller = workbench.startWorkbench(doc, fetchImpl);
+  await flushTasks();
+
+  doc.nodes["suggest-boundaries"].click();
+  await flushTasks();
+  assert.equal(controller.state.suggestions !== null, true);
+  const firstRow = doc.nodes["suggestion-list"].children[0];
+  const firstCheckbox = firstRow.children[0];
+  firstCheckbox.checked = true;
+  firstCheckbox.listeners.get("change")();
+  doc.nodes["apply-suggestions"].click();
+  await flushTasks();
+
+  assert.equal(controller.state.suggestions, null);
+  assert.equal(doc.nodes["suggestion-status"].textContent.includes("stale"), true);
+});
+
+test("controller clears preview and suggestion after same-id source change post-preview", async () => {
+  const doc = fakeDocument();
+  const documentsV1 = [{ id: "doc001", label: "First", page_count: 8, source_sha256: "a".repeat(64) }];
+  const documentsV2 = [{ id: "doc001", label: "First", page_count: 8, source_sha256: "c".repeat(64) }];
+  let listCalls = 0;
+  const fetchImpl = (url) => {
+    if (url === "/api/split/documents") {
+      listCalls += 1;
+      return Promise.resolve(jsonResponse(true, listCalls >= 3 ? documentsV2 : documentsV1));
+    }
+    if (url === "/api/split/suggest") {
+      return Promise.resolve(jsonResponse(true, {
+        suggestion: {
+          document_id: "doc001",
+          source_sha256: "a".repeat(64),
+          source_page_count: 8,
+          suggestion_provider: "ollama:test",
+          candidates: [{ before_page: 4, confidence: 0.8, rationale: "first", evidence: [] }],
+          warnings: [],
+        },
+      }));
+    }
+    if (url === "/api/split/preview") {
+      return Promise.resolve(jsonResponse(true, {
+        plan: { document_id: "doc001", parts: [] },
+        preview_token: "f".repeat(64),
+      }));
+    }
+    throw new Error(`unexpected request ${url}`);
+  };
+  const controller = workbench.startWorkbench(doc, fetchImpl);
+  await flushTasks();
+
+  doc.nodes["suggest-boundaries"].click();
+  await flushTasks();
+  const firstCheckbox = doc.nodes["suggestion-list"].children[0].children[0];
+  firstCheckbox.checked = true;
+  firstCheckbox.listeners.get("change")();
+  doc.nodes["apply-suggestions"].click();
+  await flushTasks();
+  await flushTasks();
+  assert.equal(controller.state.previewToken, "f".repeat(64));
+
+  await controller.loadDocuments();
+
+  assert.equal(controller.state.preview, null);
+  assert.equal(controller.state.previewToken, null);
+  assert.equal(controller.state.suggestions, null);
 });

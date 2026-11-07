@@ -94,6 +94,9 @@ afu status
 
 # Open the loopback-only split workbench for documents already in _Split
 afu workbench
+
+# Ask for advisory page-level split boundary suggestions for one _Split document
+afu split-suggest <id>
 ```
 
 For a true synthetic end-to-end UAT, install the development extras and create
@@ -178,6 +181,7 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 | `afu review` | List documents awaiting approval |
 | `afu approve <id>` | Archive an approved document, or stage it directly in `_Split` when split detection is recommended |
 | `afu split <id> --before N [--before M ...]` | Preview and, after explicit confirmation, split one staged `_Split` PDF into `_Inbox` part PDFs |
+| `afu split-suggest <id>` | Read-only advisory suggestion of likely “split before page N” boundaries for one staged `_Split` PDF |
 | `afu workbench` | Start the loopback-only browser workbench for previewing and explicitly confirming `_Split` operations |
 | `afu approve --all` | Archive/stage all documents currently in `_Review` |
 | `afu reject <id>` | Move a document to `_Error` |
@@ -196,9 +200,11 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 - Current normal scans can silently overwrite existing same-stem inbox `.json` and optional `.md` siblings before move collision handling. Keep the inbox free of sibling artifacts and retain backups until fixed.
 - Approval stages a probable multi-document PDF and sidecar directly in `_Split`, regardless of its preserved suggested archive folder, so the pair is immediately eligible for the split CLI and workbench.
 - `afu split` requires `_Split` and `_Inbox` to be distinct, direct, non-link children of `base_dir`; validates that the selected PDF and sidecar are direct regular files in `_Split`; and rejects a PDF whose SHA-256 no longer matches its authoritative sidecar. It shows exact page ranges and destination filenames and requires explicit confirmation unless `--yes` is used.
+- `afu split-suggest` is read-only: it validates the same `_Split` source snapshot, extracts bounded page-level evidence, asks the configured inference provider for advisory candidates, and returns bounded typed suggestions plus warnings. It never writes files, sidecars, or index state, and suggestions remain untrusted and unselected by default.
 - Split execution preserves the original PDF/sidecar in `_Split`, writes per-part hashes to sidecar provenance first, stages outputs in `_Inbox/.split-staging/<operation-id>/`, then publishes to `_Inbox` with a durable batch journal and exclusive no-overwrite creation. Publication uses an atomic hard link when supported and a tested exclusive fallback otherwise. The inbox scanner skips every part named by an active journal until the complete batch is published; completed staging copies and journal data are removed.
 - Completed split operations are not allowed to republish missing `_Inbox` outputs; if outputs were already consumed, Aktenfux fails safely instead of creating duplicates.
 - `afu workbench` binds only to `localhost`, `127.0.0.1`, or `::1`. Its mutating API requires a per-process page token, an exact same-origin browser request when an Origin header is present, the exact latest server-held preview with its one-time token, and literal `true` confirmation. Host validation, a 128 KiB streaming request limit, strict identifiers, and fail-closed in-flight cleanup protect the local adapter; this is a single-user local boundary, not remote authentication.
+- Workbench suggestions are explicit and advisory: opening/selecting a document does not trigger inference; the user must click **Suggest boundaries**. Suggested candidates are displayed separately from manual boundaries and are not preselected. Applying selected suggestions only updates in-memory boundary state, clears stale preview/confirmation, and requires a fresh exact preview and explicit confirmation before execution.
 - The workbench renders untrusted filenames and errors as text, serves no CDN assets, and applies a restrictive Content Security Policy. Each Aktenfux page selection requests an in-memory, one-page PDF preview under a distinct URL, so the native browser viewer cannot navigate to a different source page or drift away from the displayed split position. Native rendering details can still vary by browser; navigation, zoom, rotation, boundary semantics, confirmation reset, and hostile display values have behavior tests in the canonical harness.
 - See the [architecture](docs/architecture.md) and [threat model](docs/threat-model.md) for current gaps and release gates.
 - Target behavior permanently archives documents **only after you approve them**; current lifecycle-root aliasing and model-derived path escape gaps can bypass this guarantee.
@@ -234,8 +240,8 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 | `review.py` | List and display `_Review` documents |
 | `main.py` | Core processing pipeline |
 | `split.py` | Typed split inspection, planning, execution, provenance, and recovery services shared by CLI and workbench |
-| `workbench.py` | Loopback-only FastAPI adapter with bounded requests, Host/origin/CSRF controls, and exact-plan execution |
-| `workbench.js` | Dependency-free browser controller for PDF navigation, boundary preview, confirmation, and safe rendering |
+| `workbench.py` | Loopback-only FastAPI adapter with bounded requests, Host/origin/CSRF controls, advisory suggestion endpoint, and exact-plan execution |
+| `workbench.js` | Dependency-free browser controller for PDF navigation, boundary suggestion/apply workflow, preview, confirmation, and safe rendering |
 | `cli.py` | Typer-based CLI (`afu`) |
 
 ---

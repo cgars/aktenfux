@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, field_validator, model_validator
 
 
 # Maximum characters for the auto-filled short description / summary_short.
@@ -413,6 +413,105 @@ class SplitResult(BaseModel):
     boundaries: list[int] = Field(min_length=1)
     outputs: list[SplitPartResult] = Field(min_length=2)
     completed_at_utc: str = Field(min_length=20, max_length=40)
+
+
+class SplitBoundaryEvidence(BaseModel):
+    """Bounded page-level cue explaining a suggested split boundary."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    page: StrictInt = Field(ge=1, le=5000)
+    cue: str = Field(min_length=1, max_length=240)
+
+    @field_validator("cue")
+    @classmethod
+    def validate_cue(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("cue must not be blank.")
+        return value
+
+
+class SplitBoundaryCandidate(BaseModel):
+    """One advisory proposal to split before a page."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    before_page: StrictInt = Field(ge=2, le=5000)
+    confidence: StrictFloat = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    rationale: str = Field(min_length=1, max_length=240)
+    evidence: list[SplitBoundaryEvidence] = Field(default_factory=list, max_length=8)
+
+    @field_validator("rationale")
+    @classmethod
+    def validate_rationale(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("rationale must not be blank.")
+        return value
+
+
+class SplitBoundarySuggestion(BaseModel):
+    """Read-only boundary suggestions bound to one exact source snapshot."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    document_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    source_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    source_page_count: StrictInt = Field(ge=1, le=5000)
+    suggestion_provider: str = Field(min_length=1, max_length=120)
+    candidates: list[SplitBoundaryCandidate] = Field(default_factory=list, max_length=64)
+    warnings: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("suggestion_provider")
+    @classmethod
+    def validate_suggestion_provider(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("suggestion_provider must not be blank.")
+        return value
+
+    @field_validator("warnings")
+    @classmethod
+    def validate_warnings(cls, value: list[str]) -> list[str]:
+        for warning in value:
+            if not warning.strip() or len(warning) > 240:
+                raise ValueError("warnings must contain non-empty bounded strings.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_candidates(self) -> "SplitBoundarySuggestion":
+        boundaries = [candidate.before_page for candidate in self.candidates]
+        if any(boundary > self.source_page_count for boundary in boundaries):
+            raise ValueError("candidate boundaries must be within source_page_count.")
+        if boundaries != sorted(boundaries) or len(set(boundaries)) != len(boundaries):
+            raise ValueError("candidate boundaries must be sorted and unique.")
+        for candidate in self.candidates:
+            for evidence in candidate.evidence:
+                if evidence.page > self.source_page_count:
+                    raise ValueError("evidence page must be within source_page_count.")
+        return self
+
+
+class SplitBoundaryProviderResponse(BaseModel):
+    """Strict provider payload before source-bound wrapping."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    candidates: list[SplitBoundaryCandidate] = Field(default_factory=list, max_length=64)
+    warnings: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("warnings")
+    @classmethod
+    def validate_warnings(cls, value: list[str]) -> list[str]:
+        for warning in value:
+            if not warning.strip() or len(warning) > 240:
+                raise ValueError("warnings must contain non-empty bounded strings.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_candidates(self) -> "SplitBoundaryProviderResponse":
+        boundaries = [candidate.before_page for candidate in self.candidates]
+        if boundaries != sorted(boundaries) or len(set(boundaries)) != len(boundaries):
+            raise ValueError("candidate boundaries must be sorted and unique.")
+        return self
 
 
 class SidecarDocument(BaseModel):

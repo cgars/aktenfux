@@ -11,7 +11,7 @@ from aktenfux.filenames import make_suggested_filename, make_suggested_folder, r
 from aktenfux.llm import analyze_document
 from aktenfux.pdf_metadata import write_pdf_metadata
 from aktenfux.pdf_text import extract_text, has_usable_text, is_ignored_file, truncate_text
-from aktenfux.schema import SidecarDocument, SplitPlan, SplitResult
+from aktenfux.schema import SidecarDocument, SplitBoundarySuggestion, SplitPlan, SplitResult
 from aktenfux.storage import (
     assert_within_base,
     move_file_with_sidecar,
@@ -414,3 +414,10 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
     from aktenfux.split import execute_split as _execute_split  # noqa: PLC0415
 
     return _execute_split(plan, config)
+
+
+def suggest_split_boundaries(document_id: str, config: AktenfuxConfig) -> SplitBoundarySuggestion:
+    """Suggest advisory split boundaries for one _Split document."""
+    from aktenfux.split import suggest_split_boundaries as _suggest_split_boundaries  # noqa: PLC0415
+
+    return _suggest_split_boundaries(document_id, config)
