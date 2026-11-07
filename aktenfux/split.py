@@ -423,6 +423,11 @@ def _build_split_suggestion_request_payload(
             "return_json_only": True,
             "max_candidates": 64,
             "max_evidence_items_per_candidate": 8,
+            "boundary_semantics": (
+                "before_page is the first physical PDF page of the new logical document; "
+                "if the previous document ends on page 3 and the new document starts on page 4, "
+                "return before_page 4, never 3"
+            ),
         },
     }
 

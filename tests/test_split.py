@@ -294,6 +294,38 @@ def test_suggest_split_boundaries_accepts_strict_sorted_candidates(tmp_path):
     assert "Page 6 has little extractable text." in result.warnings
 
 
+def test_suggest_split_boundaries_sends_exact_before_page_semantics(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestsemantics01", pages=6)
+    captured_instructions = {}
+
+    def provider(prompt, config):
+        captured_instructions.update(prompt["instructions"])
+        return {
+            "candidates": [
+                {
+                    "before_page": 4,
+                    "confidence": 0.99,
+                    "rationale": "The invoice ends on page 3 and the contract starts on page 4.",
+                    "evidence": [
+                        {"page": 3, "cue": "ENDE DER RECHNUNG"},
+                        {"page": 4, "cue": "MIETVERTRAG LASTENRAD"},
+                    ],
+                }
+            ],
+            "warnings": [],
+        }
+
+    result = suggest_split_boundaries("docsuggestsemantics01", cfg, provider=provider)
+
+    semantics = captured_instructions["boundary_semantics"]
+    assert "first physical PDF page of the new logical document" in semantics
+    assert "previous document ends on page 3" in semantics
+    assert "new document starts on page 4" in semantics
+    assert "return before_page 4, never 3" in semantics
+    assert result.candidates[0].before_page == 4
+
+
 def test_suggest_split_boundaries_rejects_unsorted_provider_candidates(tmp_path):
     cfg = make_config(tmp_path)
     write_split_doc(cfg.split_path, "bundle.pdf", "docsuggest00000001b", pages=6)
