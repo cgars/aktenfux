@@ -504,6 +504,8 @@
       state.suggestions = null;
       state.suggestedBoundaries = [];
       state.selectedSuggestionBoundaries = new Set();
+      state.suggestionSourceSha256 = null;
+      state.suggestionSourcePageCount = null;
       setSuggestionStatus("Suggestion pending…");
       updateViewerUi();
       try {
@@ -550,6 +552,8 @@
         state.suggestions = null;
         state.suggestedBoundaries = [];
         state.selectedSuggestionBoundaries = new Set();
+        state.suggestionSourceSha256 = null;
+        state.suggestionSourcePageCount = null;
         setSuggestionStatus(error?.message || "Suggestion failed.", "error");
         setText(elements.suggestionList, "Suggestion failed. Continue with manual boundaries.");
       } finally {

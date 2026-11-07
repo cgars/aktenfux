@@ -11,6 +11,7 @@ from aktenfux.schema import (
     SplitBoundaryEvidence,
     SplitBoundarySuggestion,
 )
+from aktenfux.split import SplitError
 from aktenfux.storage import read_sidecar
 from tests.split_helpers import make_config, write_split_doc
 
@@ -154,3 +155,22 @@ def test_split_suggest_sanitizes_untrusted_terminal_text(tmp_path):
     assert "[bold]line1[/bold]" in result.output
     assert "line2 with-tab�" in result.output
     assert "warn[/yellow] second-line" in result.output
+
+
+def test_split_suggest_sanitizes_untrusted_exception_text(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "suggest.pdf", "docsplitcli000007", pages=6)
+    hostile = "[bold]spoofed[/bold]\x1b[31mred\x1b[0m\tline\nnext\rreturn\x1b]8;;http://evil\x07link\x1b]8;;\x07\x00"
+
+    with (
+        patch("aktenfux.cli._load_config", return_value=cfg),
+        patch("aktenfux.main.suggest_split_boundaries", side_effect=SplitError(hostile)),
+    ):
+        result = runner.invoke(app, ["split-suggest", "docsplitcli000007"])
+
+    assert result.exit_code == 1
+    assert "Error: [bold]spoofed[/bold]red line next return" in result.output
+    assert "\x1b" not in result.output
+    assert "\x07" not in result.output
+    assert "\t" not in result.output
+    assert "\r" not in result.output

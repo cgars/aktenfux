@@ -428,7 +428,11 @@ def split_suggest(
     try:
         suggestion = suggest_split_boundaries(doc_id, cfg)
     except (FileNotFoundError, ValueError, SplitError) as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
+        err_console.print(
+            f"Error: {_safe_terminal_text(exc)}",
+            markup=False,
+            highlight=False,
+        )
         raise typer.Exit(1) from exc
 
     console.print(f"[bold]Split suggestions for {_safe_terminal_text(suggestion.document_id)}[/bold]")

@@ -477,6 +477,57 @@ test("controller suggestion response is ignored after document switch", async ()
   assert.equal(rejectSuggest !== undefined, true);
 });
 
+test("controller clears suggestion identity after replacement request failure", async () => {
+  const doc = fakeDocument();
+  const documents = [{ id: "doc001", label: "First", page_count: 8, source_sha256: "a".repeat(64) }];
+  let suggestCalls = 0;
+  const fetchImpl = (url) => {
+    if (url === "/api/split/documents") return Promise.resolve(jsonResponse(true, documents));
+    if (url === "/api/split/suggest") {
+      suggestCalls += 1;
+      if (suggestCalls === 1) {
+        return Promise.resolve(jsonResponse(true, {
+          suggestion: {
+            document_id: "doc001",
+            source_sha256: "a".repeat(64),
+            source_page_count: 8,
+            suggestion_provider: "ollama:test",
+            candidates: [{ before_page: 4, confidence: 0.8, rationale: "first", evidence: [] }],
+            warnings: [],
+          },
+        }));
+      }
+      return Promise.resolve(jsonResponse(false, { detail: "Suggestion failed intentionally." }));
+    }
+    throw new Error(`unexpected request ${url}`);
+  };
+  const controller = workbench.startWorkbench(doc, fetchImpl);
+  await flushTasks();
+
+  doc.nodes["suggest-boundaries"].click();
+  await flushTasks();
+  assert.equal(controller.state.suggestionSourceSha256, "a".repeat(64));
+  assert.equal(controller.state.suggestionSourcePageCount, 8);
+  assert.equal(controller.state.suggestions !== null, true);
+  const firstCheckbox = doc.nodes["suggestion-list"].children[0].children[0];
+  firstCheckbox.checked = true;
+  firstCheckbox.listeners.get("change")();
+  assert.equal(controller.state.selectedSuggestionBoundaries.size, 1);
+
+  doc.nodes["suggest-boundaries"].click();
+  await flushTasks();
+
+  assert.equal(controller.state.suggestionSourceSha256, null);
+  assert.equal(controller.state.suggestionSourcePageCount, null);
+  assert.equal(controller.state.suggestions, null);
+  assert.equal(controller.state.suggestedBoundaries.length, 0);
+  assert.equal(controller.state.selectedSuggestionBoundaries.size, 0);
+  assert.equal(controller.state.pendingSuggest, false);
+  controller.state.currentPage = 2;
+  doc.nodes["toggle-boundary"].click();
+  assert.deepEqual(controller.state.boundaries, [2]);
+});
+
 test("controller applies only selected suggestions and triggers fresh preview", async () => {
   const doc = fakeDocument();
   const documents = [{ id: "doc001", label: "First", page_count: 8, source_sha256: "a".repeat(64) }];
