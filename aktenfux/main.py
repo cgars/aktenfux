@@ -273,15 +273,17 @@ def _move_to_error(pdf: Path, config: AktenfuxConfig, reason: str = "") -> None:
     logger.info("Moved %s to _Error: %s", pdf.name, reason)
 
 
-def _approval_target_root(sidecar: SidecarDocument, config: AktenfuxConfig) -> Path:
-    """Return the root folder for an approved document.
+def _approval_target_dir(sidecar: SidecarDocument, config: AktenfuxConfig) -> Path:
+    """Return the destination directory for an approved document.
 
-    Documents with a positive split recommendation are staged in _Split instead
-    of Archive so they can be split before final archival.
+    Documents with a positive split recommendation are staged directly in
+    _Split so the split service and workbench can enforce their direct-child
+    boundary. The untrusted suggested archive folder remains recorded in the
+    authoritative sidecar as metadata rather than controlling this move.
     """
     if sidecar.document_integrity.recommended_action == "run_split_detection":
         return config.split_path
-    return config.archive_path
+    return config.archive_path / sidecar.suggested_folder
 
 
 def approve_document(doc_id: str, config: AktenfuxConfig) -> None:
@@ -295,7 +297,7 @@ def approve_document(doc_id: str, config: AktenfuxConfig) -> None:
 
     pdf_path, sidecar = result
 
-    target_dir = _approval_target_root(sidecar, config) / sidecar.suggested_folder
+    target_dir = _approval_target_dir(sidecar, config)
     target_pdf = resolve_collision(target_dir / sidecar.suggested_filename)
     assert_within_base(target_pdf, config.base_dir)
 

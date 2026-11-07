@@ -79,7 +79,11 @@ def init(
         None,
         "--target",
         "-t",
-        help="Directory in which to create config.yaml (defaults to current directory).",
+        help=(
+            "Workspace directory in which to create config.yaml and working folders. "
+            "Without this option, config.yaml is created in the current directory "
+            "with the documented default base_dir."
+        ),
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -87,10 +91,14 @@ def init(
     _setup_logging(verbose)
     from aktenfux.config import init_config, load_config  # noqa: PLC0415
 
-    target_dir = target or Path.cwd()
-    config_file = init_config(target_dir)
+    target_dir = (target or Path.cwd()).resolve()
+    config_existed = (target_dir / "config.yaml").exists()
+    config_file = init_config(
+        target_dir,
+        base_dir=target_dir if target is not None else None,
+    )
 
-    if config_file.stat().st_size > 0 and config_file.exists():
+    if config_existed:
         console.print(f"[green]✓[/green] Config file ready: {config_file}")
     else:
         console.print(f"[green]✓[/green] Config created: {config_file}")
@@ -387,6 +395,30 @@ def split(
             f"  • _Inbox/{output.filename} "
             f"(pages {output.start_page}-{output.end_page}, sha256={output.sha256})"
         )
+
+
+@app.command()
+def workbench(
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Loopback host used by the local split workbench."),
+    port: int = typer.Option(8000, "--port", help="Loopback port used by the local split workbench."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Run the local split workbench on the loopback interface."""
+    _setup_logging(verbose)
+    from aktenfux.workbench import _validate_loopback_host, create_app  # noqa: PLC0415
+
+    try:
+        bind_host = _validate_loopback_host(host)
+    except ValueError as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    app_instance = create_app(_load_config(config_path, dry_run=None))
+    import uvicorn  # noqa: PLC0415
+
+    console.print(f"[green]Starting split workbench at http://{bind_host}:{port}[/green]")
+    uvicorn.run(app_instance, host=bind_host, port=port, log_level="warning")
 
 
 @app.command()

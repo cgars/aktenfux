@@ -1,7 +1,7 @@
 # Aktenfux architecture
 
 Status: maintained current-state and target-state baseline  
-Last reviewed: 2026-10-11
+Last reviewed: 2026-10-12
 
 Owner: project maintainers
 
@@ -52,16 +52,22 @@ the letter or its authoritative index card.
 ```mermaid
 flowchart TD
     U["Local user"] --> CLI["afu CLI"]
+    U --> UI["Loopback split workbench"]
     CLI --> CORE["Aktenfux processing core"]
+    UI --> SPLIT["Typed split services"]
+    CLI --> SPLIT
     CORE --> PDF["PDF parser libraries"]
+    SPLIT --> PDF
     CORE --> OLLAMA["Configured Ollama endpoint"]
     CORE --> STORE["Configured document paths — not fully confined"]
+    SPLIT --> STORE
     CORE --> DB[("Configured SQLite path — not fully confined")]
 ```
 
-The CLI is the interface currently present on `main`. A browser workbench exists
-separately as draft work and is not part of the current architecture. The
-configured Ollama URL defaults to loopback, but the implementation currently
+The CLI remains the broad interface. A focused browser workbench now exposes
+only validated split inspection, preview, and execution through the same typed
+split services as `afu split`; it is not a general review GUI. The configured
+Ollama URL defaults to loopback, but the implementation currently
 allows other URLs without an explicit remote-inference opt-in. Configured
 document and SQLite paths are also not fully confined to distinct workspace roots.
 
@@ -98,8 +104,10 @@ PDF is present, and either path can query the duplicate index after usable OCR;
 those operations can create or access the configured database. Only a successful
 analysis creates `_DryRun` and writes a model-named sidecar there. Those
 conditional state changes violate the target dry-run invariant. A likely
-multi-document scan is staged in `_Split` only after approval; the current
-pipeline does not silently split it. A dedicated `afu split` command now previews
+multi-document scan is staged as a direct PDF/sidecar pair in `_Split` only
+after approval; its suggested archive folder remains sidecar metadata and does
+not create a nested split location. The current pipeline does not silently split
+it. A dedicated `afu split` command now previews
 typed split plans and executes them only after explicit confirmation.
 
 ## Intended secure processing flow
@@ -141,6 +149,8 @@ artifacts, index rows, or lifecycle state.
 | `main.py` | Processing, approve, reject, and reprocess orchestration | Mixes application policy and I/O sequencing. |
 | `review.py` | Resolve and display review records | Sidecar data remains untrusted even when locally stored. |
 | `split.py` | Plan and execute explicit PDF splits with provenance, staging, and retry state | Publishes only deterministic direct-child `_Inbox` outputs; the scanner gates journal-listed parts until the batch is complete. |
+| `workbench.py` | Serve the local split adapter, static browser controller, and exact one-page PDF previews | Loopback bind validation, trusted Hosts, per-process CSRF token, exact same-origin writes, streaming request limit, strict DTOs, and exact-plan confirmation; page previews are generated in memory and do not mutate the source; no remote or multi-user deployment. |
+| `workbench.js` | Request the selected source page under a distinct URL and manage boundary preview/confirmation state | The native viewer receives only one source page, so its own navigation cannot diverge from the Aktenfux page; no CDN assets; untrusted values use text nodes; document or boundary changes invalidate the prior preview and confirmation. |
 | `cli.py` | User commands and terminal presentation | Bulk actions need explicit consequence handling. |
 
 ## Current command and artifact behavior
@@ -156,12 +166,12 @@ from being mistaken for the behavior of every command.
 | Command path | Current reads or external calls | Current writes or moves | Important current gap |
 |---|---|---|---|
 | `afu version` | Package version | Terminal output only | No document or external-system effect. |
-| `afu init` | Configuration template and any existing config | Config file and every configured working directory | Directory settings are used before pairwise root, traversal, link, or overlap validation. |
+| `afu init [--target DIRECTORY]` | Configuration template and any existing config | For a new explicit target: create the target, write `config.yaml` there with that absolute target as `base_dir`, then create every configured working directory below it. An existing config remains authoritative and is not rewritten. Without `--target`, the template keeps its documented default `base_dir`. | Directory settings are used before pairwise root, traversal, link, or overlap validation. |
 | `afu setup` | Configured paths; Ollama reachability; when reachable, model discovery. Discovery failure stops setup without a generation test; successful discovery continues to the generation test. | No Aktenfux document artifact; effects internal to the configured service are not observed by the CLI. | A successful setup check does not validate lifecycle-root safety or prove release readiness, and a non-loopback endpoint is contacted as configured. |
 | `afu scan --dry-run` | Before inbox inspection: Ollama reachability, then model discovery when reachable. Unreachable or failed discovery stops. An installed model continues; a missing model prompts. Decline stops. Acceptance streams a pull: failure or a stream without explicit success stops; explicit success is followed by re-listing, and only a verified installed model continues. With any PDF: optional SQLite initialization, then parsing. After usable OCR: hash, optional duplicate-index query, and inference. | A failed or incomplete pull may leave partial model state at Ollama. A verified pull persists the model even if the inbox is empty. Other stopped preflight paths do not request a model-store write. With any PDF and indexing enabled: SQLite directory/database/schema access. After successful analysis: `_DryRun` and model-named JSON. | Not mutation-free; untrusted names can escape `_DryRun` and overwrite another JSON file. Model acquisition still occurs before Aktenfux knows whether document work exists, and external partial pull state is not recoverably managed. |
 | `afu scan --no-dry-run` | Same Ollama preflight as scan dry-run, then inbox PDF, companions, parser, inference, and optional index when work exists | Possible confirmed Ollama model download; pre-move JSON/Markdown; PDF/companions to Review or Error; optional metadata/index | Pre-read confinement, sibling overwrite, destination alias, approval-bypass, and partial-transition gaps remain. Model preflight occurs before inbox inspection. |
 | `afu review` | Review directory entries and sidecars | Terminal output only by design | Untrusted sidecar values and validation failures can expose or spoof terminal content. |
-| `afu approve --no-dry-run` | Review PDF/sidecar and optional Markdown | Sequential move to Archive or Split, sidecar rewrite, optional metadata/index | Sidecar/model paths and companions are trusted too broadly; interruption can split the document unit. |
+| `afu approve --no-dry-run` | Review PDF/sidecar and optional Markdown | Sequential move to the suggested Archive folder, or directly into `_Split` for a positive split recommendation; sidecar rewrite; optional metadata/index | Sidecar/model paths and companions are trusted too broadly; interruption can split the document unit. The suggested archive folder remains sidecar metadata while the document awaits splitting. |
 | `afu reject --no-dry-run` and non-dry-run scan error handling | Review or inbox PDF/sidecar | Error directory creation; PDF and JSON move to Error; sidecar rewrite for explicit rejection | With Markdown output enabled, the sensitive `.md` companion is deterministically left behind; transitions are sequential. |
 | `afu status` | Lifecycle paths and existing optional SQLite index | Terminal output only by design | Configured roots/index identity are not validated before access; untrusted paths reach terminal output. |
 | `afu reprocess --dry-run` | Ollama reachability, then Review directory/sidecar lookup and PDF parsing. After usable OCR: hash, optional duplicate-index query, and inference. | With usable OCR and indexing enabled: possible SQLite directory/database access. On early no-OCR or inference failure: no JSON. After successful analysis: `_DryRun` and model-named JSON. | Same successful-analysis escape/overwrite and mutation hazards as scan dry-run. The CLI cannot currently return an observed-effect receipt, so it must describe these as possible rather than completed effects. |
@@ -170,6 +180,9 @@ from being mistaken for the behavior of every command.
 | `afu reject --dry-run` | Review PDF/sidecar and destination existence checks | Terminal/log proposal only; the current implementation returns before creating `_Error` | Still depends on untrusted sidecars; regression coverage must prove the destination directory and artifacts remain absent. |
 | `afu split --dry-run` | Validate `_Split` as a direct non-link `base_dir` child; read its PDF + sidecar by document ID; compare the opened PDF SHA-256 with the authoritative sidecar; read page count and normalize boundaries | Terminal preview only | No split outputs or provenance writes are allowed in dry-run. |
 | `afu split --no-dry-run` | Validate distinct `_Split`/`_Inbox` roots before access, then perform the split dry-run reads plus source-identity revalidation from a single-open snapshot | Split-provenance sidecar updates, staged part generation under `_Inbox/.split-staging/<operation-id>/`, then exclusive no-overwrite publish into `_Inbox` behind a durable batch journal. Hard-link publication is atomic where supported; a tested exclusive fallback supports filesystems without hard links. The inbox scanner skips journal-listed parts while publication is active; successful completion removes staged PDFs and the journal. | Direct-root constraints require `_Split` and `_Inbox` to be distinct direct children; cross-directory split batching remains out of scope. Completed operations refuse republish of missing consumed outputs to avoid duplicate downstream processing. On a hard-link-less filesystem, abrupt termination during the fallback's individual file write can leave an unpublished partial destination that fails closed and requires reconciliation. |
+| `afu workbench` read paths | Bind to an explicitly validated loopback address; serve the local page/controller; validate `_Split`; list typed document summaries; serve an exact validated PDF or an in-memory one-page preview for the selected source page | HTTP responses and terminal startup message only; one-page preview bytes are not persisted | The native PDF renderer can vary by browser, but it receives only the Aktenfux-selected source page and therefore cannot create an independent document-page state; this is a single-user local boundary and not an authenticated remote service. |
+| `afu workbench` preview | Validate Host, per-process CSRF token, same Origin/Host/port when Origin is present, streaming body size, strict document ID and boundary list; call `plan_split` | Ephemeral in-memory latest-preview state with a new one-time token | Restarting the process discards previews; even an identical replacement preview invalidates the prior token, and changing a document/boundary or any execution failure requires a fresh preview and confirmation. |
+| `afu workbench` execute | Repeat the adapter checks; require literal confirmation, exact preview token and complete plan; revalidate the source and prior operation state | Same recoverable `_Split` sidecar, `_Inbox` staging/journal, and output effects as `afu split --no-dry-run`; ephemeral in-flight/completion state | Cancellation and all exceptions clear in-flight state and invalidate the matching preview. The API is unsupported beyond loopback and provides no user accounts. |
 
 ## Current implementation gap inventory
 
@@ -222,23 +235,27 @@ manual recovery even though no unique business state should live there.
 | Config → network endpoint | Operator configuration chooses data destination | Local-only by default; remote transfer requires explicit informed opt-in. |
 | Sidecar → review decision | Generated or edited data influences the user | Show origin, evidence, confidence, warnings, and conflicts. |
 | CLI/UI/MCP → application command | An interface requests state change | Centralize policy; preview and confirm consequential writes. |
+| Browser page → local workbench API | A local web origin requests PDF reads or split writes | Trusted loopback Host; per-process CSRF token; exact Origin/Host/port match for browser writes; bounded typed requests; CSP and text-only untrusted rendering. |
 | Workspace → sync/backup/export | Sensitive artifacts leave process control | Document confidentiality, race, retention, and recovery assumptions. |
 
-## Application service boundary — planned
+## Application service boundary
 
 <!-- diagram: target-components -->
 ```mermaid
 flowchart TD
     CLI["CLI"] --> APP["Application services"]
-    UI["Review workbench — planned"] --> APP
+    UI["Split workbench"] --> SPLIT["Typed split services"]
+    REVIEW["Broader review UI — planned"] --> APP
     MCP["MCP adapter — planned"] --> APP
+    CLI --> SPLIT
     APP --> DOC["Document and evidence pipeline"]
     APP --> COMMANDS["Review and archive commands"]
+    SPLIT --> STORE["PDFs and sidecars"]
     DOC --> INF["Inference provider interface"]
     INF --> OLLAMA["Ollama default"]
     INF --> LOCAL["Other explicitly configured local provider"]
-    DOC --> STORE["PDFs, sidecars and derived index"]
-    COMMANDS --> STORE
+    DOC --> DATA["PDFs, sidecars and derived index"]
+    COMMANDS --> DATA
 ```
 
 The application layer owns use cases such as scan, inspect, approve, reject,
@@ -305,7 +322,8 @@ The following architecture invariants apply:
 6. Implement and test SQLite rebuild before calling the index recoverable.
 7. Introduce provider-neutral inference while retaining the local-only default.
 8. Add page-level evidence and hierarchical long-document processing.
-9. Connect the review workbench through application services.
+9. Expand the focused split workbench into broader review capabilities only
+   through application services and a separate write-capability review.
 10. Add MCP read tools, then separately review any proposed write tools.
 11. Introduce canonical timezone-aware UTC lifecycle timestamps and migrate or
     explicitly mark legacy naive sidecar values without guessing their offset.
@@ -351,7 +369,8 @@ advisories.
 ## Change-verification harness
 
 `scripts/verify.py` is the canonical cross-platform pre-push and CI entry point.
-It runs the full Python tests, compiles Python sources, invokes repository checks,
+It runs the full Python tests, compiles Python sources, checks the workbench
+JavaScript syntax, runs dependency-free Node behavior tests, invokes repository checks,
 and checks unstaged, staged, and committed branch diffs for whitespace errors.
 `scripts/check_repository.py` validates inline and reference-style relative
 Markdown links, table column counts with optional edge pipes, named Mermaid
@@ -370,12 +389,17 @@ and lifecycle directories inside pytest-managed temporary roots. They do not
 contact the user's configured Ollama endpoint or access the user's configured
 lifecycle directories.
 
-`.github/workflows/verification.yml` runs the same command for every pull
-request and push to `main`. Its checkout and Python setup actions are pinned to
-immutable reviewed commits; the newly introduced setup action is the commit
-published as `actions/setup-python` v5.6.0. Python dependencies are still
-resolved from the project's open version ranges, so this improves repeatability
-of the checks but does not provide a reproducible or offline dependency
-installation. The preceding CI installation step downloads packages and writes
-only to the ephemeral runner environment; no dependency cache is configured.
+.github/workflows/verification.yml` runs the same command for every pull
+request and push to `main`. Its checkout, Python, and Node setup actions are
+pinned to immutable reviewed commits. FastAPI and Uvicorn use reviewed minor
+ranges, and the repository check rejects removing their upper bounds. Other
+Python dependencies are still resolved from open version ranges, so the project
+does not yet provide a completely reproducible or offline installation. The CI
+installation step downloads packages and writes only to the ephemeral runner
+environment; no dependency cache is configured. `httpx2` is test-only and
+bounded to the reviewed Starlette TestClient-compatible minor series.
+`reportlab` is development-only, bounded to its current major version, and is
+used solely by the explicitly invoked synthetic E2E-UAT fixture generator; no
+Aktenfux runtime command imports it. Its transitive graph remains part of the
+unlocked development and CI supply chain.
 Actual Mermaid rendering remains in the separately gated architecture workflow.

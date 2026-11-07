@@ -7,6 +7,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable
@@ -54,6 +55,7 @@ RUNTIME_ROOTS = {
     "_DryRun",
     "Archive",
 }
+SECURITY_SENSITIVE_RUNTIME_DEPENDENCIES = frozenset({"fastapi", "uvicorn"})
 
 
 @dataclass(frozen=True)
@@ -456,6 +458,31 @@ def check_named_diagrams(sources: list[Path] | None = None) -> list[str]:
     )
 
 
+def check_bounded_runtime_dependencies(
+    pyproject_path: Path | None = None,
+) -> list[str]:
+    """Require deliberate lower and upper bounds for local-server dependencies."""
+    path = pyproject_path or REPO_ROOT / "pyproject.toml"
+    payload = tomllib.loads(path.read_text(encoding="utf-8"))
+    dependencies = payload.get("project", {}).get("dependencies", [])
+    errors: list[str] = []
+    found: set[str] = set()
+    for dependency in dependencies:
+        normalized = dependency.replace(" ", "")
+        name = re.split(r"[<>=!~;\[]", normalized, maxsplit=1)[0].lower()
+        if name not in SECURITY_SENSITIVE_RUNTIME_DEPENDENCIES:
+            continue
+        found.add(name)
+        if ">=" not in normalized or "<" not in normalized:
+            errors.append(
+                f"{path.name}: security-sensitive dependency {name!r} "
+                "must have reviewed lower and upper bounds"
+            )
+    for missing in sorted(SECURITY_SENSITIVE_RUNTIME_DEPENDENCIES - found):
+        errors.append(f"{path.name}: required runtime dependency {missing!r} is missing")
+    return errors
+
+
 def main() -> int:
     repository_paths = _repository_paths()
     paths = markdown_files(REPO_ROOT, repository_paths)
@@ -468,6 +495,7 @@ def main() -> int:
         *check_markdown_links(paths),
         *check_markdown_tables(paths),
         *check_named_diagrams(),
+        *check_bounded_runtime_dependencies(),
     ]
     if errors:
         for error in errors:

@@ -5,13 +5,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from fastapi.testclient import TestClient
+from pypdf import PdfWriter
 from typer.testing import CliRunner
 
 from aktenfux.cli import app
 from aktenfux.config import AktenfuxConfig
 from aktenfux.main import approve_document
-from aktenfux.storage import read_sidecar
 from aktenfux.schema import SidecarDocument
+from aktenfux.storage import read_sidecar, sha256_file
+from aktenfux.workbench import create_app
 
 runner = CliRunner()
 
@@ -137,6 +140,51 @@ class TestApproveAll:
         assert moved_sidecar is not None
         assert moved_sidecar.status == "approved"
         assert moved_sidecar.current_path == str(split_pdf)
+
+    def test_approved_nested_archive_suggestion_is_visible_to_workbench(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg.review_path.mkdir(parents=True)
+        source_pdf = cfg.review_path / "energy-bundle.pdf"
+        writer = PdfWriter()
+        for _ in range(6):
+            writer.add_blank_page(width=595, height=842)
+        with source_pdf.open("wb") as stream:
+            writer.write(stream)
+        sidecar = SidecarDocument(
+            id="splitnested00001",
+            original_path=str(source_pdf),
+            current_path=str(source_pdf),
+            sha256=sha256_file(source_pdf),
+            suggested_folder="Invoices/Nordlicht-Energie",
+            suggested_filename="2026-10-15_Nordlicht-Energie_Rechnung.pdf",
+            status="review",
+            document_integrity={
+                "possible_multi_document_scan": True,
+                "suspected_document_count": 2,
+                "confidence": 0.97,
+                "reason": "Two unrelated documents are present.",
+                "recommended_action": "run_split_detection",
+            },
+        )
+        source_pdf.with_suffix(".json").write_text(
+            sidecar.model_dump_json(indent=2), encoding="utf-8"
+        )
+
+        approve_document(sidecar.id, cfg)
+
+        staged_pdf = cfg.split_path / sidecar.suggested_filename
+        assert staged_pdf.is_file()
+        assert not (cfg.split_path / sidecar.suggested_folder).exists()
+        staged_sidecar = read_sidecar(staged_pdf)
+        assert staged_sidecar is not None
+        assert staged_sidecar.current_path == str(staged_pdf)
+        assert staged_sidecar.suggested_folder == sidecar.suggested_folder
+        with TestClient(
+            create_app(cfg), base_url="http://127.0.0.1:8000"
+        ) as client:
+            response = client.get("/api/split/documents")
+            assert response.status_code == 200, response.text
+            assert [document["id"] for document in response.json()] == [sidecar.id]
 
     def test_empty_review_prints_message(self, tmp_path):
         cfg = _make_config(tmp_path)

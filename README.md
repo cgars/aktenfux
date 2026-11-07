@@ -55,6 +55,11 @@ pip install -e .
 # Create config.yaml and working folders
 afu init
 
+# Or initialise a self-contained workspace at an explicit location. The target
+# is created if needed; config.yaml uses it as base_dir and folders are created
+# below it.
+afu init --target /path/to/Aktenfux
+
 # Edit config.yaml if needed (e.g. adjust base_dir).
 # Keep ollama_url on loopback; other endpoints receive OCR text and summaries.
 # dry_run is ON by default, but current scan and reprocess dry-run still write
@@ -86,7 +91,25 @@ afu reject <id>
 
 # Show folder counts
 afu status
+
+# Open the loopback-only split workbench for documents already in _Split
+afu workbench
 ```
+
+For a true synthetic end-to-end UAT, install the development extras and create
+the input only through the initialized inbox:
+
+```bash
+pip install -e ".[dev]"
+python scripts/create_e2e_uat_pdf.py --workspace /path/to/Aktenfux
+afu scan --config /path/to/Aktenfux/config.yaml --no-dry-run
+```
+
+The helper creates one OCR-readable six-page PDF containing two unrelated
+logical documents with an expected boundary before page 4. It creates no
+sidecar and does not modify configuration or lifecycle state; those effects
+must occur through the normal scan, review, approval, workbench, and split
+workflow for the UAT to pass. It refuses to overwrite an existing PDF.
 
 All commands are also available as:
 
@@ -121,6 +144,13 @@ python -m aktenfux approve <id>
 
 Copy `config.example.yaml` to `config.yaml` (or run `afu init`) and adjust as needed:
 
+`afu init --target <directory>` creates a new self-contained workspace: it
+creates the directory if necessary, writes `config.yaml` there with an absolute
+`base_dir` pointing to that directory, and creates the working folders below
+it. If `config.yaml` already exists there, Aktenfux preserves it and uses its
+configured `base_dir`. Without `--target`, `afu init` keeps the documented
+default below for backward compatibility.
+
 | Key | Default | Description |
 |-----|---------|-------------|
 | `base_dir` | `~/Documents/Aktenfux` | Root folder for all working directories |
@@ -141,13 +171,14 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 
 | Command | Description |
 |---------|-------------|
-| `afu init` | Create config.yaml and working folders |
+| `afu init [--target DIRECTORY]` | Create config.yaml and working folders; an explicit target becomes the base directory for a new config |
 | `afu setup` | Check Ollama, model, and folder setup |
 | `afu scan` | Process PDFs from `_Inbox` |
 | `afu scan --dry-run` | Before inbox inspection, contact Ollama and discover models. Discovery failure or a declined pull stops. An accepted pull can fail with partial external state; its stream must report explicit success, after which the model is re-listed and must be verified. With any PDF and indexing enabled, the current MVP initializes/accesses SQLite; after successful analysis it writes unsafe model-named JSON (synthetic data only). |
 | `afu review` | List documents awaiting approval |
-| `afu approve <id>` | Archive an approved document, or stage it in `_Split` when split detection is recommended |
+| `afu approve <id>` | Archive an approved document, or stage it directly in `_Split` when split detection is recommended |
 | `afu split <id> --before N [--before M ...]` | Preview and, after explicit confirmation, split one staged `_Split` PDF into `_Inbox` part PDFs |
+| `afu workbench` | Start the loopback-only browser workbench for previewing and explicitly confirming `_Split` operations |
 | `afu approve --all` | Archive/stage all documents currently in `_Review` |
 | `afu reject <id>` | Move a document to `_Error` |
 | `afu reject --all` | Move all documents currently in `_Review` to `_Error` |
@@ -163,9 +194,12 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 - Every scan contacts the configured Ollama endpoint before checking whether the inbox contains a PDF. Discovery failure now stops without offering a pull. If discovery succeeds and the model is absent, declining stops; an accepted pull can fail and leave partial external state. Its stream must report explicit success, after which the model is re-listed and must be verified. A verified pull persists the model even for an empty inbox or scan dry-run.
 - Current scan and reprocess dry-run do not move the source PDF, but they can create/access SQLite state, create `_DryRun`, and write a model-named JSON result that can escape that directory and replace another file. Use only synthetic, disposable input until mutation-free dry-run is implemented.
 - Current normal scans can silently overwrite existing same-stem inbox `.json` and optional `.md` siblings before move collision handling. Keep the inbox free of sibling artifacts and retain backups until fixed.
+- Approval stages a probable multi-document PDF and sidecar directly in `_Split`, regardless of its preserved suggested archive folder, so the pair is immediately eligible for the split CLI and workbench.
 - `afu split` requires `_Split` and `_Inbox` to be distinct, direct, non-link children of `base_dir`; validates that the selected PDF and sidecar are direct regular files in `_Split`; and rejects a PDF whose SHA-256 no longer matches its authoritative sidecar. It shows exact page ranges and destination filenames and requires explicit confirmation unless `--yes` is used.
 - Split execution preserves the original PDF/sidecar in `_Split`, writes per-part hashes to sidecar provenance first, stages outputs in `_Inbox/.split-staging/<operation-id>/`, then publishes to `_Inbox` with a durable batch journal and exclusive no-overwrite creation. Publication uses an atomic hard link when supported and a tested exclusive fallback otherwise. The inbox scanner skips every part named by an active journal until the complete batch is published; completed staging copies and journal data are removed.
 - Completed split operations are not allowed to republish missing `_Inbox` outputs; if outputs were already consumed, Aktenfux fails safely instead of creating duplicates.
+- `afu workbench` binds only to `localhost`, `127.0.0.1`, or `::1`. Its mutating API requires a per-process page token, an exact same-origin browser request when an Origin header is present, the exact latest server-held preview with its one-time token, and literal `true` confirmation. Host validation, a 128 KiB streaming request limit, strict identifiers, and fail-closed in-flight cleanup protect the local adapter; this is a single-user local boundary, not remote authentication.
+- The workbench renders untrusted filenames and errors as text, serves no CDN assets, and applies a restrictive Content Security Policy. Each Aktenfux page selection requests an in-memory, one-page PDF preview under a distinct URL, so the native browser viewer cannot navigate to a different source page or drift away from the displayed split position. Native rendering details can still vary by browser; navigation, zoom, rotation, boundary semantics, confirmation reset, and hostile display values have behavior tests in the canonical harness.
 - See the [architecture](docs/architecture.md) and [threat model](docs/threat-model.md) for current gaps and release gates.
 - Target behavior permanently archives documents **only after you approve them**; current lifecycle-root aliasing and model-derived path escape gaps can bypass this guarantee.
 - Target behavior keeps each PDF and sidecar together as a recoverable audit unit; current sequential writes and moves can leave partial or separated state.
@@ -199,6 +233,9 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 | `db.py` | Optional SQLite index |
 | `review.py` | List and display `_Review` documents |
 | `main.py` | Core processing pipeline |
+| `split.py` | Typed split inspection, planning, execution, provenance, and recovery services shared by CLI and workbench |
+| `workbench.py` | Loopback-only FastAPI adapter with bounded requests, Host/origin/CSRF controls, and exact-plan execution |
+| `workbench.js` | Dependency-free browser controller for PDF navigation, boundary preview, confirmation, and safe rendering |
 | `cli.py` | Typer-based CLI (`afu`) |
 
 ---
@@ -223,7 +260,8 @@ make verify
 ```
 
 The verification harness runs the complete Python test suite, compiles the
-Python sources, checks working-tree and branch diffs for whitespace errors,
+Python sources, checks the workbench JavaScript with Node.js 22, runs its
+frontend behavior tests, checks working-tree and branch diffs for whitespace errors,
 validates relative Markdown links and table structure, checks named Mermaid
 sources using top-level backtick or tilde fences, and rejects
 runtime artifacts found in nested lifecycle directories as well as at the
@@ -236,6 +274,15 @@ configured by the user. Python compilation and test execution may create
 ignored `__pycache__` and `.pytest_cache` developer caches; tests also create
 and mutate synthetic PDFs, sidecars, SQLite databases, and lifecycle directories
 under pytest-managed temporary roots.
+
+The security-sensitive local-server dependencies use reviewed minor-version
+ranges (`fastapi>=0.143,<0.144` and `uvicorn>=0.54,<0.55`) rather than open lower
+bounds. The test-only `httpx2` range matches Starlette's maintained TestClient
+backend and is kept out of the runtime graph. The development-only `reportlab`
+range generates the synthetic E2E-UAT input and is not imported by Aktenfux
+runtime commands. The rest of the Python graph is not yet locked, so fully
+reproducible offline installation remains a release gate documented in the
+threat model.
 
 ---
 
