@@ -103,6 +103,19 @@ def test_split_completed_fails_when_retained_entries_are_invalid(tmp_path):
     assert "inspection found issues" in result.output.lower()
 
 
+def test_split_completed_fails_when_retained_sidecar_is_orphaned(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.split_path.mkdir(parents=True, exist_ok=True)
+    cfg.imported_path.mkdir(parents=True, exist_ok=True)
+    (cfg.imported_path / "orphan--completed-aaaaaaaaaaaa.json").write_text("{}", encoding="utf-8")
+
+    with patch("aktenfux.cli._load_config", return_value=cfg):
+        result = runner.invoke(app, ["split-completed"])
+
+    assert result.exit_code == 1
+    assert "no matching pdf" in result.output.lower()
+
+
 def test_split_reconcile_completed_dry_run_reports_eligible(tmp_path):
     cfg = make_config(tmp_path)
     source = write_split_doc(cfg.split_path, "legacy-cli.pdf", "docsplitcli000003c", pages=5)

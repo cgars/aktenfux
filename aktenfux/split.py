@@ -33,6 +33,7 @@ from aktenfux.storage import assert_within_base, sha256_file, sidecar_path_for
 
 logger = logging.getLogger(__name__)
 _WORKBENCH_DOCUMENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_SPLIT_OPERATION_ID_PATTERN = re.compile(r"[a-f0-9]{32}")
 _WORKBENCH_DISPLAY_NAME_MAX_CHARS = 200
 _SUGGEST_MAX_PAGES = 64
 _SUGGEST_MAX_CHARS_PER_PAGE = 1200
@@ -203,6 +204,20 @@ def _is_link_or_junction(path: Path) -> bool:
     return bool(is_junction is not None and is_junction())
 
 
+def _validate_operation_id_format(operation_id: str) -> None:
+    if not _SPLIT_OPERATION_ID_PATTERN.fullmatch(operation_id):
+        raise SplitError("Split operation ID format is invalid.")
+
+
+def _assert_not_hard_link(path: Path, *, label: str) -> None:
+    try:
+        stat_result = path.lstat()
+    except OSError as exc:
+        raise SplitError(f"Could not inspect {label}.") from exc
+    if getattr(stat_result, "st_nlink", 1) > 1:
+        raise SplitError(f"{label} must not be a hard link.")
+
+
 def _validate_lifecycle_root(
     *,
     base_dir: Path,
@@ -320,6 +335,7 @@ def _validate_direct_regular_file(path: Path, *, root: Path, suffix: str) -> Non
         raise SplitError(f"{path.name} must not be a symbolic link.")
     if not path.is_file():
         raise SplitError(f"{path.name} must be a regular file.")
+    _assert_not_hard_link(path, label=path.name)
 
 
 def _validate_direct_destination_path(path: Path, *, root: Path) -> None:
@@ -357,16 +373,20 @@ def _find_source_by_document_id(
 
     matches: list[tuple[Path, Path, SidecarDocument]] = []
     for pdf_path in sorted(root.glob("*.pdf")):
+        sidecar_path = sidecar_path_for(pdf_path)
         try:
-            _validate_direct_regular_file(pdf_path, root=root, suffix=".pdf")
-            sidecar_path = sidecar_path_for(pdf_path)
             _validate_direct_regular_file(sidecar_path, root=root, suffix=".json")
             sidecar = _read_sidecar_validated(sidecar_path)
         except SplitError as exc:
             logger.warning("Skipping invalid %s candidate '%s': %s", root_label, pdf_path.name, exc)
             continue
-        if sidecar.id == document_id:
-            matches.append((pdf_path, sidecar_path, sidecar))
+        if sidecar.id != document_id:
+            continue
+        try:
+            _validate_direct_regular_file(pdf_path, root=root, suffix=".pdf")
+        except SplitError as exc:
+            raise SplitError(f"Authoritative source for document '{document_id}' is invalid.") from exc
+        matches.append((pdf_path, sidecar_path, sidecar))
 
     if len(matches) > 1:
         raise SplitError(f"Duplicate document id found in {root_label}.")
@@ -418,6 +438,7 @@ def _completed_transition_paths(
     imported_root: Path,
     operation_id: str,
 ) -> tuple[Path, Path, Path]:
+    _validate_operation_id_format(operation_id)
     transition_root = _completed_transition_root(imported_root)
     operation_root = transition_root / operation_id
     journal_path = operation_root / "transition-state.json"
@@ -459,8 +480,20 @@ def _load_completed_transition_journal(journal_path: Path) -> CompletedTransitio
     state = payload["state"]
     if state not in _COMPLETED_TRANSITION_STATES:
         raise SplitError("Completed transition journal state is invalid.")
+    operation_id = str(payload["operation_id"])
+    _validate_operation_id_format(operation_id)
+    for name_key, expected_suffix in (
+        ("source_pdf", ".pdf"),
+        ("source_sidecar", ".json"),
+        ("retained_pdf", ".pdf"),
+        ("retained_sidecar", ".json"),
+    ):
+        value = str(payload[name_key])
+        candidate = Path(value)
+        if candidate.is_absolute() or candidate.name != value or candidate.suffix.lower() != expected_suffix:
+            raise SplitError("Completed transition journal file names are invalid.")
     return CompletedTransitionJournal(
-        operation_id=str(payload["operation_id"]),
+        operation_id=operation_id,
         document_id=str(payload["document_id"]),
         source_sha256=str(payload["source_sha256"]),
         source_pdf=str(payload["source_pdf"]),
@@ -479,6 +512,7 @@ def _write_completed_transition_journal(
 ) -> CompletedTransitionJournal:
     if state not in _COMPLETED_TRANSITION_STATES:
         raise SplitError("Completed transition journal state is invalid.")
+    _validate_operation_id_format(journal.operation_id)
     updated = CompletedTransitionJournal(
         operation_id=journal.operation_id,
         document_id=journal.document_id,
@@ -511,6 +545,7 @@ def _read_completed_transition_journal_for_operation(
     imported_root: Path,
     operation_id: str,
 ) -> CompletedTransitionJournal | None:
+    _validate_operation_id_format(operation_id)
     operation_root, _, journal_path = _completed_transition_paths(
         imported_root=imported_root,
         operation_id=operation_id,
@@ -535,9 +570,12 @@ def _list_completed_transition_journals(imported_root: Path) -> list[CompletedTr
     for operation_root in sorted(transition_root.iterdir()):
         if operation_root.is_symlink() or not operation_root.is_dir():
             raise SplitError("Completed transition operation path is invalid.")
+        _validate_operation_id_format(operation_root.name)
         journal = _load_completed_transition_journal(operation_root / "transition-state.json")
         if journal is None:
             continue
+        if journal.operation_id != operation_root.name:
+            raise SplitError("Completed transition journal operation ID mismatch.")
         journals.append(journal)
     return journals
 
@@ -554,10 +592,16 @@ def _cleanup_completed_transition_artifacts(
     if not operation_root.is_dir():
         raise SplitError("Completed transition operation path is not a directory.")
     allowed = {"transition-state.json", "source.pdf", "source.json"}
+
+    def _is_owned_atomic_temp(path: Path) -> bool:
+        return path.name.startswith(".transition-state.json.") and path.name.endswith(".tmp")
+
     try:
         children = list(operation_root.iterdir())
         for child in children:
-            if child.name not in allowed or child.is_symlink() or not child.is_file():
+            if child.is_symlink() or not child.is_file():
+                raise SplitError("Completed transition staging contains unexpected artifacts.")
+            if child.name not in allowed and not _is_owned_atomic_temp(child):
                 raise SplitError("Completed transition staging contains unexpected artifacts.")
         for child in children:
             child.unlink()
@@ -580,6 +624,13 @@ def _plan_source_filename_matches_snapshot(plan_source_filename: str, snapshot_n
         return False
     derived = f"{snapshot_name[: -len(suffix)]}.pdf"
     return plan_source_filename == derived
+
+
+def _derive_original_source_pdf_name_from_retained(retained_pdf_name: str, operation_id: str) -> str:
+    suffix = f"{_completed_suffix(operation_id)}.pdf"
+    if not retained_pdf_name.endswith(suffix):
+        raise SplitError("Retained completed source filename does not match operation ID suffix.")
+    return f"{retained_pdf_name[: -len(suffix)]}.pdf"
 
 
 def _read_validated_snapshot(
@@ -1273,6 +1324,31 @@ def _validate_operation_record(
                 raise SplitError("Completed split operation is missing output hashes.")
 
 
+def _validate_completed_operation_against_source(
+    *,
+    operation: SplitProvenanceRecord,
+    source_snapshot: SourceSnapshot,
+    source_pdf_name: str,
+) -> None:
+    _validate_operation_id_format(operation.operation_id)
+    normalized_boundaries = _normalize_boundaries(operation.boundaries, source_snapshot.page_count)
+    expected_operation_id = _deterministic_operation_id(
+        source_snapshot.sidecar.id,
+        source_snapshot.source_sha256,
+        source_snapshot.page_count,
+        normalized_boundaries,
+    )
+    expected_parts = _build_parts(Path(source_pdf_name).stem, source_snapshot.page_count, normalized_boundaries)
+    _validate_operation_record(
+        operation,
+        expected_operation_id=expected_operation_id,
+        expected_source_sha256=source_snapshot.source_sha256,
+        expected_page_count=source_snapshot.page_count,
+        expected_boundaries=normalized_boundaries,
+        expected_parts=expected_parts,
+    )
+
+
 def _staging_paths(config: AktenfuxConfig, operation_id: str) -> tuple[Path, Path]:
     staging_root = config.inbox_path / ".split-staging" / operation_id
     try:
@@ -1468,11 +1544,13 @@ def _stage_transition_file(
     if stage_path.exists():
         if stage_path.is_symlink() or not stage_path.is_file():
             raise SplitError(f"Completed transition staged {label} is invalid.")
+        _assert_not_hard_link(stage_path, label=f"completed transition staged {label}")
         if _sha256_file_bounded(stage_path, label=f"completed transition staged {label}") != expected_hash:
             raise SplitError(f"Completed transition staged {label} hash mismatch.")
         return
     if source_path.is_symlink() or not source_path.is_file():
         raise SplitError(f"Completed transition source {label} is missing or invalid.")
+    _assert_not_hard_link(source_path, label=f"completed transition source {label}")
     try:
         payload = source_path.read_bytes()
     except OSError as exc:
@@ -1490,6 +1568,7 @@ def _publish_retained_from_stage(
     root: Path,
     label: str,
 ) -> None:
+    _assert_not_hard_link(stage_path, label=f"completed transition staged {label}")
     if destination_path.suffix.lower() == ".pdf":
         _validate_direct_destination_path(destination_path, root=root)
     else:
@@ -1504,6 +1583,7 @@ def _publish_retained_from_stage(
         if destination_path.exists() and (destination_path.is_symlink() or not destination_path.is_file()):
             raise SplitError(f"Retained completed source {label} destination is invalid.")
     if destination_path.exists():
+        _assert_not_hard_link(destination_path, label=f"retained completed source {label}")
         if _sha256_file_bounded(destination_path, label=f"retained completed {label}") != expected_hash:
             raise SplitError(f"Destination collision for retained completed source {destination_path.name}.")
         return
@@ -1517,6 +1597,7 @@ def _publish_retained_from_stage(
         if destination_path.exists() and _sha256_file_bounded(
             destination_path, label=f"retained completed {label}"
         ) == expected_hash:
+            _assert_not_hard_link(destination_path, label=f"retained completed source {label}")
             return
         raise
     if _sha256_file_bounded(destination_path, label=f"retained completed {label}") != expected_hash:
@@ -1754,30 +1835,41 @@ def list_completed_split_documents(config: AktenfuxConfig) -> CompletedSplitList
     entries: list[CompletedSplitSummary] = []
     issues: list[CompletedSplitListIssue] = []
     seen_ids: set[str] = set()
-    for pdf_path in sorted(imported_root.glob("*.pdf")):
+    pdf_paths = sorted(imported_root.glob("*.pdf"))
+    json_paths = sorted(imported_root.glob("*.json"))
+    pdf_names = {path.name for path in pdf_paths}
+    json_names = {path.name for path in json_paths}
+    for json_name in sorted(json_names - {Path(name).with_suffix(".json").name for name in pdf_names}):
+        issues.append(
+            CompletedSplitListIssue(
+                retained_pdf=Path(json_name).with_suffix(".pdf").name,
+                reason=f"retained completed source pair is incomplete ({json_name} has no matching PDF).",
+            )
+        )
+    for pdf_path in pdf_paths:
         try:
             _validate_direct_regular_file(pdf_path, root=imported_root, suffix=".pdf")
             sidecar_path = sidecar_path_for(pdf_path)
             _validate_direct_regular_file(sidecar_path, root=imported_root, suffix=".json")
-            sidecar = _read_sidecar_validated(sidecar_path)
+            snapshot = _read_validated_snapshot(
+                pdf_path,
+                sidecar_path,
+                _read_sidecar_validated(sidecar_path),
+                lifecycle_root=imported_root,
+                lifecycle_label="imported",
+            )
+            sidecar = snapshot.sidecar
             operation = _completed_operation_for_document(sidecar)
             if operation is None:
                 continue
-            _validate_operation_record(
-                operation,
-                expected_operation_id=operation.operation_id,
-                expected_source_sha256=sidecar.sha256,
-                expected_page_count=operation.source_page_count,
-                expected_boundaries=operation.boundaries,
-                expected_parts=[
-                    SplitPartPlan(
-                        part_number=item.part_number,
-                        start_page=item.start_page,
-                        end_page=item.end_page,
-                        destination_filename=item.filename,
-                    )
-                    for item in operation.outputs
-                ],
+            source_pdf_name = _derive_original_source_pdf_name_from_retained(
+                pdf_path.name,
+                operation.operation_id,
+            )
+            _validate_completed_operation_against_source(
+                operation=operation,
+                source_snapshot=snapshot,
+                source_pdf_name=source_pdf_name,
             )
             if sidecar.id in seen_ids:
                 raise SplitError("Duplicate document id found in retained completed sources.")
@@ -1837,6 +1929,11 @@ def _preflight_completed_transition_from_journal(
     operation = _completed_operation_for_document(sidecar, operation_id=journal.operation_id)
     if operation is None:
         raise SplitError("completed operation missing in sidecar")
+    _validate_completed_operation_against_source(
+        operation=operation,
+        source_snapshot=snapshot,
+        source_pdf_name=journal.source_pdf,
+    )
     _validate_completed_outputs(config=config, operation=operation)
     imported_root = _validate_imported_root(config)
     retained_pdf, retained_sidecar = _completed_destination_paths(
@@ -1945,6 +2042,17 @@ def reconcile_completed_split_sources(
             issues=tuple(issues),
         )
 
+    split_pdf_paths = sorted(config.split_path.glob("*.pdf"))
+    split_json_names = {path.name for path in config.split_path.glob("*.json")}
+    for json_name in sorted(split_json_names - {path.with_suffix(".json").name for path in split_pdf_paths}):
+        issues.append(
+            CompletedSplitReconcileIssue(
+                document_id="(unknown)",
+                source_pdf=Path(json_name).with_suffix(".pdf").name,
+                reason=f"split source pair is incomplete ({json_name} has no matching PDF).",
+            )
+        )
+
     for journal in journals:
         try:
             snapshot, operation, summary = _preflight_completed_transition_from_journal(
@@ -1972,7 +2080,7 @@ def reconcile_completed_split_sources(
                 )
             )
 
-    for pdf_path in sorted(config.split_path.glob("*.pdf")):
+    for pdf_path in split_pdf_paths:
         document_id = "(unknown)"
         try:
             _validate_direct_regular_file(pdf_path, root=config.split_path, suffix=".pdf")
@@ -1987,23 +2095,6 @@ def reconcile_completed_split_sources(
                 continue
             if len([op for op in sidecar.split_operations if op.state == "completed"]) != 1:
                 raise SplitError("multiple completed split operations")
-            expected_parts = [
-                SplitPartPlan(
-                    part_number=item.part_number,
-                    start_page=item.start_page,
-                    end_page=item.end_page,
-                    destination_filename=item.filename,
-                )
-                for item in operation.outputs
-            ]
-            _validate_operation_record(
-                operation,
-                expected_operation_id=operation.operation_id,
-                expected_source_sha256=sidecar.sha256,
-                expected_page_count=operation.source_page_count,
-                expected_boundaries=operation.boundaries,
-                expected_parts=expected_parts,
-            )
             snapshot = _read_validated_snapshot(
                 pdf_path,
                 sidecar_path,
@@ -2013,6 +2104,11 @@ def reconcile_completed_split_sources(
             )
             if snapshot.source_sha256 != sidecar.sha256:
                 raise SplitError("sidecar/source hash mismatch")
+            _validate_completed_operation_against_source(
+                operation=operation,
+                source_snapshot=snapshot,
+                source_pdf_name=pdf_path.name,
+            )
             _validate_completed_outputs(config=config, operation=operation)
             retained_pdf, retained_sidecar = _completed_destination_paths(
                 imported_root=imported_root,

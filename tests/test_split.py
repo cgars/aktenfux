@@ -275,6 +275,37 @@ def test_reconcile_completed_split_sources_reports_missing_outputs(tmp_path):
     assert "missing output" in result.issues[0].reason
 
 
+def test_reconcile_completed_split_sources_rejects_forged_operation_id(tmp_path):
+    cfg = make_config(tmp_path)
+    source, _plan = _write_legacy_completed_split_in_split_root(
+        cfg,
+        name="legacy-forged.pdf",
+        doc_id="docsplitlegacy00006",
+    )
+    sidecar = read_sidecar(source)
+    assert sidecar is not None
+    sidecar.split_operations[0].operation_id = "abcdefgh"
+    source.with_suffix(".json").write_text(sidecar.model_dump_json(indent=2), encoding="utf-8")
+
+    result = reconcile_completed_split_sources(cfg, apply_changes=False)
+
+    assert result.eligible == ()
+    assert len(result.issues) == 1
+    assert "operation id" in result.issues[0].reason.lower()
+
+
+def test_reconcile_completed_split_sources_reports_orphan_split_sidecars(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.split_path.mkdir(parents=True, exist_ok=True)
+    (cfg.split_path / "orphan.json").write_text("{}", encoding="utf-8")
+
+    result = reconcile_completed_split_sources(cfg, apply_changes=False)
+
+    assert result.eligible == ()
+    assert len(result.issues) == 1
+    assert "no matching PDF" in result.issues[0].reason
+
+
 def test_execute_split_rejects_untracked_destination_collision(tmp_path):
     cfg = make_config(tmp_path)
     write_split_doc(cfg.split_path, "collision.pdf", "docsplit000000009", pages=6)
@@ -305,7 +336,7 @@ def test_plan_split_rejects_symlink_source(tmp_path):
     }
     symlink_pdf.with_suffix(".json").write_text(json.dumps(sidecar_payload), encoding="utf-8")
 
-    with pytest.raises(SplitError, match="not found in _Split"):
+    with pytest.raises(SplitError, match="Authoritative source"):
         plan_split("docsplit000000010", [2], cfg)
 
 
@@ -892,11 +923,10 @@ def test_execute_split_recovers_across_completed_transition_states(tmp_path, mon
     triggered = {"done": False}
 
     def flaky_write_journal(journal_path, journal, *, state):
-        result = original_write_journal(journal_path, journal, state=state)
         if state == fail_state and not triggered["done"]:
             triggered["done"] = True
             raise SplitError(f"injected transition failure at {state}")
-        return result
+        return original_write_journal(journal_path, journal, state=state)
 
     monkeypatch.setattr(split_module, "_write_completed_transition_journal", flaky_write_journal)
     with pytest.raises(SplitError, match=f"injected transition failure at {fail_state}"):
@@ -947,6 +977,31 @@ def test_execute_split_recovers_from_journal_with_pdf_only_in_imported(tmp_path,
     assert not (cfg.split_path / "journal-recover.json").exists()
 
 
+def test_execute_split_recovers_after_cleanup_failure_with_owned_temp_residue(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "cleanup-recover.pdf", "docsplit000000025", pages=5)
+    plan = plan_split("docsplit000000025", [3], cfg)
+    original_cleanup = split_module._cleanup_completed_transition_artifacts
+    triggered = {"done": False}
+
+    def flaky_cleanup(*, operation_root, transition_root):
+        if not triggered["done"]:
+            triggered["done"] = True
+            (operation_root / ".transition-state.json.injected.tmp").write_text("{}", encoding="utf-8")
+            raise SplitError("injected cleanup failure")
+        return original_cleanup(operation_root=operation_root, transition_root=transition_root)
+
+    monkeypatch.setattr(split_module, "_cleanup_completed_transition_artifacts", flaky_cleanup)
+    with pytest.raises(SplitError, match="injected cleanup failure"):
+        execute_split(plan, cfg)
+
+    monkeypatch.setattr(split_module, "_cleanup_completed_transition_artifacts", original_cleanup)
+    result = execute_split(plan, cfg)
+    retained_pdf = cfg.imported_path / f"cleanup-recover--completed-{result.operation_id[:12]}.pdf"
+    assert retained_pdf.exists()
+    assert not (cfg.imported_path / ".split-completed-transition").exists()
+
+
 def test_list_completed_split_documents_reports_invalid_entries(tmp_path):
     cfg = make_config(tmp_path)
     cfg.split_path.mkdir(parents=True, exist_ok=True)
@@ -959,6 +1014,19 @@ def test_list_completed_split_documents_reports_invalid_entries(tmp_path):
     assert result.entries == ()
     assert len(result.issues) == 1
     assert result.issues[0].retained_pdf == imported_pdf.name
+
+
+def test_list_completed_split_documents_reports_orphan_sidecars(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.split_path.mkdir(parents=True, exist_ok=True)
+    cfg.imported_path.mkdir(parents=True, exist_ok=True)
+    (cfg.imported_path / "orphan--completed-aaaaaaaaaaaa.json").write_text("{}", encoding="utf-8")
+
+    result = list_completed_split_documents(cfg)
+
+    assert result.entries == ()
+    assert len(result.issues) == 1
+    assert "no matching PDF" in result.issues[0].reason
 
 
 def test_reconcile_completed_split_sources_dry_run_detects_destination_collision(tmp_path):
@@ -1182,6 +1250,41 @@ def test_plan_split_rejects_pdf_hash_mismatch_before_parse(tmp_path):
         with pytest.raises(SplitError, match="authoritative sidecar"):
             plan_split("docsplit000000019", [2], cfg)
         pdf_reader.assert_not_called()
+
+
+def test_plan_split_rejects_hard_linked_source_pdf(tmp_path):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "hardlink.pdf", "docsplit000000023", pages=3)
+    external = tmp_path / "outside.pdf"
+    external.write_bytes(source.read_bytes())
+    source.unlink()
+    try:
+        os.link(external, source, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno in {errno.EPERM, errno.EXDEV, errno.EOPNOTSUPP, errno.ENOTSUP}:
+            pytest.skip("Hard links are not available on this platform.")
+        raise
+
+    with pytest.raises(SplitError, match="Authoritative source"):
+        plan_split("docsplit000000023", [2], cfg)
+
+
+def test_plan_split_rejects_hard_linked_source_sidecar(tmp_path):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "hardlink-sidecar.pdf", "docsplit000000024", pages=3)
+    sidecar = source.with_suffix(".json")
+    external = tmp_path / "outside.json"
+    external.write_bytes(sidecar.read_bytes())
+    sidecar.unlink()
+    try:
+        os.link(external, sidecar, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno in {errno.EPERM, errno.EXDEV, errno.EOPNOTSUPP, errno.ENOTSUP}:
+            pytest.skip("Hard links are not available on this platform.")
+        raise
+
+    with pytest.raises(SplitError, match="not found"):
+        plan_split("docsplit000000024", [2], cfg)
 
 
 def test_exclusive_write_falls_back_without_hard_link_support(tmp_path, monkeypatch):
