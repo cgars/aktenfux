@@ -12,8 +12,14 @@ from pypdf import PdfReader
 from pypdf import PdfWriter
 
 import aktenfux.split as split_module
-from aktenfux.schema import SplitOutputRecord, SplitProvenanceRecord
-from aktenfux.split import SplitError, execute_split, plan_split
+from aktenfux.schema import (
+    SplitBoundaryCandidate,
+    SplitBoundaryEvidence,
+    SplitBoundarySuggestion,
+    SplitOutputRecord,
+    SplitProvenanceRecord,
+)
+from aktenfux.split import SplitError, execute_split, plan_split, suggest_split_boundaries
 from aktenfux.storage import read_sidecar, sha256_file
 from tests.split_helpers import make_config, pdf_bytes, write_split_doc
 
@@ -255,6 +261,71 @@ def test_execute_split_recovers_after_output_write_failure(tmp_path, monkeypatch
     monkeypatch.setattr(split_module, "_write_bytes_exclusive", original_writer)
     result = execute_split(plan, cfg)
     assert all((cfg.inbox_path / item.filename).exists() for item in result.outputs)
+
+
+def test_suggest_split_boundaries_returns_sorted_candidates(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggest00000001", pages=6)
+
+    def provider(prompt, config):
+        return {
+            "candidates": [
+                {
+                    "before_page": 5,
+                    "confidence": 0.6,
+                    "rationale": "A new salutation begins on page 5.",
+                    "evidence": [{"page": 5, "cue": "Dear Ms. Doe"}],
+                },
+                {
+                    "before_page": 3,
+                    "confidence": 0.88,
+                    "rationale": "The sender and invoice number reset on page 3.",
+                    "evidence": [{"page": 3, "cue": "Invoice no. 2026-33"}],
+                },
+            ],
+            "warnings": ["Page 6 has little extractable text."],
+        }
+
+    result = suggest_split_boundaries("docsuggest00000001", cfg, provider=provider)
+
+    assert result.document_id == "docsuggest00000001"
+    assert result.source_page_count == 6
+    assert [item.before_page for item in result.candidates] == [3, 5]
+    assert "Page 6 has little extractable text." in result.warnings
+
+
+def test_suggest_split_boundaries_rejects_invalid_candidate_boundaries(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggest00000002", pages=6)
+
+    def provider(prompt, config):
+        return {
+            "candidates": [
+                {
+                    "before_page": 1,
+                    "confidence": 0.9,
+                    "rationale": "invalid boundary",
+                    "evidence": [{"page": 1, "cue": "invalid"}],
+                }
+            ]
+        }
+
+    with pytest.raises(SplitError, match="invalid split suggestion payload"):
+        suggest_split_boundaries("docsuggest00000002", cfg, provider=provider)
+
+
+def test_suggest_split_boundaries_never_mutates_sidecar(tmp_path):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "bundle.pdf", "docsuggest00000003", pages=6)
+    sidecar_before = source.with_suffix(".json").read_text(encoding="utf-8")
+
+    def provider(prompt, config):
+        return {"candidates": []}
+
+    result = suggest_split_boundaries("docsuggest00000003", cfg, provider=provider)
+
+    assert result.candidates == []
+    assert source.with_suffix(".json").read_text(encoding="utf-8") == sidecar_before
 
 
 def test_execute_split_recovers_after_final_completion_write_failure(tmp_path, monkeypatch):

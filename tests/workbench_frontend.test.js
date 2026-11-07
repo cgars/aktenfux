@@ -63,6 +63,10 @@ function fakeDocument() {
     "rotate",
     "toggle-boundary",
     "refresh-preview",
+    "suggest-boundaries",
+    "apply-suggestions",
+    "suggestion-status",
+    "suggestion-list",
   ];
   const nodes = Object.fromEntries(ids.map((id) => [id, new FakeNode()]));
   const listeners = new Map();
@@ -353,4 +357,48 @@ test("controller blocks duplicate execution and recovers through a fresh preview
   assert.equal(previewCalls, 1);
   assert.equal(controller.state.previewToken, "b".repeat(64));
   assert.equal(controller.state.confirmChecked, false);
+});
+
+test("suggestion rendering stays text-only and leaves candidates unselected", () => {
+  const rows = [];
+  const container = {
+    replaceChildren() {
+      rows.length = 0;
+    },
+    appendChild(child) {
+      rows.push(child);
+    },
+  };
+  const createElement = () => new FakeNode("div");
+  const suggestion = {
+    candidates: [
+      {
+        before_page: 4,
+        confidence: 0.92,
+        rationale: '<img src=x onerror="globalThis.pwned=true">',
+        evidence: [{ page: 4, cue: "From: Example Corp" }],
+      },
+    ],
+  };
+
+  workbench.renderSuggestionCandidates(container, suggestion, createElement);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].textContent.includes("Split before page 4"), true);
+  assert.equal(globalThis.pwned, undefined);
+});
+
+test("applying selected suggestions invalidates stale preview state", () => {
+  const state = executableState({
+    boundaries: [2],
+    suggestedBoundaries: [4, 6],
+    selectedSuggestionBoundaries: new Set([6]),
+  });
+
+  workbench.applySelectedSuggestions(state);
+
+  assert.deepEqual(state.boundaries, [2, 6]);
+  assert.equal(state.preview, null);
+  assert.equal(state.previewToken, null);
+  assert.equal(state.confirmChecked, false);
 });

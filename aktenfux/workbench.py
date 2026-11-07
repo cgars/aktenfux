@@ -29,13 +29,14 @@ from pypdf import PdfReader, PdfWriter
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from aktenfux.config import AktenfuxConfig, load_config
-from aktenfux.schema import SplitPlan
+from aktenfux.schema import SplitBoundarySuggestion, SplitPlan
 from aktenfux.split import (
     SplitError,
     execute_split,
     get_split_document_snapshot,
     list_split_documents,
     plan_split,
+    suggest_split_boundaries,
 )
 
 MAX_REQUEST_BODY_BYTES = 128 * 1024
@@ -92,6 +93,8 @@ _INDEX_HTML = """<!doctype html>
           <button id="zoom-in" class="secondary" type="button">+</button>
           <button id="rotate" class="secondary" type="button">Rotate</button>
           <button id="toggle-boundary" class="warning" type="button">Toggle boundary (T)</button>
+          <button id="suggest-boundaries" class="secondary" type="button">Suggest boundaries</button>
+          <button id="apply-suggestions" class="secondary" type="button">Apply selected suggestions</button>
           <button id="refresh-preview" class="secondary" type="button">Preview split</button>
           <span id="page-info">No document selected</span>
         </div>
@@ -103,6 +106,9 @@ _INDEX_HTML = """<!doctype html>
       </div>
       <div class="panel">
         <div class="status" id="message"></div>
+        <h3>Boundary suggestions</h3>
+        <div class="status" id="suggestion-status"></div>
+        <div id="suggestion-list" class="range-list">Select a document, then request suggestions.</div>
         <h3>Result preview</h3>
         <div id="preview-list" class="range-list">Select a document to preview.</div>
         <div class="confirmer">
@@ -308,6 +314,12 @@ class ExecuteRequest(BaseModel):
         return value
 
 
+class SuggestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    document_id: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
 class SplitDocumentDTO(BaseModel):
     id: str
     label: str
@@ -384,6 +396,7 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
     app.state.execute_lock: asyncio.Lock | None = None
     app.state.in_flight: set[str] = set()
     app.state.in_flight_documents: set[str] = set()
+    app.state.in_flight_suggestions: set[str] = set()
 
     async def ensure_lock() -> asyncio.Lock:
         if app.state.execute_lock is None:
@@ -515,6 +528,38 @@ def create_app(config: AktenfuxConfig | None = None) -> FastAPI:
             "plan": plan.model_dump(mode="json"),
             "preview_token": token,
         }
+
+    @app.post("/api/split/suggest")
+    async def suggest(request: SuggestRequest) -> dict[str, Any]:
+        lock = await ensure_lock()
+        async with lock:
+            if request.document_id in app.state.in_flight_suggestions:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A split suggestion request is already in progress for this document.",
+                )
+            app.state.in_flight_suggestions.add(request.document_id)
+        try:
+            suggestion = suggest_split_boundaries(request.document_id, cfg)
+        except (SplitError, ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail="Split suggestion failed unexpectedly.",
+            ) from exc
+        finally:
+            app.state.in_flight_suggestions.discard(request.document_id)
+        if isinstance(suggestion, SplitBoundarySuggestion):
+            payload = suggestion.model_dump(mode="json")
+        else:
+            try:
+                payload = SplitBoundarySuggestion.model_validate(suggestion).model_dump(mode="json")
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=500, detail="Split suggestion payload is invalid.") from exc
+        return {"suggestion": payload}
 
     @app.post("/api/split/execute")
     async def execute(request: ExecuteRequest) -> dict[str, Any]:

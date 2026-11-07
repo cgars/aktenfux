@@ -6,6 +6,11 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from aktenfux.cli import app
+from aktenfux.schema import (
+    SplitBoundaryCandidate,
+    SplitBoundaryEvidence,
+    SplitBoundarySuggestion,
+)
 from aktenfux.storage import read_sidecar
 from tests.split_helpers import make_config, write_split_doc
 
@@ -63,3 +68,57 @@ def test_split_execute_after_confirmation(tmp_path):
     assert "Split complete" in result.output
     assert (cfg.inbox_path / "run--part-01.pdf").exists()
     assert (cfg.inbox_path / "run--part-02.pdf").exists()
+
+
+def test_split_suggest_prints_candidates_without_mutation(tmp_path):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "suggest.pdf", "docsplitcli000004", pages=6)
+    sidecar_before = source.with_suffix(".json").read_text(encoding="utf-8")
+    suggestion = SplitBoundarySuggestion(
+        document_id="docsplitcli000004",
+        source_sha256="a" * 64,
+        source_page_count=6,
+        suggestion_provider="ollama:qwen3:8b",
+        candidates=[
+            SplitBoundaryCandidate(
+                before_page=4,
+                confidence=0.84,
+                rationale="A second document starts with a new sender block.",
+                evidence=[SplitBoundaryEvidence(page=4, cue="Sender: Contoso GmbH")],
+            )
+        ],
+        warnings=["Page 6 is mostly blank."],
+    )
+
+    with (
+        patch("aktenfux.cli._load_config", return_value=cfg),
+        patch("aktenfux.main.suggest_split_boundaries", return_value=suggestion),
+    ):
+        result = runner.invoke(app, ["split-suggest", "docsplitcli000004"])
+
+    assert result.exit_code == 0, result.output
+    assert "Split before page 4" in result.output
+    assert "No files were changed." in result.output
+    assert source.with_suffix(".json").read_text(encoding="utf-8") == sidecar_before
+
+
+def test_split_suggest_reports_no_candidates(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "suggest.pdf", "docsplitcli000005", pages=6)
+    suggestion = SplitBoundarySuggestion(
+        document_id="docsplitcli000005",
+        source_sha256="b" * 64,
+        source_page_count=6,
+        suggestion_provider="ollama:qwen3:8b",
+        candidates=[],
+        warnings=["Insufficient page text for reliable boundaries."],
+    )
+
+    with (
+        patch("aktenfux.cli._load_config", return_value=cfg),
+        patch("aktenfux.main.suggest_split_boundaries", return_value=suggestion),
+    ):
+        result = runner.invoke(app, ["split-suggest", "docsplitcli000005"])
+
+    assert result.exit_code == 0, result.output
+    assert "No reliable split boundaries were suggested." in result.output

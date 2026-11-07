@@ -1,6 +1,7 @@
 """Recoverable document split planning and execution services."""
 from __future__ import annotations
 
+import asyncio
 import errno
 import hashlib
 import json
@@ -12,13 +13,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from pypdf import PdfReader, PdfWriter
 
 from aktenfux.config import AktenfuxConfig
 from aktenfux.schema import (
     SidecarDocument,
+    SplitBoundarySuggestion,
     SplitOutputRecord,
     SplitPartPlan,
     SplitPartResult,
@@ -31,6 +33,10 @@ from aktenfux.storage import assert_within_base, sha256_file, sidecar_path_for
 logger = logging.getLogger(__name__)
 _WORKBENCH_DOCUMENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _WORKBENCH_DISPLAY_NAME_MAX_CHARS = 200
+_SUGGEST_MAX_PAGES = 64
+_SUGGEST_MAX_CHARS_PER_PAGE = 1200
+_SUGGEST_MAX_PAYLOAD_BYTES = 80_000
+_SUGGEST_TIMEOUT_SECONDS = 120.0
 
 
 class SplitError(RuntimeError):
@@ -62,6 +68,14 @@ class PublishJournal:
     state: str
     outputs: tuple[str, ...]
     published: frozenset[str]
+
+
+@dataclass(frozen=True)
+class PageEvidence:
+    page: int
+    text: str
+    truncated: bool
+    missing: bool
 
 
 def _utc_now() -> str:
@@ -331,6 +345,142 @@ def get_split_document_snapshot(config: AktenfuxConfig, document_id: str) -> Sou
     """Return the validated source snapshot for a _Split document."""
     _validate_split_roots(config, include_inbox=False)
     return _read_snapshot(config, document_id)
+
+
+def _bounded_page_evidence(snapshot: SourceSnapshot) -> tuple[list[PageEvidence], list[str]]:
+    warnings: list[str] = []
+    evidence: list[PageEvidence] = []
+    try:
+        reader = PdfReader(BytesIO(snapshot.source_bytes))
+    except Exception as exc:  # noqa: BLE001
+        raise SplitError(f"Failed to parse source PDF '{snapshot.pdf_name}'.") from exc
+
+    if snapshot.page_count > _SUGGEST_MAX_PAGES:
+        warnings.append(
+            f"Only the first {_SUGGEST_MAX_PAGES} pages were analysed for split suggestion."
+        )
+
+    for index, page in enumerate(reader.pages[:_SUGGEST_MAX_PAGES], start=1):
+        try:
+            raw_text = (page.extract_text() or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            raise SplitError("Could not extract page-level evidence for split suggestion.") from exc
+        if not raw_text:
+            warnings.append(f"Page {index} has no extractable text.")
+            evidence.append(PageEvidence(page=index, text="", truncated=False, missing=True))
+            continue
+        truncated = len(raw_text) > _SUGGEST_MAX_CHARS_PER_PAGE
+        if truncated:
+            warnings.append(f"Page {index} text was truncated for split suggestion.")
+        evidence.append(
+            PageEvidence(
+                page=index,
+                text=raw_text[:_SUGGEST_MAX_CHARS_PER_PAGE],
+                truncated=truncated,
+                missing=False,
+            )
+        )
+
+    return evidence, warnings
+
+
+def _default_split_suggestion_provider(payload: dict[str, Any], config: AktenfuxConfig) -> dict[str, Any]:
+    from aktenfux.llm import suggest_split_boundaries as llm_suggest_split_boundaries  # noqa: PLC0415
+
+    timeout = max(1.0, min(float(config.ollama_timeout), _SUGGEST_TIMEOUT_SECONDS))
+    raw = llm_suggest_split_boundaries(
+        payload,
+        base_url=config.ollama_url,
+        model=config.ollama_model,
+        timeout=timeout,
+    )
+    if len(raw.encode("utf-8")) > _SUGGEST_MAX_PAYLOAD_BYTES:
+        raise SplitError("Split suggestion response exceeded the allowed size limit.")
+    try:
+        return json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        raise SplitError("Split suggestion response was not valid JSON.") from exc
+
+
+def suggest_split_boundaries(
+    document_id: str,
+    config: AktenfuxConfig,
+    *,
+    provider: Callable[[dict[str, Any], AktenfuxConfig], dict[str, Any]] | None = None,
+) -> SplitBoundarySuggestion:
+    """Return advisory split-boundary suggestions for one validated _Split document."""
+
+    _validate_split_roots(config, include_inbox=False)
+    snapshot = _read_snapshot(config, document_id)
+    if snapshot.page_count < 2:
+        raise SplitError("Single-page PDFs cannot have split boundaries suggested.")
+
+    page_evidence, extraction_warnings = _bounded_page_evidence(snapshot)
+    request_payload: dict[str, Any] = {
+        "document_id": snapshot.sidecar.id,
+        "source_sha256": snapshot.source_sha256,
+        "page_count": snapshot.page_count,
+        "pages": [
+            {
+                "page": item.page,
+                "text": item.text,
+                "truncated": item.truncated,
+                "missing": item.missing,
+            }
+            for item in page_evidence
+        ],
+        "instructions": {
+            "return_json_only": True,
+            "max_candidates": 64,
+            "max_evidence_items_per_candidate": 8,
+        },
+    }
+    if len(json.dumps(request_payload, ensure_ascii=False).encode("utf-8")) > _SUGGEST_MAX_PAYLOAD_BYTES:
+        raise SplitError("Split suggestion request exceeded the allowed size limit.")
+
+    active_provider = provider or _default_split_suggestion_provider
+    try:
+        provider_payload = active_provider(request_payload, config)
+    except asyncio.CancelledError:
+        raise
+    except SplitError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise SplitError("Split suggestion failed.") from exc
+
+    if not isinstance(provider_payload, dict):
+        raise SplitError("The split suggestion provider returned an invalid split suggestion payload.")
+    candidates = provider_payload.get("candidates", [])
+    warnings = provider_payload.get("warnings", [])
+    if not isinstance(candidates, list) or not isinstance(warnings, list):
+        raise SplitError("The split suggestion provider returned an invalid split suggestion payload.")
+    normalized_candidates: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            raise SplitError("The split suggestion provider returned an invalid split suggestion payload.")
+        normalized_candidates.append(candidate)
+    normalized_candidates.sort(
+        key=lambda candidate: (
+            candidate.get("before_page")
+            if isinstance(candidate.get("before_page"), int)
+            else 0
+        )
+    )
+
+    suggestion_payload = {
+        "document_id": snapshot.sidecar.id,
+        "source_sha256": snapshot.source_sha256,
+        "source_page_count": snapshot.page_count,
+        "suggestion_provider": f"ollama:{config.ollama_model}",
+        "candidates": normalized_candidates,
+        "warnings": [*extraction_warnings, *warnings],
+    }
+    try:
+        return SplitBoundarySuggestion.model_validate(suggestion_payload)
+    except Exception as exc:  # noqa: BLE001
+        raise SplitError(
+            "The split suggestion provider returned an invalid split suggestion payload."
+        ) from exc
 
 
 def _write_text_atomic(path: Path, text: str) -> None:

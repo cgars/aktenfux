@@ -59,14 +59,16 @@ flowchart TD
     CORE --> PDF["PDF parser libraries"]
     SPLIT --> PDF
     CORE --> OLLAMA["Configured Ollama endpoint"]
+    SPLIT --> OLLAMA
     CORE --> STORE["Configured document paths — not fully confined"]
     SPLIT --> STORE
     CORE --> DB[("Configured SQLite path — not fully confined")]
 ```
 
 The CLI remains the broad interface. A focused browser workbench now exposes
-only validated split inspection, preview, and execution through the same typed
-split services as `afu split`; it is not a general review GUI. The configured
+validated split inspection, explicit advisory boundary suggestion, preview, and
+execution through the same typed split services as `afu split`; it is not a
+general review GUI. The configured
 Ollama URL defaults to loopback, but the implementation currently
 allows other URLs without an explicit remote-inference opt-in. Configured
 document and SQLite paths are also not fully confined to distinct workspace roots.
@@ -148,9 +150,9 @@ artifacts, index rows, or lifecycle state.
 | `db.py` | Optional status and duplicate index | Derived in principle; automatic rebuild and pre-access exact-root validation for the configured index path are not implemented on `main`. |
 | `main.py` | Processing, approve, reject, and reprocess orchestration | Mixes application policy and I/O sequencing. |
 | `review.py` | Resolve and display review records | Sidecar data remains untrusted even when locally stored. |
-| `split.py` | Plan and execute explicit PDF splits with provenance, staging, and retry state | Publishes only deterministic direct-child `_Inbox` outputs; the scanner gates journal-listed parts until the batch is complete. |
-| `workbench.py` | Serve the local split adapter, static browser controller, and exact one-page PDF previews | Loopback bind validation, trusted Hosts, per-process CSRF token, exact same-origin writes, streaming request limit, strict DTOs, and exact-plan confirmation; page previews are generated in memory and do not mutate the source; no remote or multi-user deployment. |
-| `workbench.js` | Request the selected source page under a distinct URL and manage boundary preview/confirmation state | The native viewer receives only one source page, so its own navigation cannot diverge from the Aktenfux page; no CDN assets; untrusted values use text nodes; document or boundary changes invalidate the prior preview and confirmation. |
+| `split.py` | Suggest advisory boundaries and plan/execute explicit PDF splits with provenance, staging, and retry state | Suggestions are bounded typed output tied to exact source hash/page count and remain non-mutating advisory data; execution still publishes only deterministic direct-child `_Inbox` outputs. |
+| `workbench.py` | Serve the local split adapter, static browser controller, exact one-page PDF previews, and explicit suggestion requests | Loopback bind validation, trusted Hosts, per-process CSRF token, exact same-origin writes, streaming request limit, strict DTOs, in-flight suppression, and exact-plan confirmation; page previews are generated in memory and do not mutate the source; no remote or multi-user deployment. |
+| `workbench.js` | Request selected source pages, suggestion candidates, and manage boundary apply/preview/confirmation state | The native viewer receives only one source page, so its own navigation cannot diverge from the Aktenfux page; no CDN assets; untrusted values use text nodes; document/source/boundary changes invalidate stale suggestion, preview, and confirmation state. |
 | `cli.py` | User commands and terminal presentation | Bulk actions need explicit consequence handling. |
 
 ## Current command and artifact behavior
@@ -180,7 +182,9 @@ from being mistaken for the behavior of every command.
 | `afu reject --dry-run` | Review PDF/sidecar and destination existence checks | Terminal/log proposal only; the current implementation returns before creating `_Error` | Still depends on untrusted sidecars; regression coverage must prove the destination directory and artifacts remain absent. |
 | `afu split --dry-run` | Validate `_Split` as a direct non-link `base_dir` child; read its PDF + sidecar by document ID; compare the opened PDF SHA-256 with the authoritative sidecar; read page count and normalize boundaries | Terminal preview only | No split outputs or provenance writes are allowed in dry-run. |
 | `afu split --no-dry-run` | Validate distinct `_Split`/`_Inbox` roots before access, then perform the split dry-run reads plus source-identity revalidation from a single-open snapshot | Split-provenance sidecar updates, staged part generation under `_Inbox/.split-staging/<operation-id>/`, then exclusive no-overwrite publish into `_Inbox` behind a durable batch journal. Hard-link publication is atomic where supported; a tested exclusive fallback supports filesystems without hard links. The inbox scanner skips journal-listed parts while publication is active; successful completion removes staged PDFs and the journal. | Direct-root constraints require `_Split` and `_Inbox` to be distinct direct children; cross-directory split batching remains out of scope. Completed operations refuse republish of missing consumed outputs to avoid duplicate downstream processing. On a hard-link-less filesystem, abrupt termination during the fallback's individual file write can leave an unpublished partial destination that fails closed and requires reconciliation. |
+| `afu split-suggest` | Validate `_Split` direct-child root; resolve one document by stable ID; open one validated source snapshot; read bounded page-level evidence; call configured inference provider through typed boundary | Terminal output only | Read-only for Aktenfux state. Suggestions are advisory untrusted data and cannot execute a split by themselves. |
 | `afu workbench` read paths | Bind to an explicitly validated loopback address; serve the local page/controller; validate `_Split`; list typed document summaries; serve an exact validated PDF or an in-memory one-page preview for the selected source page | HTTP responses and terminal startup message only; one-page preview bytes are not persisted | The native PDF renderer can vary by browser, but it receives only the Aktenfux-selected source page and therefore cannot create an independent document-page state; this is a single-user local boundary and not an authenticated remote service. |
+| `afu workbench` suggest | Validate Host, per-process CSRF token, same Origin/Host/port when Origin is present, streaming body size, and strict document ID; call typed split suggestion service; suppress duplicate in-flight requests per document | Ephemeral in-memory in-flight state only | Suggestion requests can perform configured inference/network work but never write document, sidecar, or split outputs. Failure/cancellation clears in-flight state and keeps manual workflow available. |
 | `afu workbench` preview | Validate Host, per-process CSRF token, same Origin/Host/port when Origin is present, streaming body size, strict document ID and boundary list; call `plan_split` | Ephemeral in-memory latest-preview state with a new one-time token | Restarting the process discards previews; even an identical replacement preview invalidates the prior token, and changing a document/boundary or any execution failure requires a fresh preview and confirmation. |
 | `afu workbench` execute | Repeat the adapter checks; require literal confirmation, exact preview token and complete plan; revalidate the source and prior operation state | Same recoverable `_Split` sidecar, `_Inbox` staging/journal, and output effects as `afu split --no-dry-run`; ephemeral in-flight/completion state | Cancellation and all exceptions clear in-flight state and invalidate the matching preview. The API is unsupported beyond loopback and provides no user accounts. |
 
@@ -251,6 +255,7 @@ flowchart TD
     APP --> DOC["Document and evidence pipeline"]
     APP --> COMMANDS["Review and archive commands"]
     SPLIT --> STORE["PDFs and sidecars"]
+    SPLIT --> INF
     DOC --> INF["Inference provider interface"]
     INF --> OLLAMA["Ollama default"]
     INF --> LOCAL["Other explicitly configured local provider"]

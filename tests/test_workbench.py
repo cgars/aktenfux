@@ -542,3 +542,66 @@ def test_workbench_validates_loopback_binding() -> None:
     for host in ("0.0.0.0", "127.0.0.2", "example.com", ""):
         with pytest.raises(ValueError):
             _validate_loopback_host(host)
+
+
+def test_workbench_suggest_endpoint_returns_bounded_payload(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0001", pages=6)
+    app = create_app(cfg)
+    client = browser_client(app)
+
+    monkeypatch.setattr(
+        workbench_module,
+        "suggest_split_boundaries",
+        lambda document_id, config: {
+            "document_id": "docsuggestapi0001",
+            "source_sha256": "a" * 64,
+            "source_page_count": 6,
+            "suggestion_provider": "ollama:qwen3:8b",
+            "candidates": [
+                {
+                    "before_page": 4,
+                    "confidence": 0.88,
+                    "rationale": "A new sender block appears on page 4.",
+                    "evidence": [{"page": 4, "cue": "From: Example Corp"}],
+                }
+            ],
+            "warnings": [],
+        },
+    )
+
+    response = client.post("/api/split/suggest", json={"document_id": "docsuggestapi0001"})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["suggestion"]["document_id"] == "docsuggestapi0001"
+    assert payload["suggestion"]["candidates"][0]["before_page"] == 4
+    assert "path" not in response.text.lower()
+
+
+def test_workbench_suggest_clears_inflight_on_failure(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0002", pages=6)
+    app = create_app(cfg)
+    client = browser_client(app)
+
+    def fail_suggest(document_id, config):
+        raise workbench_module.SplitError("synthetic suggestion failure")
+
+    monkeypatch.setattr(workbench_module, "suggest_split_boundaries", fail_suggest)
+    response = client.post("/api/split/suggest", json={"document_id": "docsuggestapi0002"})
+
+    assert response.status_code == 400
+    assert "docsuggestapi0002" not in app.state.in_flight_suggestions
+
+
+def test_workbench_blocks_duplicate_inflight_suggestion(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "bundle.pdf", "docsuggestapi0003", pages=6)
+    app = create_app(cfg)
+    client = browser_client(app)
+    app.state.in_flight_suggestions.add("docsuggestapi0003")
+
+    response = client.post("/api/split/suggest", json={"document_id": "docsuggestapi0003"})
+
+    assert response.status_code == 409

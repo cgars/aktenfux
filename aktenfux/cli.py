@@ -397,6 +397,48 @@ def split(
         )
 
 
+@app.command("split-suggest")
+def split_suggest(
+    doc_id: str = typer.Argument(..., help="Document ID staged in _Split."),
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    dry_run: Optional[bool] = typer.Option(None, "--dry-run/--no-dry-run"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Suggest advisory page-level split boundaries without mutating files."""
+    _setup_logging(verbose)
+    cfg = _load_config(config_path, dry_run)
+
+    from aktenfux.main import suggest_split_boundaries  # noqa: PLC0415
+    from aktenfux.split import SplitError  # noqa: PLC0415
+
+    try:
+        suggestion = suggest_split_boundaries(doc_id, cfg)
+    except (FileNotFoundError, ValueError, SplitError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[bold]Split suggestions for {suggestion.document_id}[/bold]")
+    console.print(f"Source sha256: {suggestion.source_sha256}")
+    console.print(f"Source pages: {suggestion.source_page_count}")
+    console.print(f"Provider: {suggestion.suggestion_provider}")
+    if suggestion.candidates:
+        for candidate in suggestion.candidates:
+            evidence = ", ".join(
+                f"p.{item.page}: {item.cue}" for item in candidate.evidence
+            ) or "no evidence"
+            console.print(
+                f"  • Split before page {candidate.before_page} "
+                f"(confidence {candidate.confidence:.2f})"
+            )
+            console.print(f"    reason: {candidate.rationale}")
+            console.print(f"    evidence: {evidence}")
+    else:
+        console.print("No reliable split boundaries were suggested.")
+    for warning in suggestion.warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+    console.print("[green]No files were changed.[/green]")
+
+
 @app.command()
 def workbench(
     config_path: Optional[Path] = typer.Option(None, "--config", "-c"),

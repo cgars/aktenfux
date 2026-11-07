@@ -415,6 +415,62 @@ class SplitResult(BaseModel):
     completed_at_utc: str = Field(min_length=20, max_length=40)
 
 
+class SplitBoundaryEvidence(BaseModel):
+    """Bounded page-level cue explaining a suggested split boundary."""
+
+    page: int = Field(ge=1, le=5000)
+    cue: str = Field(min_length=1, max_length=240)
+
+
+class SplitBoundaryCandidate(BaseModel):
+    """One advisory proposal to split before a page."""
+
+    before_page: int = Field(ge=2, le=5000)
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str = Field(min_length=1, max_length=240)
+    evidence: list[SplitBoundaryEvidence] = Field(default_factory=list, max_length=8)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def normalize_confidence(cls, v: Any) -> Any:
+        if isinstance(v, (int, float)) and v > 1.0:
+            normalized = v / 100.0
+            return min(max(normalized, 0.0), 1.0)
+        return v
+
+
+class SplitBoundarySuggestion(BaseModel):
+    """Read-only boundary suggestions bound to one exact source snapshot."""
+
+    document_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    source_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    source_page_count: int = Field(ge=1, le=5000)
+    suggestion_provider: str = Field(min_length=1, max_length=120)
+    candidates: list[SplitBoundaryCandidate] = Field(default_factory=list, max_length=64)
+    warnings: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("warnings")
+    @classmethod
+    def validate_warnings(cls, value: list[str]) -> list[str]:
+        for warning in value:
+            if not isinstance(warning, str) or not warning.strip() or len(warning) > 240:
+                raise ValueError("warnings must contain non-empty bounded strings.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_candidates(self) -> "SplitBoundarySuggestion":
+        boundaries = [candidate.before_page for candidate in self.candidates]
+        if any(boundary > self.source_page_count for boundary in boundaries):
+            raise ValueError("candidate boundaries must be within source_page_count.")
+        if boundaries != sorted(boundaries) or len(set(boundaries)) != len(boundaries):
+            raise ValueError("candidate boundaries must be sorted and unique.")
+        for candidate in self.candidates:
+            for evidence in candidate.evidence:
+                if evidence.page > self.source_page_count:
+                    raise ValueError("evidence page must be within source_page_count.")
+        return self
+
+
 class SidecarDocument(BaseModel):
     """The full sidecar JSON record stored alongside each PDF."""
 

@@ -105,6 +105,35 @@
     });
   }
 
+  function renderSuggestionCandidates(container, suggestion, createElement) {
+    container.replaceChildren();
+    const candidates = Array.isArray(suggestion?.candidates) ? suggestion.candidates : [];
+    if (!candidates.length) {
+      setText(container, "No reliable suggestion available. You can continue manually.");
+      return;
+    }
+    candidates.forEach((candidate) => {
+      const row = createElement("div");
+      const evidence = Array.isArray(candidate.evidence)
+        ? candidate.evidence.map((item) => `p.${item.page}: ${item.cue}`).join(", ")
+        : "";
+      setText(
+        row,
+        `Split before page ${candidate.before_page} (confidence ${Number(candidate.confidence || 0).toFixed(2)}) — ${candidate.rationale}${evidence ? ` [${evidence}]` : ""}`
+      );
+      container.appendChild(row);
+    });
+  }
+
+  function applySelectedSuggestions(state) {
+    const selected = [...(state.selectedSuggestionBoundaries || [])];
+    if (!selected.length) return state;
+    state.boundaries = [...new Set([...(state.boundaries || []), ...selected])].sort((a, b) => a - b);
+    invalidatePlanState(state);
+    state.confirmChecked = false;
+    return state;
+  }
+
   function startWorkbench(doc, fetchImpl) {
     const state = {
       documents: [],
@@ -120,6 +149,12 @@
       rotation: 0,
       confirmChecked: false,
       preview: null,
+      suggestions: null,
+      suggestedBoundaries: [],
+      selectedSuggestionBoundaries: new Set(),
+      pendingSuggest: false,
+      suggestController: null,
+      suggestSequence: 0,
     };
 
     const elements = {
@@ -138,6 +173,10 @@
       rotate: doc.getElementById("rotate"),
       toggleBoundary: doc.getElementById("toggle-boundary"),
       refreshPreview: doc.getElementById("refresh-preview"),
+      suggestBoundaries: doc.getElementById("suggest-boundaries"),
+      applySuggestions: doc.getElementById("apply-suggestions"),
+      suggestionStatus: doc.getElementById("suggestion-status"),
+      suggestionList: doc.getElementById("suggestion-list"),
     };
     const csrfToken = doc.querySelector('meta[name="aktenfux-csrf-token"]')?.content;
     if (!csrfToken) {
@@ -165,6 +204,31 @@
     function clearConfirmation() {
       state.confirmChecked = false;
       elements.confirmCheck.checked = false;
+    }
+
+    function setSuggestionStatus(text, kind = "info") {
+      setText(elements.suggestionStatus, text || "");
+      elements.suggestionStatus.className = "status";
+      if (kind === "error") elements.suggestionStatus.classList.add("danger");
+      if (kind === "ok") elements.suggestionStatus.classList.add("ok");
+    }
+
+    function abortSuggest() {
+      if (state.suggestController) {
+        state.suggestController.abort();
+        state.suggestController = null;
+      }
+    }
+
+    function invalidateSuggestions() {
+      abortSuggest();
+      state.suggestions = null;
+      state.suggestedBoundaries = [];
+      state.selectedSuggestionBoundaries = new Set();
+      state.pendingSuggest = false;
+      state.suggestSequence += 1;
+      setSuggestionStatus("");
+      setText(elements.suggestionList, "Select a document, then request suggestions.");
     }
 
     function abortPreview() {
@@ -206,6 +270,14 @@
         !enabled || state.pendingPreview || state.pendingExecute || state.currentPage <= 1;
       elements.refreshPreview.disabled =
         !enabled || !state.boundaries.length || state.pendingPreview || state.pendingExecute;
+      elements.suggestBoundaries.disabled =
+        !enabled || state.pendingPreview || state.pendingExecute || state.pendingSuggest;
+      elements.applySuggestions.disabled =
+        !enabled ||
+        state.pendingPreview ||
+        state.pendingExecute ||
+        state.pendingSuggest ||
+        !state.selectedSuggestionBoundaries.size;
       elements.prevPage.disabled = !enabled || state.currentPage <= 1;
       elements.nextPage.disabled =
         !enabled || state.currentPage >= (selected ? selected.page_count : 1);
@@ -247,6 +319,7 @@
       const selected = state.documents.find((item) => item.id === documentId);
       if (!selected || state.pendingExecute) return;
       invalidatePreview();
+      invalidateSuggestions();
       state.currentDocumentId = documentId;
       state.currentPage = 1;
       state.boundaries = [];
@@ -266,6 +339,7 @@
       const retained = documents.some((item) => item.id === state.currentDocumentId);
       if (!retained) {
         invalidatePreview();
+        invalidateSuggestions();
         state.currentDocumentId = documents[0]?.id || null;
         state.currentPage = 1;
         state.boundaries = [];
@@ -310,6 +384,7 @@
       } catch (error) {
         if (error && error.name === "AbortError") return;
         if (sequence !== state.previewSequence) return;
+        invalidateSuggestions();
         setText(elements.previewList, "Preview failed.");
         setMessage(error?.message || "Preview failed.", "error");
         state.preview = null;
@@ -318,6 +393,95 @@
         if (sequence === state.previewSequence) {
           state.pendingPreview = false;
           state.previewController = null;
+          updateViewerUi();
+        }
+      }
+    }
+
+    function renderSuggestionSelection() {
+      const suggestion = state.suggestions;
+      const candidates = Array.isArray(suggestion?.candidates) ? suggestion.candidates : [];
+      elements.suggestionList.replaceChildren();
+      if (!candidates.length) {
+        setText(elements.suggestionList, "No reliable suggestion available. You can continue manually.");
+        updateViewerUi();
+        return;
+      }
+      candidates.forEach((candidate) => {
+        const wrapper = doc.createElement("label");
+        const checkbox = doc.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = state.selectedSuggestionBoundaries.has(candidate.before_page);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) state.selectedSuggestionBoundaries.add(candidate.before_page);
+          else state.selectedSuggestionBoundaries.delete(candidate.before_page);
+          updateViewerUi();
+        });
+        wrapper.appendChild(checkbox);
+        const text = doc.createElement("span");
+        const evidence = Array.isArray(candidate.evidence)
+          ? candidate.evidence.map((item) => `p.${item.page}: ${item.cue}`).join(", ")
+          : "";
+        setText(
+          text,
+          ` Split before page ${candidate.before_page} (confidence ${Number(candidate.confidence || 0).toFixed(2)}) — ${candidate.rationale}${evidence ? ` [${evidence}]` : ""}`
+        );
+        wrapper.appendChild(text);
+        elements.suggestionList.appendChild(wrapper);
+      });
+      if (Array.isArray(suggestion?.warnings) && suggestion.warnings.length) {
+        const warning = doc.createElement("div");
+        setText(warning, suggestion.warnings.join(" | "));
+        elements.suggestionList.appendChild(warning);
+      }
+      updateViewerUi();
+    }
+
+    async function suggestBoundaries() {
+      const selected = selectedDocument();
+      if (!selected || state.pendingSuggest || state.pendingExecute) return;
+      abortSuggest();
+      const controller = new AbortController();
+      state.suggestController = controller;
+      const sequence = state.suggestSequence + 1;
+      state.suggestSequence = sequence;
+      state.pendingSuggest = true;
+      state.suggestions = null;
+      state.suggestedBoundaries = [];
+      state.selectedSuggestionBoundaries = new Set();
+      setSuggestionStatus("Suggestion pending…");
+      updateViewerUi();
+      try {
+        const response = await fetchImpl("/api/split/suggest", {
+          method: "POST",
+          headers: requestHeaders(),
+          body: JSON.stringify({ document_id: selected.id }),
+          signal: controller.signal,
+        });
+        const body = await response.json();
+        if (sequence !== state.suggestSequence) return;
+        if (!response.ok) throw new Error(body.detail || "Suggestion failed.");
+        state.suggestions = body.suggestion;
+        state.suggestedBoundaries = (body.suggestion?.candidates || []).map((item) => item.before_page);
+        setSuggestionStatus(
+          state.suggestedBoundaries.length
+            ? "Suggestions available. Select candidates to apply."
+            : "No reliable suggestion available.",
+          "ok"
+        );
+        renderSuggestionSelection();
+      } catch (error) {
+        if (error && error.name === "AbortError") return;
+        if (sequence !== state.suggestSequence) return;
+        state.suggestions = null;
+        state.suggestedBoundaries = [];
+        state.selectedSuggestionBoundaries = new Set();
+        setSuggestionStatus(error?.message || "Suggestion failed.", "error");
+        setText(elements.suggestionList, "Suggestion failed. Continue with manual boundaries.");
+      } finally {
+        if (sequence === state.suggestSequence) {
+          state.pendingSuggest = false;
+          state.suggestController = null;
           updateViewerUi();
         }
       }
@@ -375,6 +539,19 @@
       }
     }
 
+    function applySuggestionsToManualBoundaries() {
+      if (!state.selectedSuggestionBoundaries.size || state.pendingExecute || state.pendingSuggest) {
+        return;
+      }
+      applySelectedSuggestions(state);
+      clearConfirmation();
+      setSuggestionStatus("Applied selected suggestions to manual boundaries.", "ok");
+      updateViewerUi();
+      if (state.boundaries.length) {
+        preview();
+      }
+    }
+
     function navigate(delta) {
       const selected = selectedDocument();
       if (!selected) return;
@@ -398,6 +575,8 @@
     elements.nextPage.addEventListener("click", () => navigate(1));
     elements.toggleBoundary.addEventListener("click", toggleBoundary);
     elements.refreshPreview.addEventListener("click", preview);
+    elements.suggestBoundaries.addEventListener("click", suggestBoundaries);
+    elements.applySuggestions.addEventListener("click", applySuggestionsToManualBoundaries);
     elements.confirmCheck.addEventListener("change", () => {
       state.confirmChecked = elements.confirmCheck.checked;
       updateViewerUi();
@@ -431,8 +610,10 @@
     movePage,
     pdfUrl,
     renderPreviewParts,
+    renderSuggestionCandidates,
     restoreFocusFromViewer,
     setText,
+    applySelectedSuggestions,
     startWorkbench,
     viewerTransform,
   };
