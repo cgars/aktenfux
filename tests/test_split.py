@@ -549,6 +549,146 @@ def test_suggest_split_boundaries_rejects_provider_limit_violations(tmp_path):
             suggest_split_boundaries("docsuggest00000005", cfg, provider=provider)
 
 
+def test_suggest_split_boundaries_budgets_extraction_warnings(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "blank.pdf", "docsuggest00000006", pages=33)
+    provider_calls = {"count": 0}
+
+    def provider(prompt, config):
+        provider_calls["count"] += 1
+        return {"candidates": [], "warnings": []}
+
+    result = suggest_split_boundaries("docsuggest00000006", cfg, provider=provider)
+
+    assert provider_calls["count"] == 1
+    assert len(result.warnings) == 32
+    assert "additional split-suggestion warning(s) were omitted" in result.warnings[-1]
+
+
+def test_suggest_split_boundaries_budgets_combined_extraction_and_provider_warnings(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "warn.pdf", "docsuggest00000007", pages=4)
+
+    synthetic_evidence = [
+        split_module.PageEvidence(page=1, text="one", truncated=False, missing=False),
+        split_module.PageEvidence(page=2, text="two", truncated=False, missing=False),
+    ]
+    extraction_warnings = [f"extract-{idx:02d}" for idx in range(30)]
+    monkeypatch.setattr(
+        split_module,
+        "_bounded_page_evidence",
+        lambda snapshot: (synthetic_evidence, extraction_warnings.copy()),
+    )
+
+    def provider(prompt, config):
+        return {"candidates": [], "warnings": [f"provider-{idx:02d}" for idx in range(5)]}
+
+    result = suggest_split_boundaries("docsuggest00000007", cfg, provider=provider)
+
+    assert len(result.warnings) == 32
+    assert result.warnings[:30] == extraction_warnings
+    assert result.warnings[30] == "provider-00"
+    assert "additional split-suggestion warning(s) were omitted" in result.warnings[-1]
+
+
+def test_suggest_split_boundaries_ascii_request_budget_stays_within_cap(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "ascii.pdf", "docsuggest00000008", pages=64)
+
+    synthetic_evidence = [
+        split_module.PageEvidence(page=idx, text="A" * 1200, truncated=False, missing=False)
+        for idx in range(1, 65)
+    ]
+    monkeypatch.setattr(
+        split_module,
+        "_bounded_page_evidence",
+        lambda snapshot: (synthetic_evidence, []),
+    )
+
+    captured_payload: dict[str, object] = {}
+
+    def provider(prompt, config):
+        captured_payload.update(prompt)
+        return {"candidates": [], "warnings": []}
+
+    suggest_split_boundaries("docsuggest00000008", cfg, provider=provider)
+
+    serialized = json.dumps(
+        captured_payload, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    assert len(serialized) <= split_module._SUGGEST_MAX_PAYLOAD_BYTES
+    assert any(page["truncated"] for page in captured_payload["pages"])
+
+
+def test_suggest_split_boundaries_unicode_request_budget_stays_within_cap(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "unicode.pdf", "docsuggest00000009", pages=64)
+
+    synthetic_evidence = [
+        split_module.PageEvidence(page=idx, text="ä" * 1200, truncated=False, missing=False)
+        for idx in range(1, 65)
+    ]
+    monkeypatch.setattr(
+        split_module,
+        "_bounded_page_evidence",
+        lambda snapshot: (synthetic_evidence, []),
+    )
+
+    captured_payload: dict[str, object] = {}
+
+    def provider(prompt, config):
+        captured_payload.update(prompt)
+        return {"candidates": [], "warnings": []}
+
+    suggest_split_boundaries("docsuggest00000009", cfg, provider=provider)
+
+    serialized = json.dumps(
+        captured_payload, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    assert len(serialized) <= split_module._SUGGEST_MAX_PAYLOAD_BYTES
+    assert any(page["truncated"] for page in captured_payload["pages"])
+
+
+@pytest.mark.parametrize(
+    "provider_payload",
+    [
+        {
+            "candidates": [
+                {
+                    "before_page": 65,
+                    "confidence": 0.7,
+                    "rationale": "outside analysed range",
+                    "evidence": [{"page": 64, "cue": "cue"}],
+                }
+            ],
+            "warnings": [],
+        },
+        {
+            "candidates": [
+                {
+                    "before_page": 64,
+                    "confidence": 0.7,
+                    "rationale": "outside analysed evidence range",
+                    "evidence": [{"page": 65, "cue": "cue"}],
+                }
+            ],
+            "warnings": [],
+        },
+    ],
+)
+def test_suggest_split_boundaries_rejects_provider_pages_outside_analysed_range(
+    tmp_path, provider_payload
+):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "long.pdf", "docsuggest00000010", pages=80)
+
+    def provider(prompt, config):
+        return provider_payload
+
+    with pytest.raises(SplitError, match="outside analysed page range"):
+        suggest_split_boundaries("docsuggest00000010", cfg, provider=provider)
+
+
 def test_execute_split_recovers_after_final_completion_write_failure(tmp_path, monkeypatch):
     cfg = make_config(tmp_path)
     write_split_doc(cfg.split_path, "recover-complete.pdf", "docsplit000000013", pages=5)

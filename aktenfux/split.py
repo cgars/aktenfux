@@ -37,6 +37,7 @@ _WORKBENCH_DISPLAY_NAME_MAX_CHARS = 200
 _SUGGEST_MAX_PAGES = 64
 _SUGGEST_MAX_CHARS_PER_PAGE = 1200
 _SUGGEST_MAX_PAYLOAD_BYTES = 80_000
+_SUGGEST_MAX_WARNINGS = 32
 _SUGGEST_TIMEOUT_SECONDS = 120.0
 
 
@@ -387,6 +388,117 @@ def _bounded_page_evidence(snapshot: SourceSnapshot) -> tuple[list[PageEvidence]
     return evidence, warnings
 
 
+def _compact_json_payload_size(payload: dict[str, Any]) -> int:
+    return len(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def _truncate_utf8_bytes(text: str, max_bytes: int) -> str:
+    if max_bytes <= 0 or not text:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _build_split_suggestion_request_payload(
+    snapshot: SourceSnapshot, page_evidence: list[PageEvidence]
+) -> dict[str, Any]:
+    return {
+        "document_id": snapshot.sidecar.id,
+        "source_sha256": snapshot.source_sha256,
+        "page_count": snapshot.page_count,
+        "pages": [
+            {
+                "page": item.page,
+                "text": item.text,
+                "truncated": item.truncated,
+                "missing": item.missing,
+            }
+            for item in page_evidence
+        ],
+        "instructions": {
+            "return_json_only": True,
+            "max_candidates": 64,
+            "max_evidence_items_per_candidate": 8,
+        },
+    }
+
+
+def _fit_page_evidence_to_request_budget(
+    snapshot: SourceSnapshot, page_evidence: list[PageEvidence]
+) -> tuple[list[PageEvidence], list[str]]:
+    request_payload = _build_split_suggestion_request_payload(snapshot, page_evidence)
+    if _compact_json_payload_size(request_payload) <= _SUGGEST_MAX_PAYLOAD_BYTES:
+        return page_evidence, []
+
+    def apply_utf8_page_text_cap(cap_bytes: int) -> tuple[list[PageEvidence], list[int]]:
+        adjusted: list[PageEvidence] = []
+        newly_truncated_pages: list[int] = []
+        for item in page_evidence:
+            if not item.text:
+                adjusted.append(item)
+                continue
+            bounded_text = _truncate_utf8_bytes(item.text, cap_bytes)
+            changed = bounded_text != item.text
+            adjusted.append(
+                PageEvidence(
+                    page=item.page,
+                    text=bounded_text,
+                    truncated=item.truncated or changed,
+                    missing=item.missing,
+                )
+            )
+            if changed and not item.truncated:
+                newly_truncated_pages.append(item.page)
+        return adjusted, newly_truncated_pages
+
+    min_evidence, _ = apply_utf8_page_text_cap(0)
+    min_payload = _build_split_suggestion_request_payload(snapshot, min_evidence)
+    if _compact_json_payload_size(min_payload) > _SUGGEST_MAX_PAYLOAD_BYTES:
+        raise SplitError("Split suggestion request exceeded the allowed size limit.")
+
+    max_text_bytes = max((len(item.text.encode("utf-8")) for item in page_evidence), default=0)
+    low = 0
+    high = max_text_bytes
+    best_evidence = min_evidence
+    best_newly_truncated_pages: list[int] = []
+    while low <= high:
+        mid = (low + high) // 2
+        candidate_evidence, candidate_newly_truncated = apply_utf8_page_text_cap(mid)
+        candidate_payload = _build_split_suggestion_request_payload(snapshot, candidate_evidence)
+        if _compact_json_payload_size(candidate_payload) <= _SUGGEST_MAX_PAYLOAD_BYTES:
+            best_evidence = candidate_evidence
+            best_newly_truncated_pages = candidate_newly_truncated
+            low = mid + 1
+        else:
+            high = mid - 1
+
+    budget_warnings = [
+        f"Page {page} text was truncated for split suggestion."
+        for page in best_newly_truncated_pages
+    ]
+    return best_evidence, budget_warnings
+
+
+def _bound_combined_suggestion_warnings(
+    extraction_warnings: list[str], provider_warnings: list[str]
+) -> list[str]:
+    combined = [*extraction_warnings, *provider_warnings]
+    if len(combined) <= _SUGGEST_MAX_WARNINGS:
+        return combined
+
+    retained = combined[: _SUGGEST_MAX_WARNINGS - 1]
+    omitted_count = len(combined) - len(retained)
+    retained.append(
+        f"{omitted_count} additional split-suggestion warning(s) were omitted after reaching the "
+        f"{_SUGGEST_MAX_WARNINGS}-warning limit."
+    )
+    return retained
+
+
 def _default_split_suggestion_provider(payload: dict[str, Any], config: AktenfuxConfig) -> dict[str, Any]:
     from aktenfux.llm import suggest_split_boundaries as llm_suggest_split_boundaries  # noqa: PLC0415
 
@@ -419,27 +531,9 @@ def suggest_split_boundaries(
         raise SplitError("Single-page PDFs cannot have split boundaries suggested.")
 
     page_evidence, extraction_warnings = _bounded_page_evidence(snapshot)
-    request_payload: dict[str, Any] = {
-        "document_id": snapshot.sidecar.id,
-        "source_sha256": snapshot.source_sha256,
-        "page_count": snapshot.page_count,
-        "pages": [
-            {
-                "page": item.page,
-                "text": item.text,
-                "truncated": item.truncated,
-                "missing": item.missing,
-            }
-            for item in page_evidence
-        ],
-        "instructions": {
-            "return_json_only": True,
-            "max_candidates": 64,
-            "max_evidence_items_per_candidate": 8,
-        },
-    }
-    if len(json.dumps(request_payload, ensure_ascii=False).encode("utf-8")) > _SUGGEST_MAX_PAYLOAD_BYTES:
-        raise SplitError("Split suggestion request exceeded the allowed size limit.")
+    page_evidence, budget_warnings = _fit_page_evidence_to_request_budget(snapshot, page_evidence)
+    extraction_warnings.extend(budget_warnings)
+    request_payload = _build_split_suggestion_request_payload(snapshot, page_evidence)
 
     active_provider = provider or _default_split_suggestion_provider
     try:
@@ -458,6 +552,20 @@ def suggest_split_boundaries(
             "The split suggestion provider returned an invalid split suggestion payload."
         ) from exc
 
+    analysed_page_count = len(page_evidence)
+    for candidate in provider_response.candidates:
+        if candidate.before_page > analysed_page_count:
+            raise SplitError(
+                "The split suggestion provider returned an invalid split suggestion payload "
+                "(boundary outside analysed page range)."
+            )
+        for evidence in candidate.evidence:
+            if evidence.page > analysed_page_count:
+                raise SplitError(
+                    "The split suggestion provider returned an invalid split suggestion payload "
+                    "(evidence outside analysed page range)."
+                )
+
     latest_snapshot = _read_snapshot(config, document_id)
     if (
         latest_snapshot.source_sha256 != snapshot.source_sha256
@@ -473,7 +581,9 @@ def suggest_split_boundaries(
         "candidates": [
             candidate.model_dump(mode="json") for candidate in provider_response.candidates
         ],
-        "warnings": [*extraction_warnings, *provider_response.warnings],
+        "warnings": _bound_combined_suggestion_warnings(
+            extraction_warnings, provider_response.warnings
+        ),
     }
     try:
         return SplitBoundarySuggestion.model_validate(suggestion_payload)
