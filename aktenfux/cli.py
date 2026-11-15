@@ -267,7 +267,16 @@ def _process_all_in_review(operation, action_label: str, color: str, cfg) -> Non
         console.print(f"[yellow]No documents in _Review were {action_label.lower()}.[/yellow]")
         return
     errors = 0
+    skipped = 0
     for sidecar in sidecars:
+        if (
+            action_label == "Approved"
+            and sidecar.document_integrity.recommended_action == "manual_review"
+            and not sidecar.document_integrity.possible_multi_document_scan
+        ):
+            console.print(f"[yellow]↷ Skipped (manual review required): {sidecar.id}[/yellow]")
+            skipped += 1
+            continue
         try:
             operation(sidecar.id, cfg)
             if cfg.dry_run:
@@ -279,6 +288,10 @@ def _process_all_in_review(operation, action_label: str, color: str, cfg) -> Non
             errors += 1
     if errors:
         raise typer.Exit(1)
+    if skipped:
+        console.print(
+            f"[yellow]Skipped {skipped} document(s) requiring manual review.[/yellow]"
+        )
 
 
 @app.command()
