@@ -36,10 +36,16 @@ Windows. On macOS/Linux, it uses `open` / `xdg-open`.
   skipped to avoid unexpectedly reading outside the chosen tree.
 - All matching happens locally. Document titles, metadata, and paths of
   matches appear in the invoking terminal. `fzf` also receives matching
-  filenames and summaries locally.
+  filenames and summaries locally. Human-facing terminal and `fzf` display
+  escapes control bytes from sidecar metadata and filesystem names; `--paths`
+  intentionally emits raw paths for machine-readable scripting.
+- Default warnings/errors redact complete paths and parser diagnostics to avoid
+  leaking unrelated local filesystem detail. Use `--show-sensitive-paths` only
+  when you explicitly need full diagnostic context.
 - Matches are based on JSON text (including machine-generated metadata),
   not the truth or correctness of the LLM's conclusions.
 - `--pdf-text` executes the local `pdftotext` parser against untrusted
   PDFs. Update Poppler and avoid processing hostile files with high privileges.
 
-This is a utility script, not an `afu` CLI command or indexed search service.
+This is a utility script outside the Aktenfux application runtime and supported
+`afu` interface; it is not an `afu` CLI command or indexed search service.
