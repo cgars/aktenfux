@@ -5,6 +5,7 @@ import logging
 import re
 import sys
 from pathlib import Path
+from collections.abc import Callable
 from typing import Optional
 
 import typer
@@ -253,7 +254,15 @@ def review(
     print_review_table(sidecars)
 
 
-def _process_all_in_review(operation, action_label: str, color: str, cfg) -> None:
+def _process_all_in_review(
+    operation,
+    action_label: str,
+    color: str,
+    cfg,
+    *,
+    should_skip: Callable[[object], bool] | None = None,
+    skip_message: str | None = None,
+) -> None:
     """Apply *operation* to every document currently in *cfg.review_path*.
 
     *operation* must accept ``(doc_id, cfg)`` and raise ``FileNotFoundError``
@@ -269,12 +278,9 @@ def _process_all_in_review(operation, action_label: str, color: str, cfg) -> Non
     errors = 0
     skipped = 0
     for sidecar in sidecars:
-        if (
-            action_label == "Approved"
-            and sidecar.document_integrity.recommended_action == "manual_review"
-            and not sidecar.document_integrity.possible_multi_document_scan
-        ):
-            console.print(f"[yellow]↷ Skipped (manual review required): {sidecar.id}[/yellow]")
+        if should_skip is not None and should_skip(sidecar):
+            message = skip_message or "Skipped"
+            console.print(f"[yellow]↷ {message}: {sidecar.id}[/yellow]")
             skipped += 1
             continue
         try:
@@ -289,9 +295,7 @@ def _process_all_in_review(operation, action_label: str, color: str, cfg) -> Non
     if errors:
         raise typer.Exit(1)
     if skipped:
-        console.print(
-            f"[yellow]Skipped {skipped} document(s) requiring manual review.[/yellow]"
-        )
+        console.print(f"[yellow]Skipped {skipped} document(s).[/yellow]")
 
 
 @app.command()
@@ -302,7 +306,10 @@ def approve(
     all_docs: bool = typer.Option(
         False,
         "--all",
-        help="Approve all documents currently in _Review, staging split recommendations in _Split.",
+        help=(
+            "Bulk-approve reviewed documents: multi-document signals stage to _Split; "
+            "manual-review-only items are skipped and remain in _Review; the remainder is archived."
+        ),
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -317,7 +324,17 @@ def approve(
         raise typer.Exit(1)
 
     if all_docs:
-        _process_all_in_review(approve_document, "Approved", "green", cfg)
+        _process_all_in_review(
+            approve_document,
+            "Approved",
+            "green",
+            cfg,
+            should_skip=lambda sidecar: (
+                sidecar.document_integrity.recommended_action == "manual_review"
+                and not sidecar.document_integrity.possible_multi_document_scan
+            ),
+            skip_message="Skipped (manual review required)",
+        )
         return
 
     if doc_id is None:

@@ -179,11 +179,11 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 | `afu scan` | Process PDFs from `_Inbox` |
 | `afu scan --dry-run` | Before inbox inspection, contact Ollama and discover models. Discovery failure or a declined pull stops. An accepted pull can fail with partial external state; its stream must report explicit success, after which the model is re-listed and must be verified. With any PDF and indexing enabled, the current MVP initializes/accesses SQLite; after successful analysis it writes unsafe model-named JSON (synthetic data only). |
 | `afu review` | List documents awaiting approval |
-| `afu approve <id>` | Archive an approved document, or stage it directly in `_Split` when split detection is recommended |
+| `afu approve <id>` | Archive an approved document, or stage it directly in `_Split` when split detection is recommended or a possible multi-document scan is flagged |
 | `afu split <id> --before N [--before M ...]` | Preview and, after explicit confirmation, split one staged `_Split` PDF into `_Inbox` part PDFs |
 | `afu split-suggest <id>` | Read-only advisory suggestion of likely “split before page N” boundaries for one staged `_Split` PDF |
 | `afu workbench` | Start the loopback-only browser workbench for previewing and explicitly confirming `_Split` operations |
-| `afu approve --all` | Archive/stage all documents currently in `_Review` |
+| `afu approve --all` | Apply precedence in `_Review`: possible multi-document or split-detection items stage to `_Split`; manual-review-only items stay in `_Review` and are reported as skipped; all others are archived |
 | `afu reject <id>` | Move a document to `_Error` |
 | `afu reject --all` | Move all documents currently in `_Review` to `_Error` |
 | `afu status` | Show document counts per folder |

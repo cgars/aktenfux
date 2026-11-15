@@ -220,6 +220,31 @@ class TestApproveAll:
         assert not (cfg.archive_path / "manual-only.pdf").exists()
         assert not (cfg.split_path / "manual-only.pdf").exists()
 
+    def test_approve_single_manual_review_without_multi_document_signal_archives(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        review_dir = cfg.review_path
+        _write_sidecar(
+            review_dir,
+            "manual-single.pdf",
+            "manual0000000004",
+            document_integrity={
+                "possible_multi_document_scan": False,
+                "suspected_document_count": 1,
+                "confidence": 0.5,
+                "reason": "Low confidence requires manual review.",
+                "recommended_action": "manual_review",
+            },
+        )
+
+        with patch("aktenfux.cli._load_config", return_value=cfg):
+            result = runner.invoke(app, ["approve", "manual0000000004"])
+
+        assert result.exit_code == 0, result.output
+        assert "Approved: manual0000000004" in result.output
+        assert not (review_dir / "manual-single.pdf").exists()
+        assert (cfg.archive_path / "manual-single.pdf").exists()
+        assert not (cfg.split_path / "manual-single.pdf").exists()
+
     def test_approve_all_mixed_batch_routes_and_skips_correctly(self, tmp_path):
         cfg = _make_config(tmp_path)
         review_dir = cfg.review_path
@@ -427,6 +452,30 @@ class TestRejectAll:
         assert not cfg.error_path.exists()
         # Dry-run should still report which document would be processed
         assert "ffff000000000006" in result.output
+
+    def test_reject_all_rejects_manual_review_without_multi_document_signal(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        review_dir = cfg.review_path
+        _write_sidecar(
+            review_dir,
+            "reject-manual-only.pdf",
+            "manual0000000005",
+            document_integrity={
+                "possible_multi_document_scan": False,
+                "suspected_document_count": 1,
+                "confidence": 0.45,
+                "reason": "Insufficient confidence; manual review recommended.",
+                "recommended_action": "manual_review",
+            },
+        )
+
+        with patch("aktenfux.cli._load_config", return_value=cfg):
+            result = runner.invoke(app, ["reject", "--all"])
+
+        assert result.exit_code == 0, result.output
+        assert "Rejected: manual0000000005" in result.output
+        assert not (review_dir / "reject-manual-only.pdf").exists()
+        assert (cfg.error_path / "reject-manual-only.pdf").exists()
 
 
 # ---------------------------------------------------------------------------
