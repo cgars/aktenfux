@@ -281,7 +281,11 @@ def _approval_target_dir(sidecar: SidecarDocument, config: AktenfuxConfig) -> Pa
     boundary. The untrusted suggested archive folder remains recorded in the
     authoritative sidecar as metadata rather than controlling this move.
     """
-    if sidecar.document_integrity.recommended_action == "run_split_detection":
+    integrity = sidecar.document_integrity
+    if (
+        integrity.recommended_action == "run_split_detection"
+        or integrity.possible_multi_document_scan
+    ):
         return config.split_path
     return config.archive_path / sidecar.suggested_folder
 

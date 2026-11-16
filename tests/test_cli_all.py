@@ -141,6 +141,195 @@ class TestApproveAll:
         assert moved_sidecar.status == "approved"
         assert moved_sidecar.current_path == str(split_pdf)
 
+    def test_approve_manual_review_with_possible_multi_document_moves_to_split_folder(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        review_dir = cfg.review_path
+        _write_sidecar(
+            review_dir,
+            "possible-multi.pdf",
+            "split00000000003",
+            document_integrity={
+                "possible_multi_document_scan": True,
+                "suspected_document_count": 2,
+                "confidence": 0.55,
+                "reason": "Low confidence but could contain multiple documents.",
+                "recommended_action": "manual_review",
+            },
+        )
+
+        approve_document("split00000000003", cfg)
+
+        split_pdf = cfg.split_path / "possible-multi.pdf"
+        assert split_pdf.exists()
+        assert not (cfg.archive_path / "possible-multi.pdf").exists()
+        assert not (review_dir / "possible-multi.pdf").exists()
+        moved_sidecar = read_sidecar(split_pdf)
+        assert moved_sidecar is not None
+        assert moved_sidecar.status == "approved"
+        assert moved_sidecar.current_path == str(split_pdf)
+
+    def test_approve_all_routes_possible_multi_document_manual_review_to_split_folder(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        review_dir = cfg.review_path
+        _write_sidecar(
+            review_dir,
+            "possible-multi-all.pdf",
+            "split00000000004",
+            document_integrity={
+                "possible_multi_document_scan": True,
+                "suspected_document_count": 2,
+                "confidence": 0.55,
+                "reason": "Low confidence but could contain multiple documents.",
+                "recommended_action": "manual_review",
+            },
+        )
+
+        with patch("aktenfux.cli._load_config", return_value=cfg):
+            result = runner.invoke(app, ["approve", "--all"])
+
+        assert result.exit_code == 0, result.output
+        assert "split00000000004" in result.output
+        assert (cfg.split_path / "possible-multi-all.pdf").exists()
+        assert not (cfg.archive_path / "possible-multi-all.pdf").exists()
+        assert not (review_dir / "possible-multi-all.pdf").exists()
+
+    def test_approve_all_skips_manual_review_without_multi_document_signal(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        review_dir = cfg.review_path
+        _write_sidecar(
+            review_dir,
+            "manual-only.pdf",
+            "manual0000000001",
+            document_integrity={
+                "possible_multi_document_scan": False,
+                "suspected_document_count": 1,
+                "confidence": 0.55,
+                "reason": "Needs manual review due to low confidence.",
+                "recommended_action": "manual_review",
+            },
+        )
+
+        with patch("aktenfux.cli._load_config", return_value=cfg):
+            result = runner.invoke(app, ["approve", "--all"])
+
+        assert result.exit_code == 0, result.output
+        assert "Skipped (manual review required): manual0000000001" in result.output
+        assert "Approved: manual0000000001" not in result.output
+        assert (review_dir / "manual-only.pdf").exists()
+        assert (review_dir / "manual-only.json").exists()
+        assert not (cfg.archive_path / "manual-only.pdf").exists()
+        assert not (cfg.split_path / "manual-only.pdf").exists()
+
+    def test_approve_single_manual_review_without_multi_document_signal_archives(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        review_dir = cfg.review_path
+        _write_sidecar(
+            review_dir,
+            "manual-single.pdf",
+            "manual0000000004",
+            document_integrity={
+                "possible_multi_document_scan": False,
+                "suspected_document_count": 1,
+                "confidence": 0.5,
+                "reason": "Low confidence requires manual review.",
+                "recommended_action": "manual_review",
+            },
+        )
+
+        with patch("aktenfux.cli._load_config", return_value=cfg):
+            result = runner.invoke(app, ["approve", "manual0000000004"])
+
+        assert result.exit_code == 0, result.output
+        assert "Approved: manual0000000004" in result.output
+        assert not (review_dir / "manual-single.pdf").exists()
+        assert (cfg.archive_path / "manual-single.pdf").exists()
+        assert not (cfg.split_path / "manual-single.pdf").exists()
+
+    def test_approve_all_mixed_batch_routes_and_skips_correctly(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        review_dir = cfg.review_path
+        _write_sidecar(review_dir, "normal-mixed.pdf", "normal0000000001")
+        _write_sidecar(
+            review_dir,
+            "possible-mixed.pdf",
+            "split00000000005",
+            document_integrity={
+                "possible_multi_document_scan": True,
+                "suspected_document_count": 2,
+                "confidence": 0.55,
+                "reason": "Low confidence but possible multi-document scan.",
+                "recommended_action": "manual_review",
+            },
+        )
+        _write_sidecar(
+            review_dir,
+            "manual-mixed.pdf",
+            "manual0000000002",
+            document_integrity={
+                "possible_multi_document_scan": False,
+                "suspected_document_count": 1,
+                "confidence": 0.4,
+                "reason": "Insufficient confidence; manual review required.",
+                "recommended_action": "manual_review",
+            },
+        )
+
+        with patch("aktenfux.cli._load_config", return_value=cfg):
+            result = runner.invoke(app, ["approve", "--all"])
+
+        assert result.exit_code == 0, result.output
+        assert (cfg.archive_path / "normal-mixed.pdf").exists()
+        assert (cfg.split_path / "possible-mixed.pdf").exists()
+        assert (review_dir / "manual-mixed.pdf").exists()
+        assert "Approved: normal0000000001" in result.output
+        assert "Approved: split00000000005" in result.output
+        assert "Skipped (manual review required): manual0000000002" in result.output
+        assert "Approved: manual0000000002" not in result.output
+
+    def test_approve_all_dry_run_mixed_batch_keeps_files_and_matches_routing(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg.dry_run = True
+        review_dir = cfg.review_path
+        _write_sidecar(review_dir, "normal-dry.pdf", "normal0000000002")
+        _write_sidecar(
+            review_dir,
+            "possible-dry.pdf",
+            "split00000000006",
+            document_integrity={
+                "possible_multi_document_scan": True,
+                "suspected_document_count": 2,
+                "confidence": 0.55,
+                "reason": "Low confidence but possible multi-document scan.",
+                "recommended_action": "manual_review",
+            },
+        )
+        _write_sidecar(
+            review_dir,
+            "manual-dry.pdf",
+            "manual0000000003",
+            document_integrity={
+                "possible_multi_document_scan": False,
+                "suspected_document_count": 1,
+                "confidence": 0.4,
+                "reason": "Insufficient confidence; manual review required.",
+                "recommended_action": "manual_review",
+            },
+        )
+
+        with patch("aktenfux.cli._load_config", return_value=cfg):
+            result = runner.invoke(app, ["approve", "--all"])
+
+        assert result.exit_code == 0, result.output
+        assert "Would be approved: normal0000000002" in result.output
+        assert "Would be approved: split00000000006" in result.output
+        assert "Skipped (manual review required): manual0000000003" in result.output
+        assert "Would be approved: manual0000000003" not in result.output
+        assert (review_dir / "normal-dry.pdf").exists()
+        assert (review_dir / "possible-dry.pdf").exists()
+        assert (review_dir / "manual-dry.pdf").exists()
+        assert not (cfg.archive_path / "normal-dry.pdf").exists()
+        assert not (cfg.split_path / "possible-dry.pdf").exists()
+
     def test_approved_nested_archive_suggestion_is_visible_to_workbench(self, tmp_path):
         cfg = _make_config(tmp_path)
         cfg.review_path.mkdir(parents=True)
@@ -263,6 +452,30 @@ class TestRejectAll:
         assert not cfg.error_path.exists()
         # Dry-run should still report which document would be processed
         assert "ffff000000000006" in result.output
+
+    def test_reject_all_rejects_manual_review_without_multi_document_signal(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        review_dir = cfg.review_path
+        _write_sidecar(
+            review_dir,
+            "reject-manual-only.pdf",
+            "manual0000000005",
+            document_integrity={
+                "possible_multi_document_scan": False,
+                "suspected_document_count": 1,
+                "confidence": 0.45,
+                "reason": "Insufficient confidence; manual review recommended.",
+                "recommended_action": "manual_review",
+            },
+        )
+
+        with patch("aktenfux.cli._load_config", return_value=cfg):
+            result = runner.invoke(app, ["reject", "--all"])
+
+        assert result.exit_code == 0, result.output
+        assert "Rejected: manual0000000005" in result.output
+        assert not (review_dir / "reject-manual-only.pdf").exists()
+        assert (cfg.error_path / "reject-manual-only.pdf").exists()
 
 
 # ---------------------------------------------------------------------------
