@@ -83,11 +83,13 @@ def test_split_completed_lists_retained_sources(tmp_path):
             ["split", "docsplitcli000003b", "--before", "4", "--yes"],
         )
         assert split_result.exit_code == 0, split_result.output
+        cfg.split_path.rmdir()
         result = runner.invoke(app, ["split-completed"])
 
     assert result.exit_code == 0, result.output
     assert "Retained completed split sources" in result.output
     assert "Operation" in result.output
+    assert not cfg.split_path.exists()
 
 
 def test_split_completed_fails_when_retained_entries_are_invalid(tmp_path):

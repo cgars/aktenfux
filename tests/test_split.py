@@ -1028,7 +1028,10 @@ def test_execute_split_recovers_after_cleanup_failure_with_owned_temp_residue(tm
     assert not (cfg.imported_path / ".split-completed-transition").exists()
 
 
-def test_reconcile_completed_split_sources_accepts_finalized_cleanup_residue(tmp_path, monkeypatch):
+@pytest.mark.parametrize("split_root_present", [True, False])
+def test_reconcile_completed_split_sources_accepts_finalized_cleanup_residue(
+    tmp_path, monkeypatch, split_root_present
+):
     cfg = make_config(tmp_path)
     write_split_doc(cfg.split_path, "cleanup-residue.pdf", "docsplit000000026", pages=5)
     plan = plan_split("docsplit000000026", [3], cfg)
@@ -1058,6 +1061,8 @@ def test_reconcile_completed_split_sources_accepts_finalized_cleanup_residue(tmp
     assert journal_path.exists()
     assert not (cfg.split_path / "cleanup-residue.pdf").exists()
     assert not (cfg.split_path / "cleanup-residue.json").exists()
+    if not split_root_present:
+        cfg.split_path.rmdir()
 
     retained_doc = read_sidecar(retained_pdf)
     staged_doc = split_module._read_sidecar_validated(staged_sidecar)  # noqa: SLF001
@@ -1072,6 +1077,11 @@ def test_reconcile_completed_split_sources_accepts_finalized_cleanup_residue(tmp
     assert len(apply.transitioned) == 1
     assert apply.issues == ()
     assert not operation_root.exists()
+    assert cfg.split_path.exists() is split_root_present
+
+    replay = execute_split(plan, cfg)
+    assert replay.operation_id == plan.operation_id
+    assert cfg.split_path.exists() is split_root_present
 
 
 def test_list_completed_split_documents_reports_invalid_entries(tmp_path):

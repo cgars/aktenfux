@@ -88,6 +88,9 @@ Recovery may resume from any state above. Unknown/ambiguous state fails closed.
 ### Discoverability
 
 - Read-only retained inspection: `afu split-completed`.
+- Inspection, exact retries, and recovery from completed-transition journals
+  work with an absent `_Split` directory. Active split planning still requires
+  that directory.
 
 ### Migration
 

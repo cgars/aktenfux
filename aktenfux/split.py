@@ -256,13 +256,15 @@ def _validate_lifecycle_root(
     return resolved_root
 
 
-def _validate_split_roots(config: AktenfuxConfig, *, include_inbox: bool) -> None:
+def _validate_split_roots(
+    config: AktenfuxConfig, *, include_inbox: bool, require_split: bool = True
+) -> None:
     resolved_split = _validate_lifecycle_root(
         base_dir=config.base_dir,
         root=config.split_path,
         configured_name=config.split_dir,
         label="split",
-        must_exist=True,
+        must_exist=require_split,
     )
     if not include_inbox:
         return
@@ -276,7 +278,11 @@ def _validate_split_roots(config: AktenfuxConfig, *, include_inbox: bool) -> Non
     if resolved_split == resolved_inbox:
         raise SplitError("Configured split and inbox roots must be distinct.")
     try:
-        if config.inbox_path.exists() and os.path.samefile(config.split_path, config.inbox_path):
+        if (
+            config.split_path.exists()
+            and config.inbox_path.exists()
+            and os.path.samefile(config.split_path, config.inbox_path)
+        ):
             raise SplitError("Configured split and inbox roots must not alias each other.")
     except SplitError:
         raise
@@ -319,7 +325,7 @@ def _validate_imported_root(config: AktenfuxConfig) -> Path:
 
 
 def _validate_completed_roots(config: AktenfuxConfig, *, include_inbox: bool) -> Path:
-    _validate_split_roots(config, include_inbox=include_inbox)
+    _validate_split_roots(config, include_inbox=include_inbox, require_split=False)
     return _validate_imported_root(config)
 
 
@@ -2072,39 +2078,6 @@ def reconcile_completed_split_sources(
             )
         )
 
-    if not config.split_path.exists():
-        if journals:
-            for journal in journals:
-                try:
-                    snapshot, operation, summary = _preflight_completed_transition_from_journal(
-                        config=config,
-                        journal=journal,
-                    )
-                    seen_operations.add(journal.operation_id)
-                    eligible.append(summary)
-                    if apply_changes:
-                        _retain_completed_source(
-                            config=config,
-                            snapshot=snapshot,
-                            operation=operation,
-                            source_filename=journal.source_pdf,
-                        )
-                        transitioned.append(summary)
-                except SplitError as exc:
-                    issues.append(
-                        CompletedSplitReconcileIssue(
-                            document_id=journal.document_id,
-                            source_pdf=journal.source_pdf,
-                            reason=str(exc),
-                        )
-                    )
-        return CompletedSplitReconcileResult(
-            dry_run=not apply_changes,
-            eligible=tuple(eligible),
-            transitioned=tuple(transitioned),
-            issues=tuple(issues),
-        )
-
     split_pdf_paths = sorted(config.split_path.glob("*.pdf"))
     split_json_names = {path.name for path in config.split_path.glob("*.json")}
     paired_json_names = {path.with_suffix(".json").name for path in split_pdf_paths}
@@ -2255,7 +2228,7 @@ def plan_split(document_id: str, boundaries: list[int], config: AktenfuxConfig) 
 
 def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
     """Execute a split plan with recoverable, idempotent semantics."""
-    _validate_split_roots(config, include_inbox=True)
+    _validate_split_roots(config, include_inbox=True, require_split=False)
     snapshot = _read_snapshot(
         config,
         plan.document_id,
