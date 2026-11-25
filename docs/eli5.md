@@ -76,6 +76,10 @@ The named areas must also be genuinely different places. `_Review` must not be t
 
 The sidecar is Aktenfux's authoritative record of what it believes about a document. The searchable database is derived from sidecars. The target design can rebuild the catalogue without rereading every PDF with the model; the current `main` branch does not yet provide that rebuild command.
 
+`afu archive-check` counts documents whose index cards can still be read and
+whose recorded location and file hash agree with the archive. It reports
+missing or inconsistent cards so the owner can decide what to repair.
+
 Sidecars should be written atomically: prepare a complete replacement, flush it safely, and then swap it into place. A half-written card is worse than no new card.
 
 The current normal scan writes a JSON sidecar, and optionally Markdown, beside the inbox PDF before moving it. If a same-stem sibling already exists, that write can silently replace it and the later move can remove the replacement from the inbox. Until collision-safe sibling creation is implemented, use a clean inbox containing PDFs only and retain backups.

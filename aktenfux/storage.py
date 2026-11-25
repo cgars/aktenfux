@@ -6,6 +6,7 @@ import json
 import logging
 import shutil
 from pathlib import Path
+from typing import BinaryIO
 
 from aktenfux.schema import SidecarDocument
 
@@ -22,11 +23,13 @@ _MARKDOWN_SUFFIX = ".md"
 
 def sha256_file(path: Path) -> str:
     """Return the lowercase hex SHA-256 of *path*."""
-    h = hashlib.sha256()
     with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
+        return sha256_stream(fh)
+
+
+def sha256_stream(stream: BinaryIO) -> str:
+    """Hash the remaining bytes of an already opened stream."""
+    return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 # ---------------------------------------------------------------------------

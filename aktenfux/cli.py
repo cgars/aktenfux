@@ -514,6 +514,48 @@ def workbench(
 
 
 @app.command()
+def archive_check(
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    show_paths: bool = typer.Option(
+        False, "--show-paths", help="Show archive-relative paths for individual findings.",
+    ),
+) -> None:
+    """Check archive PDF/JSON pairs and hashes without modifying the archive."""
+    from collections import Counter  # noqa: PLC0415
+
+    import yaml  # noqa: PLC0415
+
+    from aktenfux.archive_check import ArchiveCheckError, check_archive  # noqa: PLC0415
+    from aktenfux.config import load_config  # noqa: PLC0415
+
+    try:
+        config = load_config(config_path)
+    except (OSError, ValueError, TypeError, RuntimeError, yaml.YAMLError) as exc:
+        err_console.print("[red]Archive check could not read a valid configuration.[/red]")
+        raise typer.Exit(2) from exc
+
+    try:
+        result = check_archive(config)
+    except ArchiveCheckError as exc:
+        err_console.print(f"[red]Archive check could not start.[/red] {exc}")
+        raise typer.Exit(2) from exc
+
+    console.print(f"PDF candidates: {result.pdf_candidates}")
+    console.print(f"Verified pairs: {result.verified_pairs}")
+    console.print(f"Findings: {len(result.findings)}")
+    for kind, count in sorted(Counter(finding.kind for finding in result.findings).items()):
+        console.print(f"  {kind}: {count}")
+    if show_paths:
+        for finding in result.findings:
+            label = repr(finding.relative_path.as_posix())
+            if len(label) > 240:
+                label = label[:237] + "..."
+            console.print(f"  {finding.kind}: {label}", markup=False, highlight=False)
+    if result.findings:
+        raise typer.Exit(1)
+
+
+@app.command()
 def status(
     config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),

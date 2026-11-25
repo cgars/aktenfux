@@ -186,10 +186,28 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 | `afu approve --all` | Apply precedence in `_Review`: possible multi-document or split-detection items stage to `_Split`; manual-review-only items stay in `_Review` and are reported as skipped; all others are archived |
 | `afu reject <id>` | Move a document to `_Error` |
 | `afu reject --all` | Move all documents currently in `_Review` to `_Error` |
+| `afu archive-check [--show-paths]` | Inspect archived PDF/JSON pairs, sidecar compatibility, recorded paths, and file hashes |
 | `afu status` | Show document counts per folder |
 | `afu reprocess <id>` | Re-analyze a Review document with the LLM. The current command returns no structured success/error receipt; inspect `_Review`, `_Error`, and logs. With dry-run enabled and usable OCR it can create/access SQLite state, and after successful analysis it writes unsafe model-named JSON. |
 
 ---
+
+### Checking an existing archive
+
+Run `afu archive-check --config /path/to/config.yaml` against a quiet archive.
+It scans the configured archive directory and its subdirectories, validates
+`document.pdf` and `document.json` pairs against the current sidecar model, and
+compares the recorded location, approval status, and SHA-256 with the PDF on disk.
+The PDF is read as bytes for hashing. The check uses neither inference nor SQLite.
+
+The default report contains counts and finding codes. Use `--show-paths` to
+show archive-relative paths on a private terminal. Entries with unreadable
+files, missing companions, incompatible sidecars, links, or mismatched records
+are findings. Sidecars above 1 MiB are reported separately. A copied or moved
+archive can report path mismatches until its recorded paths are migrated.
+
+The command returns 0 for an archive with no findings, 1 for findings, and 2
+when configuration or the archive root prevents the check from starting.
 
 ## 6. Security
 

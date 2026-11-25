@@ -179,6 +179,12 @@ The current implementation includes useful controls:
   is not a complete implemented guarantee: lifecycle-root aliases and
   model-supplied filename/folder escapes can both bypass review staging;
 - probable multi-document scans are staged for follow-up rather than split silently;
+- `afu archive-check` validates an archive root separate from other lifecycle
+  roots, and inspects nested pairs with link/type/identity checks and bounded
+  sidecar reads. It compares stored paths as metadata and hashes actual regular
+  file bytes. The default report contains counts and finding codes only.
+  Archive-relative filenames require explicit terminal opt-in. Run the check
+  against a quiet local archive because it does not lock other writers.
 - `afu split-suggest` and `POST /api/split/suggest` are read-only for Aktenfux storage: they validate one `_Split` source snapshot, pass bounded page evidence through the inference boundary, and return bounded advisory candidates/warnings only;
 - `afu split` requires explicit boundaries and confirmation, revalidates source
   identity (document ID, sidecar/PDF SHA-256, page count, boundaries), validates
