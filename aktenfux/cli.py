@@ -5,6 +5,7 @@ import logging
 import re
 import sys
 from pathlib import Path
+from collections.abc import Callable
 from typing import Optional
 
 import typer
@@ -253,7 +254,15 @@ def review(
     print_review_table(sidecars)
 
 
-def _process_all_in_review(operation, action_label: str, color: str, cfg) -> None:
+def _process_all_in_review(
+    operation,
+    action_label: str,
+    color: str,
+    cfg,
+    *,
+    should_skip: Callable[[object], bool] | None = None,
+    skip_message: str | None = None,
+) -> None:
     """Apply *operation* to every document currently in *cfg.review_path*.
 
     *operation* must accept ``(doc_id, cfg)`` and raise ``FileNotFoundError``
@@ -267,7 +276,13 @@ def _process_all_in_review(operation, action_label: str, color: str, cfg) -> Non
         console.print(f"[yellow]No documents in _Review were {action_label.lower()}.[/yellow]")
         return
     errors = 0
+    skipped = 0
     for sidecar in sidecars:
+        if should_skip is not None and should_skip(sidecar):
+            message = skip_message or "Skipped"
+            console.print(f"[yellow]↷ {message}: {sidecar.id}[/yellow]")
+            skipped += 1
+            continue
         try:
             operation(sidecar.id, cfg)
             if cfg.dry_run:
@@ -279,6 +294,8 @@ def _process_all_in_review(operation, action_label: str, color: str, cfg) -> Non
             errors += 1
     if errors:
         raise typer.Exit(1)
+    if skipped:
+        console.print(f"[yellow]Skipped {skipped} document(s).[/yellow]")
 
 
 @app.command()
@@ -289,7 +306,10 @@ def approve(
     all_docs: bool = typer.Option(
         False,
         "--all",
-        help="Approve all documents currently in _Review, staging split recommendations in _Split.",
+        help=(
+            "Bulk-approve reviewed documents: multi-document signals stage to _Split; "
+            "manual-review-only items are skipped and remain in _Review; the remainder is archived."
+        ),
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -304,7 +324,17 @@ def approve(
         raise typer.Exit(1)
 
     if all_docs:
-        _process_all_in_review(approve_document, "Approved", "green", cfg)
+        _process_all_in_review(
+            approve_document,
+            "Approved",
+            "green",
+            cfg,
+            should_skip=lambda sidecar: (
+                sidecar.document_integrity.recommended_action == "manual_review"
+                and not sidecar.document_integrity.possible_multi_document_scan
+            ),
+            skip_message="Skipped (manual review required)",
+        )
         return
 
     if doc_id is None:
@@ -578,6 +608,48 @@ def workbench(
 
     console.print(f"[green]Starting split workbench at http://{bind_host}:{port}[/green]")
     uvicorn.run(app_instance, host=bind_host, port=port, log_level="warning")
+
+
+@app.command()
+def archive_check(
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    show_paths: bool = typer.Option(
+        False, "--show-paths", help="Show archive-relative paths for individual findings.",
+    ),
+) -> None:
+    """Check archive PDF/JSON pairs and hashes without modifying the archive."""
+    from collections import Counter  # noqa: PLC0415
+
+    import yaml  # noqa: PLC0415
+
+    from aktenfux.archive_check import ArchiveCheckError, check_archive  # noqa: PLC0415
+    from aktenfux.config import load_config  # noqa: PLC0415
+
+    try:
+        config = load_config(config_path)
+    except (OSError, ValueError, TypeError, RuntimeError, yaml.YAMLError) as exc:
+        err_console.print("[red]Archive check could not read a valid configuration.[/red]")
+        raise typer.Exit(2) from exc
+
+    try:
+        result = check_archive(config)
+    except ArchiveCheckError as exc:
+        err_console.print(f"[red]Archive check could not start.[/red] {exc}")
+        raise typer.Exit(2) from exc
+
+    console.print(f"PDF candidates: {result.pdf_candidates}")
+    console.print(f"Verified pairs: {result.verified_pairs}")
+    console.print(f"Findings: {len(result.findings)}")
+    for kind, count in sorted(Counter(finding.kind for finding in result.findings).items()):
+        console.print(f"  {kind}: {count}")
+    if show_paths:
+        for finding in result.findings:
+            label = repr(finding.relative_path.as_posix())
+            if len(label) > 240:
+                label = label[:237] + "..."
+            console.print(f"  {finding.kind}: {label}", markup=False, highlight=False)
+    if result.findings:
+        raise typer.Exit(1)
 
 
 @app.command()
