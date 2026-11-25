@@ -584,6 +584,8 @@ def split_reconcile_completed(
         console.print(
             "[green]Dry-run only.[/green] Re-run with --apply (and optional --yes) to mutate state."
         )
+    if result.issues:
+        raise typer.Exit(1)
 
 
 @app.command()

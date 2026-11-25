@@ -167,6 +167,23 @@ def test_split_reconcile_completed_dry_run_reports_eligible(tmp_path):
     assert "Eligible completed sources: 1" in result.output
 
 
+def test_split_reconcile_completed_returns_failure_for_unresolved_items(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.split_path.mkdir(exist_ok=True)
+    orphan = cfg.split_path / "orphan.json"
+    orphan.write_text("{}", encoding="utf-8")
+
+    with patch("aktenfux.cli._load_config", return_value=cfg):
+        preview = runner.invoke(app, ["split-reconcile-completed"])
+        apply = runner.invoke(app, ["split-reconcile-completed", "--apply", "--yes"])
+
+    for result in (preview, apply):
+        assert result.exit_code == 1, result.output
+        assert "Issues: 1" in result.output
+        assert "no matching PDF" in result.output
+    assert orphan.read_text(encoding="utf-8") == "{}"
+
+
 def test_split_suggest_prints_candidates_without_mutation(tmp_path):
     cfg = make_config(tmp_path)
     source = write_split_doc(cfg.split_path, "suggest.pdf", "docsplitcli000004", pages=6)

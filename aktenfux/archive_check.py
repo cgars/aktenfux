@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from aktenfux.config import AktenfuxConfig
 from aktenfux.schema import SidecarDocument
-from aktenfux.storage import sha256_stream, sidecar_path_for
+from aktenfux.storage import paths_overlap, sha256_stream, sidecar_path_for
 
 _MAX_SIDECAR_BYTES = 1024 * 1024
 _SHA256 = re.compile(r"[0-9a-fA-F]{64}")
@@ -63,13 +63,6 @@ def _name_key(name: str) -> str:
     return normalize("NFC", name).casefold()
 
 
-def _paths_overlap(first: Path, second: Path) -> bool:
-    first_parts = tuple(map(_name_key, first.parts))
-    second_parts = tuple(map(_name_key, second.parts))
-    common_length = min(len(first_parts), len(second_parts))
-    return first_parts[:common_length] == second_parts[:common_length]
-
-
 def _is_link(metadata: os.stat_result) -> bool:
     attributes = getattr(metadata, "st_file_attributes", 0)
     return stat.S_ISLNK(metadata.st_mode) or bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
@@ -95,8 +88,8 @@ def _archive_root(config: AktenfuxConfig) -> Path:
             config.dry_run_path,
         ):
             if (
-                _paths_overlap(root, other)
-                or _paths_overlap(root, other.resolve())
+                paths_overlap(root, other)
+                or paths_overlap(root, other.resolve())
                 or (other.exists() and root.samefile(other))
             ):
                 raise ArchiveCheckError("Archive overlaps another lifecycle directory.")

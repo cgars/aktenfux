@@ -29,7 +29,7 @@ from aktenfux.schema import (
     SplitProvenanceRecord,
     SplitResult,
 )
-from aktenfux.storage import assert_within_base, sha256_file, sidecar_path_for
+from aktenfux.storage import assert_within_base, paths_overlap, sha256_file, sidecar_path_for
 
 logger = logging.getLogger(__name__)
 _WORKBENCH_DOCUMENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
@@ -285,41 +285,42 @@ def _validate_split_roots(config: AktenfuxConfig, *, include_inbox: bool) -> Non
 
 
 def _validate_imported_root(config: AktenfuxConfig) -> Path:
-    return _validate_lifecycle_root(
+    imported_root = _validate_lifecycle_root(
         base_dir=config.base_dir,
         root=config.imported_path,
         configured_name=config.imported_dir,
         label="imported",
         must_exist=False,
     )
+    try:
+        for other_root in (
+            config.split_path,
+            config.inbox_path,
+            config.archive_path,
+            config.review_path,
+            config.error_path,
+            config.dry_run_path,
+        ):
+            if (
+                paths_overlap(imported_root, other_root)
+                or paths_overlap(imported_root, other_root.resolve())
+                or (
+                    imported_root.exists()
+                    and other_root.exists()
+                    and imported_root.samefile(other_root)
+                )
+            ):
+                raise SplitError("Configured imported root overlaps another lifecycle directory.")
+    except SplitError:
+        raise
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
+        raise SplitError("Could not verify imported root separation.") from exc
+    return imported_root
 
 
 def _validate_completed_roots(config: AktenfuxConfig, *, include_inbox: bool) -> Path:
     _validate_split_roots(config, include_inbox=include_inbox)
-    imported_root = _validate_imported_root(config)
-    resolved_split = config.split_path.resolve()
-    if imported_root == resolved_split:
-        raise SplitError("Configured imported and split roots must be distinct.")
-    try:
-        if config.imported_path.exists() and os.path.samefile(config.imported_path, config.split_path):
-            raise SplitError("Configured imported and split roots must not alias each other.")
-    except SplitError:
-        raise
-    except OSError as exc:
-        raise SplitError("Could not verify imported and split root identity.") from exc
-    if include_inbox:
-        resolved_inbox = config.inbox_path.resolve()
-        if imported_root == resolved_inbox:
-            raise SplitError("Configured imported and inbox roots must be distinct.")
-        try:
-            if config.imported_path.exists() and config.inbox_path.exists():
-                if os.path.samefile(config.imported_path, config.inbox_path):
-                    raise SplitError("Configured imported and inbox roots must not alias each other.")
-        except SplitError:
-            raise
-        except OSError as exc:
-            raise SplitError("Could not verify imported and inbox root identity.") from exc
-    return imported_root
+    return _validate_imported_root(config)
 
 
 def _validate_direct_regular_file(path: Path, *, root: Path, suffix: str) -> None:
@@ -2106,7 +2107,9 @@ def reconcile_completed_split_sources(
 
     split_pdf_paths = sorted(config.split_path.glob("*.pdf"))
     split_json_names = {path.name for path in config.split_path.glob("*.json")}
-    for json_name in sorted(split_json_names - {path.with_suffix(".json").name for path in split_pdf_paths}):
+    paired_json_names = {path.with_suffix(".json").name for path in split_pdf_paths}
+    journal_sidecars = {journal.source_sidecar for journal in journals}
+    for json_name in sorted(split_json_names - paired_json_names - journal_sidecars):
         issues.append(
             CompletedSplitReconcileIssue(
                 document_id="(unknown)",

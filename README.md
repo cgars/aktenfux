@@ -183,7 +183,7 @@ Current MVP warning: keep every lifecycle directory setting simple, relative, un
 | `afu split <id> --before N [--before M ...]` | Preview and, after explicit confirmation, split one staged `_Split` PDF into `_Inbox` part PDFs |
 | `afu split-suggest <id>` | Read-only advisory suggestion of likely “split before page N” boundaries for one staged `_Split` PDF |
 | `afu split-completed` | List retained completed split sources in `_Imported` |
-| `afu split-reconcile-completed [--apply]` | Dry-run-first reconciliation of already-completed sidecar pairs still left in `_Split` |
+| `afu split-reconcile-completed [--apply]` | Dry-run-first reconciliation of already-completed sidecar pairs still left in `_Split`. Unresolved findings produce exit status 1. |
 | `afu workbench` | Start the loopback-only browser workbench for previewing and explicitly confirming `_Split` operations |
 | `afu approve --all` | Apply precedence in `_Review`: possible multi-document or split-detection items stage to `_Split`; manual-review-only items stay in `_Review` and are reported as skipped; all others are archived |
 | `afu reject <id>` | Move a document to `_Error` |

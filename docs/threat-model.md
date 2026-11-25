@@ -189,7 +189,8 @@ The current implementation includes useful controls:
 - `afu split` requires explicit boundaries and confirmation, revalidates source
   identity (document ID, sidecar/PDF SHA-256, page count, boundaries), validates
   `_Split`, `_Inbox`, and `_Imported` as distinct direct non-link children of
-  `base_dir`, records recoverable split provenance in the source sidecar, stages
+  `base_dir` and rejects an `_Imported` location that overlaps any configured
+  lifecycle directory. It records recoverable split provenance in the source sidecar, stages
   outputs under `_Inbox/.split-staging/<operation-id>/`, and publishes part PDFs to
   `_Inbox` with exclusive no-overwrite creation and a durable batch journal;
   hard-link publication is atomic where supported, an exclusive fallback covers

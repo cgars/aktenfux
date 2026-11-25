@@ -75,6 +75,9 @@ Recovery may resume from any state above. Unknown/ambiguous state fails closed.
 
 ### Identity, naming, collisions
 
+- `_Imported` is a direct non-link child of `base_dir`. Its path and filesystem
+  identity must be separate from all other configured lifecycle directories.
+  Path comparisons account for nesting, case and Unicode normalization.
 - Destination naming is deterministic:
   - `<stem>--completed-<operation-id-prefix>.pdf`
   - `<stem>--completed-<operation-id-prefix>.json`

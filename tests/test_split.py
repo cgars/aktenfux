@@ -1141,8 +1141,12 @@ def test_reconcile_completed_split_sources_recovers_journal_only_candidate(tmp_p
     monkeypatch.setattr(split_module, "_write_completed_transition_journal", original_write_journal)
     assert not (cfg.split_path / "legacy-journal.pdf").exists()
     assert (cfg.split_path / "legacy-journal.json").exists()
+    preview = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert len(preview.eligible) == 1
+    assert preview.issues == ()
     result = reconcile_completed_split_sources(cfg, apply_changes=True)
     assert len(result.transitioned) == 1
+    assert result.issues == ()
     retained_pdf = cfg.imported_path / f"legacy-journal--completed-{plan.operation_id[:12]}.pdf"
     assert retained_pdf.exists()
     assert not (cfg.split_path / "legacy-journal.json").exists()
@@ -1364,6 +1368,41 @@ def test_execute_split_rejects_aliased_split_and_inbox_roots(tmp_path):
         execute_split(plan, cfg)
 
     assert source.with_suffix(".json").read_bytes() == sidecar_before
+
+
+@pytest.mark.parametrize(
+    ("imported_dir", "archive_dir"),
+    [
+        ("Archive", "Archive"),
+        ("_Review", "Archive"),
+        ("_Inbox", "Archive"),
+        ("_Imported", "_imported/Retained"),
+        ("Rétention", "Re\u0301tention"),
+    ],
+)
+def test_completed_split_rejects_overlapping_retention_root(tmp_path, imported_dir, archive_dir):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "source.pdf", "docsplit000000024", pages=4)
+    plan = plan_split("docsplit000000024", [3], cfg)
+    original_pdf = source.read_bytes()
+    original_sidecar = source.with_suffix(".json").read_bytes()
+    cfg.imported_dir = imported_dir
+    cfg.archive_dir = archive_dir
+
+    with patch("aktenfux.split.PdfReader") as pdf_reader:
+        for operation in (
+            lambda: execute_split(plan, cfg),
+            lambda: plan_split(plan.document_id, [3], cfg),
+            lambda: list_completed_split_documents(cfg),
+            lambda: reconcile_completed_split_sources(cfg, apply_changes=True),
+        ):
+            with pytest.raises(SplitError, match="imported root overlaps another lifecycle"):
+                operation()
+        pdf_reader.assert_not_called()
+
+    assert source.read_bytes() == original_pdf
+    assert source.with_suffix(".json").read_bytes() == original_sidecar
+    assert list(cfg.inbox_path.glob("*.pdf")) == []
 
 
 def test_plan_split_rejects_pdf_hash_mismatch_before_parse(tmp_path):
