@@ -788,7 +788,7 @@ def _read_snapshot(
         root_label="_Imported",
     )
     if imported_match is None:
-        raise SplitError(f"Document '{document_id}' not found in _Split.")
+        raise SplitError(f"Document '{document_id}' not found in _Split or _Imported.")
 
     imported_pdf, imported_sidecar_path, imported_sidecar = imported_match
     completed = _completed_operation_for_document(imported_sidecar, operation_id=operation_id)

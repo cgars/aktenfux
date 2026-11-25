@@ -46,6 +46,15 @@ def test_plan_split_returns_deterministic_ranges_and_names(tmp_path):
     ]
 
 
+def test_plan_split_reports_both_lifecycle_roots_when_document_is_missing(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.split_path.mkdir()
+    cfg.imported_path.mkdir()
+
+    with pytest.raises(SplitError, match="not found in _Split or _Imported"):
+        plan_split("missing-split-source", [2], cfg)
+
+
 def test_plan_split_rejects_duplicate_boundaries(tmp_path):
     cfg = make_config(tmp_path)
     write_split_doc(cfg.split_path, "bundle.pdf", "docsplit000000002", pages=6)
