@@ -1012,6 +1012,114 @@ def test_execute_split_recovers_from_journal_with_pdf_only_in_imported(tmp_path,
     assert not (cfg.split_path / "journal-recover.json").exists()
 
 
+def test_split_declines_linked_transition_directory_before_publishing(tmp_path):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "source.pdf", "docsplit-safe-root", pages=5)
+    plan = plan_split("docsplit-safe-root", [3], cfg)
+    original = source.read_bytes(), source.with_suffix(".json").read_bytes()
+    transition = cfg.imported_path / ".split-completed-transition"
+    transition.mkdir(parents=True)
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    try:
+        (transition / plan.operation_id).symlink_to(unrelated, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Directory links are unavailable.")
+
+    with pytest.raises(SplitError, match="operation directory must not be a link"):
+        execute_split(plan, cfg)
+
+    assert (source.read_bytes(), source.with_suffix(".json").read_bytes()) == original
+    assert not list(unrelated.iterdir())
+    assert not list(cfg.inbox_path.glob("*.pdf"))
+
+
+def test_reconciliation_reports_staging_left_without_a_journal(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.split_path.mkdir()
+    stage = cfg.imported_path / ".split-completed-transition" / ("a" * 32)
+    stage.mkdir(parents=True)
+    orphan = stage / "source.json"
+    orphan.write_text("{}", encoding="utf-8")
+
+    result = reconcile_completed_split_sources(cfg, apply_changes=False)
+
+    assert not result.eligible
+    assert len(result.issues) == 1
+    assert "without a journal" in result.issues[0].reason
+    assert orphan.read_text(encoding="utf-8") == "{}"
+
+
+@pytest.mark.parametrize("interrupted_file", ["source.json", "transition-state.json"])
+def test_finalized_transition_keeps_journal_through_partial_cleanup(
+    tmp_path, monkeypatch, interrupted_file
+):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "source.pdf", "docsplit-partial-cleanup", pages=5)
+    plan = plan_split("docsplit-partial-cleanup", [3], cfg)
+    stage, _, journal = split_module._completed_transition_paths(
+        imported_root=cfg.imported_path, operation_id=plan.operation_id,
+    )
+    unlink = Path.unlink
+
+    def interrupt(path, *args, **kwargs):
+        if path == stage / interrupted_file:
+            assert journal.is_file()
+            raise OSError("Synthetic cleanup interruption")
+        return unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "unlink", interrupt)
+        with pytest.raises(SplitError, match="Could not clean"):
+            execute_split(plan, cfg)
+
+    assert json.loads(journal.read_text(encoding="utf-8"))["state"] == "finalized"
+    preview = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert len(preview.eligible) == 1 and not preview.issues
+    applied = reconcile_completed_split_sources(cfg, apply_changes=True)
+    assert len(applied.transitioned) == 1 and not applied.issues
+    assert not stage.exists()
+
+
+@pytest.mark.parametrize("retained_artifact", [".pdf", ".json"])
+@pytest.mark.parametrize("remove_retained_artifact", [True, False])
+def test_exact_retry_preserves_source_if_retained_pair_is_unverified(
+    tmp_path, monkeypatch, retained_artifact, remove_retained_artifact
+):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "source.pdf", "docsplit-retained-check", pages=5)
+    plan = plan_split("docsplit-retained-check", [3], cfg)
+    write_journal = split_module._write_completed_transition_journal
+
+    def interrupt(journal_path, journal, *, state):
+        written = write_journal(journal_path, journal, state=state)
+        if state == "retained_sidecar_published":
+            raise SplitError("Synthetic interruption before source cleanup")
+        return written
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(split_module, "_write_completed_transition_journal", interrupt)
+        with pytest.raises(SplitError, match="Synthetic interruption"):
+            execute_split(plan, cfg)
+
+    retained, = cfg.imported_path.glob("*.pdf")
+    target = retained.with_suffix(retained_artifact)
+    if remove_retained_artifact:
+        target.unlink()
+    elif retained_artifact == ".pdf":
+        target.write_bytes(pdf_bytes(2))
+    else:
+        record = json.loads(target.read_text(encoding="utf-8"))
+        record["summary_short"] = "Synthetic change after publication"
+        target.write_text(json.dumps(record), encoding="utf-8")
+    original = source.read_bytes(), source.with_suffix(".json").read_bytes()
+
+    with pytest.raises(SplitError):
+        execute_split(plan, cfg)
+
+    assert (source.read_bytes(), source.with_suffix(".json").read_bytes()) == original
+
+
 def test_execute_split_recovers_after_cleanup_failure_with_owned_temp_residue(tmp_path, monkeypatch):
     cfg = make_config(tmp_path)
     write_split_doc(cfg.split_path, "cleanup-recover.pdf", "docsplit000000025", pages=5)

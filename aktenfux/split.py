@@ -433,11 +433,22 @@ def _completed_destination_paths(
 
 def _completed_transition_root(imported_root: Path) -> Path:
     root = imported_root / ".split-completed-transition"
-    try:
-        assert_within_base(root, imported_root)
-    except ValueError as exc:
-        raise SplitError("Split completed transition path escaped _Imported.") from exc
+    _validate_transition_directory(root, parent=imported_root, label="root")
     return root
+
+
+def _validate_transition_directory(path: Path, *, parent: Path, label: str) -> None:
+    try:
+        if _is_link_or_junction(parent) or _is_link_or_junction(path):
+            raise SplitError(f"Completed transition {label} must not be a link or junction.")
+        if path.resolve().parent != parent.resolve():
+            raise SplitError(f"Completed transition {label} escaped its parent.")
+        if path.exists() and not path.is_dir():
+            raise SplitError(f"Completed transition {label} is not a directory.")
+    except SplitError:
+        raise
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise SplitError(f"Could not validate completed transition {label}.") from exc
 
 
 def _completed_transition_paths(
@@ -448,6 +459,7 @@ def _completed_transition_paths(
     _validate_operation_id_format(operation_id)
     transition_root = _completed_transition_root(imported_root)
     operation_root = transition_root / operation_id
+    _validate_transition_directory(operation_root, parent=transition_root, label="operation directory")
     journal_path = operation_root / "transition-state.json"
     return operation_root, transition_root, journal_path
 
@@ -457,12 +469,11 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _load_completed_transition_journal(journal_path: Path) -> CompletedTransitionJournal | None:
-    if journal_path.is_symlink():
-        raise SplitError("Completed transition journal must not be a symbolic link.")
+    if _is_link_or_junction(journal_path):
+        raise SplitError("Completed transition journal must not be a link or junction.")
     if not journal_path.exists():
         return None
-    if not journal_path.is_file():
-        raise SplitError("Completed transition journal is not a regular file.")
+    _validate_direct_regular_file(journal_path, root=journal_path.parent, suffix=".json")
     try:
         payload = json.loads(journal_path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
@@ -553,12 +564,10 @@ def _read_completed_transition_journal_for_operation(
     operation_id: str,
 ) -> CompletedTransitionJournal | None:
     _validate_operation_id_format(operation_id)
-    operation_root, _, journal_path = _completed_transition_paths(
+    _, _, journal_path = _completed_transition_paths(
         imported_root=imported_root,
         operation_id=operation_id,
     )
-    if operation_root.is_symlink():
-        raise SplitError("Completed transition operation path must not be a symbolic link.")
     journal = _load_completed_transition_journal(journal_path)
     if journal is not None and journal.operation_id != operation_id:
         raise SplitError("Completed transition journal operation ID mismatch.")
@@ -575,11 +584,12 @@ def _list_completed_transition_journals(imported_root: Path) -> list[CompletedTr
         raise SplitError("Completed transition root is not a directory.")
     journals: list[CompletedTransitionJournal] = []
     for operation_root in sorted(transition_root.iterdir()):
-        if operation_root.is_symlink() or not operation_root.is_dir():
-            raise SplitError("Completed transition operation path is invalid.")
-        _validate_operation_id_format(operation_root.name)
-        journal = _load_completed_transition_journal(operation_root / "transition-state.json")
+        _, _, journal_path = _completed_transition_paths(
+            imported_root=imported_root, operation_id=operation_root.name,
+        )
+        journal = _load_completed_transition_journal(journal_path)
         if journal is None:
+            _require_empty_unjournaled_transition(operation_root)
             continue
         if journal.operation_id != operation_root.name:
             raise SplitError("Completed transition journal operation ID mismatch.")
@@ -587,13 +597,21 @@ def _list_completed_transition_journals(imported_root: Path) -> list[CompletedTr
     return journals
 
 
+def _require_empty_unjournaled_transition(operation_root: Path) -> None:
+    try:
+        if any(operation_root.iterdir()):
+            raise SplitError("Completed transition staging has artifacts without a journal.")
+    except OSError as exc:
+        raise SplitError("Could not inspect completed transition staging.") from exc
+
+
 def _cleanup_completed_transition_artifacts(
     *,
     operation_root: Path,
     transition_root: Path,
 ) -> None:
-    if operation_root.is_symlink():
-        raise SplitError("Completed transition operation path must not be a symbolic link.")
+    _validate_transition_directory(transition_root, parent=transition_root.parent, label="root")
+    _validate_transition_directory(operation_root, parent=transition_root, label="operation directory")
     if not operation_root.exists():
         return
     if not operation_root.is_dir():
@@ -606,12 +624,15 @@ def _cleanup_completed_transition_artifacts(
     try:
         children = list(operation_root.iterdir())
         for child in children:
-            if child.is_symlink() or not child.is_file():
+            if _is_link_or_junction(child) or not child.is_file():
                 raise SplitError("Completed transition staging contains unexpected artifacts.")
             if child.name not in allowed and not _is_owned_atomic_temp(child):
                 raise SplitError("Completed transition staging contains unexpected artifacts.")
+        journal = operation_root / "transition-state.json"
         for child in children:
-            child.unlink()
+            if child != journal:
+                child.unlink()
+        journal.unlink(missing_ok=True)
         operation_root.rmdir()
         try:
             transition_root.rmdir()
@@ -1682,10 +1703,13 @@ def _retain_completed_source(
     )
     _ensure_directory(imported_root, label="imported")
     _ensure_directory(transition_root, label="completed transition")
+    _completed_transition_paths(imported_root=imported_root, operation_id=operation.operation_id)
     _ensure_directory(operation_root, label="completed transition operation")
+    _completed_transition_paths(imported_root=imported_root, operation_id=operation.operation_id)
 
     journal = _load_completed_transition_journal(journal_path)
     if journal is None:
+        _require_empty_unjournaled_transition(operation_root)
         journal = CompletedTransitionJournal(
             operation_id=operation.operation_id,
             document_id=snapshot.sidecar.id,
@@ -1717,13 +1741,32 @@ def _retain_completed_source(
     stage_sidecar = operation_root / "source.json"
 
     def sidecar_hash_for_recovery() -> str:
-        if source_sidecar.exists():
-            return _sha256_file_bounded(source_sidecar, label="split sidecar")
-        if retained_sidecar.exists():
-            return _sha256_file_bounded(retained_sidecar, label="retained split sidecar")
-        if stage_sidecar.exists():
-            return _sha256_file_bounded(stage_sidecar, label="completed transition staged sidecar")
+        for path, root in (
+            (source_sidecar, config.split_path),
+            (stage_sidecar, operation_root),
+            (retained_sidecar, imported_root),
+        ):
+            if path.exists() or _is_link_or_junction(path):
+                _validate_direct_regular_file(path, root=root, suffix=".json")
+                return _sha256_file_bounded(path, label="completed transition sidecar")
         raise SplitError("Completed transition sidecar is missing from source, stage, and retained paths.")
+
+    def validate_retained_pair(*, expected_sidecar_hash: str | None = None) -> SidecarDocument:
+        _validate_direct_regular_file(retained_pdf, root=imported_root, suffix=".pdf")
+        _validate_direct_regular_file(retained_sidecar, root=imported_root, suffix=".json")
+        if _sha256_file_bounded(retained_pdf, label="retained split source") != snapshot.source_sha256:
+            raise SplitError("Retained completed source PDF no longer matches authoritative hash.")
+        retained_doc = _verify_completed_sidecar_identity(
+            retained_sidecar,
+            document_id=snapshot.sidecar.id,
+            source_sha256=snapshot.source_sha256,
+            operation_id=operation.operation_id,
+        )
+        if expected_sidecar_hash is not None and _sha256_file_bounded(
+            retained_sidecar, label="retained split sidecar"
+        ) != expected_sidecar_hash:
+            raise SplitError("Retained completed source sidecar no longer matches staged bytes.")
+        return retained_doc
 
     source_sidecar_hash = sidecar_hash_for_recovery()
 
@@ -1783,6 +1826,7 @@ def _retain_completed_source(
             state="retained_sidecar_published",
         )
     if journal.state == "retained_sidecar_published":
+        validate_retained_pair(expected_sidecar_hash=source_sidecar_hash)
         _remove_source_file_if_present(
             source_pdf,
             root=config.split_path,
@@ -1795,6 +1839,7 @@ def _retain_completed_source(
             state="source_pdf_removed",
         )
     if journal.state == "source_pdf_removed":
+        validate_retained_pair(expected_sidecar_hash=source_sidecar_hash)
         _remove_source_file_if_present(
             source_sidecar,
             root=config.split_path,
@@ -1815,14 +1860,7 @@ def _retain_completed_source(
     if journal.state != "finalized":
         raise SplitError("Completed transition did not reach finalized state.")
 
-    if _sha256_file_bounded(retained_pdf, label="retained split source") != snapshot.source_sha256:
-        raise SplitError("Retained completed source PDF no longer matches authoritative hash.")
-    retained_sidecar_doc = _verify_completed_sidecar_identity(
-        retained_sidecar,
-        document_id=snapshot.sidecar.id,
-        source_sha256=snapshot.source_sha256,
-        operation_id=operation.operation_id,
-    )
+    retained_sidecar_doc = validate_retained_pair()
     retained_path_text = str(retained_pdf.resolve())
     if retained_sidecar_doc.current_path != retained_path_text:
         retained_sidecar_doc.current_path = retained_path_text
@@ -2033,9 +2071,9 @@ def _preflight_completed_transition_from_journal(
         retained_sidecar_present = True
 
     rank = _state_rank(journal.state)
-    if rank >= _state_rank("pdf_staged") and not stage_pdf_present:
+    if journal.state != "finalized" and rank >= _state_rank("pdf_staged") and not stage_pdf_present:
         raise SplitError("pdf staging copy missing")
-    if rank >= _state_rank("sidecar_staged") and not stage_sidecar_present:
+    if journal.state != "finalized" and rank >= _state_rank("sidecar_staged") and not stage_sidecar_present:
         raise SplitError("sidecar staging copy missing")
     if rank >= _state_rank("retained_pdf_published") and not retained_pdf_present:
         raise SplitError("retained PDF missing")
@@ -2238,6 +2276,9 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
     expected_parts = _validate_plan_against_source(plan, snapshot)
     expected_operation_id = _deterministic_operation_id(
         snapshot.sidecar.id, snapshot.source_sha256, snapshot.page_count, plan.boundaries
+    )
+    _completed_transition_paths(
+        imported_root=_validate_imported_root(config), operation_id=expected_operation_id,
     )
 
     sidecar = snapshot.sidecar

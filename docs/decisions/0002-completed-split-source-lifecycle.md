@@ -69,9 +69,14 @@ Then it advances recoverably through:
 5. `retained_sidecar_published` – retained sidecar published with exclusive no-overwrite semantics.
 6. `source_pdf_removed` – source PDF cleanup completed.
 7. `source_sidecar_removed` – source sidecar cleanup completed.
-8. `finalized` – journal finalized and operation staging cleaned.
+8. `finalized` – retained identity confirmed and operation staging cleaned.
+   Staged files are removed before the journal, so a partial cleanup keeps
+   enough recovery metadata for a retry.
 
 Recovery may resume from any state above. Unknown/ambiguous state fails closed.
+The transition directory and operation directory are checked before access.
+Each source removal requires a fresh check of the retained PDF and sidecar.
+Inspection reports nonempty staging without a journal for manual recovery.
 
 ### Identity, naming, collisions
 
