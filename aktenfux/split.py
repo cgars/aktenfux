@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import stat
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -400,20 +401,15 @@ def _find_source_by_document_id(
     return matches[0] if matches else None
 
 
-def _completed_operation_for_document(
-    sidecar: SidecarDocument, *, operation_id: str | None = None
-) -> SplitProvenanceRecord | None:
+def _completed_operation_for_document(sidecar: SidecarDocument) -> SplitProvenanceRecord | None:
     completed = [
         operation
         for operation in sidecar.split_operations
         if operation.state == "completed"
-        and (operation_id is None or operation.operation_id == operation_id)
     ]
-    if not completed:
-        return None
-    if operation_id is None and len(completed) > 1:
+    if len(completed) > 1:
         raise SplitError("Document has multiple completed split operations and needs reconciliation.")
-    return completed[-1]
+    return completed[0] if completed else None
 
 
 def _completed_suffix(operation_id: str) -> str:
@@ -612,28 +608,34 @@ def _cleanup_completed_transition_artifacts(
 ) -> None:
     _validate_transition_directory(transition_root, parent=transition_root.parent, label="root")
     _validate_transition_directory(operation_root, parent=transition_root, label="operation directory")
-    if not operation_root.exists():
-        return
-    if not operation_root.is_dir():
-        raise SplitError("Completed transition operation path is not a directory.")
     allowed = {"transition-state.json", "source.pdf", "source.json"}
 
     def _is_owned_atomic_temp(path: Path) -> bool:
         return path.name.startswith(".transition-state.json.") and path.name.endswith(".tmp")
 
     try:
-        children = list(operation_root.iterdir())
+        try:
+            children = list(operation_root.iterdir())
+        except FileNotFoundError:
+            return
         for child in children:
-            if _is_link_or_junction(child) or not child.is_file():
-                raise SplitError("Completed transition staging contains unexpected artifacts.")
             if child.name not in allowed and not _is_owned_atomic_temp(child):
+                raise SplitError("Completed transition staging contains unexpected artifacts.")
+            try:
+                mode = child.lstat().st_mode
+            except FileNotFoundError:
+                continue
+            if _is_link_or_junction(child) or not stat.S_ISREG(mode):
                 raise SplitError("Completed transition staging contains unexpected artifacts.")
         journal = operation_root / "transition-state.json"
         for child in children:
             if child != journal:
-                child.unlink()
+                child.unlink(missing_ok=True)
         journal.unlink(missing_ok=True)
-        operation_root.rmdir()
+        try:
+            operation_root.rmdir()
+        except FileNotFoundError:
+            pass
         try:
             transition_root.rmdir()
         except OSError:
@@ -746,8 +748,8 @@ def _read_snapshot_from_transition_journal(
     if sidecar_path is None or pdf_path is None or lifecycle_root is None or lifecycle_label is None:
         raise SplitError("Completed transition journal could not resolve source identity.")
     sidecar = _read_sidecar_validated(sidecar_path)
-    completed = _completed_operation_for_document(sidecar, operation_id=journal.operation_id)
-    if completed is None:
+    completed = _completed_operation_for_document(sidecar)
+    if completed is None or completed.operation_id != journal.operation_id:
         raise SplitError("Completed transition sidecar is missing completed split provenance.")
     if sidecar.sha256 != journal.source_sha256:
         raise SplitError("Completed transition journal source hash mismatch.")
@@ -775,7 +777,7 @@ def _read_snapshot(
     )
     if active_match is not None:
         pdf_path, sidecar_path, sidecar = active_match
-        completed = _completed_operation_for_document(sidecar, operation_id=operation_id)
+        completed = _completed_operation_for_document(sidecar)
         if completed is not None and not include_completed:
             raise SplitError(
                 f"Document '{document_id}' is already completed; inspect retained sources in _Imported."
@@ -812,7 +814,7 @@ def _read_snapshot(
         raise SplitError(f"Document '{document_id}' not found in _Split or _Imported.")
 
     imported_pdf, imported_sidecar_path, imported_sidecar = imported_match
-    completed = _completed_operation_for_document(imported_sidecar, operation_id=operation_id)
+    completed = _completed_operation_for_document(imported_sidecar)
     if completed is None:
         raise SplitError(
             f"Document '{document_id}' is retained in _Imported but has no completed split provenance."
@@ -1556,8 +1558,8 @@ def _verify_completed_sidecar_identity(
     sidecar = _read_sidecar_validated(sidecar_path)
     if sidecar.id != document_id or sidecar.sha256 != source_sha256:
         raise SplitError("Retained completed source sidecar identity mismatch.")
-    operation = _completed_operation_for_document(sidecar, operation_id=operation_id)
-    if operation is None:
+    operation = _completed_operation_for_document(sidecar)
+    if operation is None or operation.operation_id != operation_id:
         raise SplitError("Retained completed source sidecar is missing completed split provenance.")
     return sidecar
 
@@ -1997,8 +1999,8 @@ def _preflight_completed_transition_from_journal(
         expected_operation_id=journal.operation_id,
     )
     sidecar = snapshot.sidecar
-    operation = _completed_operation_for_document(sidecar, operation_id=journal.operation_id)
-    if operation is None:
+    operation = _completed_operation_for_document(sidecar)
+    if operation is None or operation.operation_id != journal.operation_id:
         raise SplitError("completed operation missing in sidecar")
     _validate_completed_operation_against_source(
         operation=operation,

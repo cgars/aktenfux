@@ -131,6 +131,42 @@ def test_execute_split_exact_retry_reads_retained_completed_source(tmp_path):
     assert [entry.filename for entry in second.outputs] == [entry.filename for entry in first.outputs]
 
 
+@pytest.mark.parametrize("retention_interrupted", [False, True])
+def test_execute_split_rejects_a_different_saved_plan_after_completion(
+    tmp_path, monkeypatch, retention_interrupted
+):
+    cfg = make_config(tmp_path)
+    document_id = "docsplit-completed-alternate"
+    write_split_doc(cfg.split_path, "source.pdf", document_id, pages=5)
+    original = plan_split(document_id, [3], cfg)
+    alternate = plan_split(document_id, [4], cfg)
+
+    if retention_interrupted:
+        with monkeypatch.context() as scoped:
+            def interrupt_retention(**kwargs):
+                raise SplitError("Synthetic interruption before retention")
+
+            scoped.setattr(split_module, "_retain_completed_source", interrupt_retention)
+            with pytest.raises(SplitError, match="Synthetic interruption"):
+                execute_split(original, cfg)
+    else:
+        execute_split(original, cfg)
+
+    root = cfg.split_path if retention_interrupted else cfg.imported_path
+    source, = root.glob("*.pdf")
+    sidecar_path = source.with_suffix(".json")
+    original_pair = source.read_bytes(), sidecar_path.read_bytes()
+    for part in original.parts:
+        (cfg.inbox_path / part.destination_filename).unlink()
+
+    with pytest.raises(SplitError, match="Only an exact retry"):
+        execute_split(alternate, cfg)
+
+    assert (source.read_bytes(), sidecar_path.read_bytes()) == original_pair
+    assert not list(cfg.inbox_path.iterdir())
+    assert not (cfg.imported_path / ".split-completed-transition").exists()
+
+
 def test_execute_split_rejects_tampered_sidecar_output_ranges(tmp_path):
     cfg = make_config(tmp_path)
     source = write_split_doc(cfg.split_path, "tampered.pdf", "docsplit000000005", pages=4)
@@ -1079,6 +1115,35 @@ def test_finalized_transition_keeps_journal_through_partial_cleanup(
     applied = reconcile_completed_split_sources(cfg, apply_changes=True)
     assert len(applied.transitioned) == 1 and not applied.issues
     assert not stage.exists()
+
+
+def test_split_cleanup_accepts_other_worker_finishing_cleanup(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "source.pdf", "docsplit-overlapping-cleanup", pages=5)
+    plan = plan_split("docsplit-overlapping-cleanup", [3], cfg)
+    stage, transition, _ = split_module._completed_transition_paths(
+        imported_root=cfg.imported_path, operation_id=plan.operation_id,
+    )
+    unlink = Path.unlink
+    ran_second_cleanup = False
+
+    def overlap(path, *args, **kwargs):
+        nonlocal ran_second_cleanup
+        if path.parent == stage and path.name in {"source.pdf", "source.json"} and not ran_second_cleanup:
+            ran_second_cleanup = True
+            split_module._cleanup_completed_transition_artifacts(
+                operation_root=stage, transition_root=transition,
+            )
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", overlap)
+    result = execute_split(plan, cfg)
+
+    assert ran_second_cleanup
+    assert result.operation_id == plan.operation_id
+    assert not stage.exists()
+    completed = list_completed_split_documents(cfg)
+    assert len(completed.entries) == 1 and not completed.issues
 
 
 @pytest.mark.parametrize("retained_artifact", [".pdf", ".json"])
