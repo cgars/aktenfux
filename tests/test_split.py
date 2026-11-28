@@ -131,6 +131,42 @@ def test_execute_split_exact_retry_reads_retained_completed_source(tmp_path):
     assert [entry.filename for entry in second.outputs] == [entry.filename for entry in first.outputs]
 
 
+def test_execute_split_retains_long_valid_source_and_updates_sidecar(tmp_path):
+    cfg = make_config(tmp_path)
+    stem = "a" * 220
+    source = write_split_doc(cfg.split_path, f"{stem}.pdf", "docsplit-long-filename", pages=5)
+    source_bytes = source.read_bytes()
+    plan = plan_split("docsplit-long-filename", [3], cfg)
+
+    result = execute_split(plan, cfg)
+    retry = execute_split(plan, cfg)
+
+    retained_pdf = cfg.imported_path / f"{stem}--completed-{result.operation_id[:12]}.pdf"
+    assert not source.exists()
+    assert not source.with_suffix(".json").exists()
+    assert retained_pdf.read_bytes() == source_bytes
+    sidecar = read_sidecar(retained_pdf)
+    assert sidecar is not None
+    assert Path(sidecar.current_path) == retained_pdf
+    assert retry == result
+
+
+def test_execute_split_rejects_overlong_retained_name_before_writing(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, f"{'a' * 227}.pdf", "docsplit-overlong", pages=5)
+    sidecar = source.with_suffix(".json")
+    original_pair = source.read_bytes(), sidecar.read_bytes()
+    plan = plan_split("docsplit-overlong", [3], cfg)
+    monkeypatch.setattr(os, "pathconf", lambda path, name: 255, raising=False)
+
+    with pytest.raises(SplitError, match="Source filename is too long"):
+        execute_split(plan, cfg)
+
+    assert (source.read_bytes(), sidecar.read_bytes()) == original_pair
+    assert not cfg.inbox_path.exists()
+    assert not cfg.imported_path.exists()
+
+
 @pytest.mark.parametrize("retention_interrupted", [False, True])
 def test_execute_split_rejects_a_different_saved_plan_after_completion(
     tmp_path, monkeypatch, retention_interrupted

@@ -41,6 +41,7 @@ _SUGGEST_MAX_CHARS_PER_PAGE = 1200
 _SUGGEST_MAX_PAYLOAD_BYTES = 80_000
 _SUGGEST_MAX_WARNINGS = 32
 _SUGGEST_TIMEOUT_SECONDS = 120.0
+_ATOMIC_TEMP_NAME_PREFIX_CHARS = 32
 _COMPLETED_TRANSITION_SCHEMA_VERSION = 1
 _COMPLETED_TRANSITION_STATES = (
     "planned",
@@ -425,6 +426,22 @@ def _completed_destination_paths(
     source = Path(source_pdf_name)
     destination_pdf = imported_root / f"{source.stem}{_completed_suffix(operation_id)}.pdf"
     return destination_pdf, destination_pdf.with_suffix(".json")
+
+
+def _validate_completed_destination_name_lengths(destinations: tuple[Path, Path]) -> None:
+    root = destinations[0].parent
+    try:
+        if os.name == "nt":
+            # Windows filesystem component limits are measured in UTF-16 code units.
+            limit = 255
+            lengths = [len(path.name.encode("utf-16-le")) // 2 for path in destinations]
+        else:
+            limit = os.pathconf(root if root.exists() else root.parent, "PC_NAME_MAX")
+            lengths = [len(os.fsencode(path.name)) for path in destinations]
+    except (AttributeError, OSError, ValueError):
+        return
+    if limit > 0 and max(lengths) > limit:
+        raise SplitError("Source filename is too long for the completed PDF or sidecar in _Imported.")
 
 
 def _completed_transition_root(imported_root: Path) -> Path:
@@ -1144,7 +1161,8 @@ def _write_text_atomic(path: Path, text: str) -> None:
     tmp_path: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        prefix = path.name[:_ATOMIC_TEMP_NAME_PREFIX_CHARS]
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{prefix}.", suffix=".tmp", dir=path.parent)
         tmp_path = Path(tmp_name)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fd = None
@@ -1219,7 +1237,8 @@ def _write_bytes_exclusive(path: Path, data: bytes) -> None:
     tmp_path: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        prefix = path.name[:_ATOMIC_TEMP_NAME_PREFIX_CHARS]
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{prefix}.", suffix=".tmp", dir=path.parent)
         tmp_path = Path(tmp_name)
         with os.fdopen(fd, "wb") as fh:
             fd = None
@@ -2303,8 +2322,14 @@ def execute_split(plan: SplitPlan, config: AktenfuxConfig) -> SplitResult:
     expected_operation_id = _deterministic_operation_id(
         snapshot.sidecar.id, snapshot.source_sha256, snapshot.page_count, plan.boundaries
     )
-    _completed_transition_paths(
-        imported_root=_validate_imported_root(config), operation_id=expected_operation_id,
+    imported_root = _validate_imported_root(config)
+    _completed_transition_paths(imported_root=imported_root, operation_id=expected_operation_id)
+    _validate_completed_destination_name_lengths(
+        _completed_destination_paths(
+            imported_root=imported_root,
+            source_pdf_name=plan.source_filename,
+            operation_id=expected_operation_id,
+        ),
     )
 
     sidecar = snapshot.sidecar
