@@ -1564,6 +1564,28 @@ def _verify_completed_sidecar_identity(
     return sidecar
 
 
+def _read_checked_transition_artifact(
+    path: Path, *, root: Path, suffix: str, expected_hash: str, label: str,
+) -> bytes:
+    _validate_direct_regular_file(path, root=root, suffix=suffix)
+    try:
+        checked = path.lstat()
+        if not stat.S_ISREG(checked.st_mode) or checked.st_nlink != 1:
+            raise SplitError(f"Completed transition {label} is invalid.")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+        with os.fdopen(os.open(path, flags), "rb") as artifact:
+            opened = os.fstat(artifact.fileno())
+            if not os.path.samestat(checked, opened) or opened.st_nlink != 1:
+                raise SplitError(f"Completed transition {label} changed before reading.")
+            payload = artifact.read()
+    except OSError as exc:
+        raise SplitError(f"Could not read completed transition {label}.") from exc
+    if hashlib.sha256(payload).hexdigest() != expected_hash:
+        raise SplitError(f"Completed transition {label} hash mismatch.")
+    return payload
+
+
 def _stage_transition_file(
     stage_path: Path,
     *,
@@ -1572,19 +1594,14 @@ def _stage_transition_file(
     label: str,
 ) -> None:
     if stage_path.exists():
-        if stage_path.is_symlink() or not stage_path.is_file():
-            raise SplitError(f"Completed transition staged {label} is invalid.")
-        _assert_not_hard_link(stage_path, label=f"completed transition staged {label}")
+        _validate_direct_regular_file(stage_path, root=stage_path.parent, suffix=stage_path.suffix)
         if _sha256_file_bounded(stage_path, label=f"completed transition staged {label}") != expected_hash:
             raise SplitError(f"Completed transition staged {label} hash mismatch.")
         return
-    if source_path.is_symlink() or not source_path.is_file():
-        raise SplitError(f"Completed transition source {label} is missing or invalid.")
-    _assert_not_hard_link(source_path, label=f"completed transition source {label}")
-    try:
-        payload = source_path.read_bytes()
-    except OSError as exc:
-        raise SplitError(f"Could not read completed transition source {label}.") from exc
+    payload = _read_checked_transition_artifact(
+        source_path, root=source_path.parent, suffix=stage_path.suffix,
+        expected_hash=expected_hash, label=f"source {label}",
+    )
     _write_bytes_exclusive(stage_path, payload)
     if _sha256_file_bounded(stage_path, label=f"completed transition staged {label}") != expected_hash:
         raise SplitError(f"Completed transition staged {label} hash verification failed.")
@@ -1598,8 +1615,14 @@ def _publish_retained_from_stage(
     root: Path,
     label: str,
 ) -> None:
-    _assert_not_hard_link(stage_path, label=f"completed transition staged {label}")
-    if destination_path.suffix.lower() == ".pdf":
+    operation_root, _, _ = _completed_transition_paths(
+        imported_root=root, operation_id=stage_path.parent.name,
+    )
+    suffix = destination_path.suffix.lower()
+    _validate_direct_regular_file(
+        stage_path, root=operation_root, suffix=suffix,
+    )
+    if suffix == ".pdf":
         _validate_direct_destination_path(destination_path, root=root)
     else:
         try:
@@ -1613,23 +1636,24 @@ def _publish_retained_from_stage(
         if destination_path.exists() and (destination_path.is_symlink() or not destination_path.is_file()):
             raise SplitError(f"Retained completed source {label} destination is invalid.")
     if destination_path.exists():
-        _assert_not_hard_link(destination_path, label=f"retained completed source {label}")
+        _validate_direct_regular_file(destination_path, root=root, suffix=suffix)
         if _sha256_file_bounded(destination_path, label=f"retained completed {label}") != expected_hash:
             raise SplitError(f"Destination collision for retained completed source {destination_path.name}.")
         return
-    try:
-        payload = stage_path.read_bytes()
-    except OSError as exc:
-        raise SplitError(f"Could not read completed transition staged {label}.") from exc
+    payload = _read_checked_transition_artifact(
+        stage_path, root=operation_root, suffix=suffix,
+        expected_hash=expected_hash, label=f"staged {label}",
+    )
     try:
         _write_bytes_exclusive(destination_path, payload)
     except SplitError:
-        if destination_path.exists() and _sha256_file_bounded(
-            destination_path, label=f"retained completed {label}"
-        ) == expected_hash:
-            _assert_not_hard_link(destination_path, label=f"retained completed source {label}")
-            return
-        raise
+        if not destination_path.exists():
+            raise
+        _validate_direct_regular_file(destination_path, root=root, suffix=suffix)
+        if _sha256_file_bounded(destination_path, label=f"retained completed {label}") != expected_hash:
+            raise
+        return
+    _validate_direct_regular_file(destination_path, root=root, suffix=suffix)
     if _sha256_file_bounded(destination_path, label=f"retained completed {label}") != expected_hash:
         raise SplitError(f"Retained completed source {label} hash verification failed.")
 

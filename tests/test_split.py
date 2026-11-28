@@ -1070,6 +1070,62 @@ def test_split_declines_linked_transition_directory_before_publishing(tmp_path):
     assert not list(cfg.inbox_path.glob("*.pdf"))
 
 
+@pytest.mark.parametrize(
+    ("artifact", "interrupted_state"),
+    [("source.pdf", "sidecar_staged"), ("source.json", "retained_pdf_published")],
+)
+@pytest.mark.parametrize("staged_link", [False, True])
+def test_exact_retry_checks_staged_file_before_publishing(
+    tmp_path, monkeypatch, artifact, interrupted_state, staged_link
+):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "source.pdf", "docsplit-verify-stage", pages=5)
+    plan = plan_split("docsplit-verify-stage", [3], cfg)
+    write_journal = split_module._write_completed_transition_journal
+
+    def interrupt(journal_path, journal, *, state):
+        written = write_journal(journal_path, journal, state=state)
+        if state == interrupted_state:
+            raise SplitError("Synthetic interruption before publication")
+        return written
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(split_module, "_write_completed_transition_journal", interrupt)
+        with pytest.raises(SplitError, match="Synthetic interruption"):
+            execute_split(plan, cfg)
+
+    stage, _, _ = split_module._completed_transition_paths(
+        imported_root=cfg.imported_path, operation_id=plan.operation_id,
+    )
+    staged = stage / artifact
+    staged_bytes = staged.read_bytes()
+    suffix = staged.suffix
+    destination = cfg.imported_path / f"source--completed-{plan.operation_id[:12]}{suffix}"
+    sidecar = source.with_suffix(".json")
+    source_pair = source.read_bytes(), sidecar.read_bytes()
+    if staged_link:
+        unrelated = tmp_path / f"unrelated{suffix}"
+        unrelated.write_bytes(b"Synthetic unrelated file")
+        staged.unlink()
+        try:
+            staged.symlink_to(unrelated)
+        except (OSError, NotImplementedError):
+            pytest.skip("File links are unavailable.")
+        message = "outside the expected lifecycle root"
+    else:
+        staged.write_bytes(b"Synthetic changed staging file")
+        message = "hash mismatch"
+
+    with pytest.raises(SplitError, match=message):
+        execute_split(plan, cfg)
+
+    assert not destination.exists()
+    assert (source.read_bytes(), sidecar.read_bytes()) == source_pair
+    staged.unlink()
+    staged.write_bytes(staged_bytes)
+    assert execute_split(plan, cfg).operation_id == plan.operation_id
+
+
 def test_reconciliation_reports_staging_left_without_a_journal(tmp_path):
     cfg = make_config(tmp_path)
     cfg.split_path.mkdir()

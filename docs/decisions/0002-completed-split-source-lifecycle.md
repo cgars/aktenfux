@@ -75,6 +75,8 @@ Then it advances recoverably through:
 
 Recovery may resume from any state above. Unknown/ambiguous state fails closed.
 The transition directory and operation directory are checked before access.
+Resumed publication validates each staged file and checks its bytes against the
+expected hash before creating a retained file.
 Each source removal requires a fresh check of the retained PDF and sidecar.
 Inspection reports nonempty staging without a journal for manual recovery.
 
