@@ -11,6 +11,7 @@ base_dir: "~/Documents/Aktenfux"
 # folder. In particular, never alias or nest review_dir inside archive_dir.
 inbox_dir: "_Inbox"
 review_dir: "_Review"
+# Retained completed split sources are moved here as recoverable PDF/sidecar pairs.
 imported_dir: "_Imported"
 error_dir: "_Error"
 archive_dir: "Archive"

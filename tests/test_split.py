@@ -4,6 +4,8 @@ from __future__ import annotations
 import errno
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +22,11 @@ from aktenfux.schema import (
     SplitProvenanceRecord,
 )
 from aktenfux.split import SplitError, execute_split, plan_split, suggest_split_boundaries
+from aktenfux.split import (
+    list_completed_split_documents,
+    list_split_documents,
+    reconcile_completed_split_sources,
+)
 from aktenfux.storage import read_sidecar, sha256_file
 from tests.split_helpers import make_config, pdf_bytes, write_split_doc
 
@@ -37,6 +44,15 @@ def test_plan_split_returns_deterministic_ranges_and_names(tmp_path):
         "bundle--part-02.pdf",
         "bundle--part-03.pdf",
     ]
+
+
+def test_plan_split_reports_both_lifecycle_roots_when_document_is_missing(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.split_path.mkdir()
+    cfg.imported_path.mkdir()
+
+    with pytest.raises(SplitError, match="not found in _Split or _Imported"):
+        plan_split("missing-split-source", [2], cfg)
 
 
 def test_plan_split_rejects_duplicate_boundaries(tmp_path):
@@ -66,9 +82,11 @@ def test_execute_split_writes_parts_and_records_provenance(tmp_path):
     output_paths = [cfg.inbox_path / output.filename for output in result.outputs]
     assert all(path.exists() for path in output_paths)
     assert [len(PdfReader(str(path)).pages) for path in output_paths] == [2, 3]
-    assert sha256_file(source) == source_hash_before
+    retained_pdf = cfg.imported_path / f"source--completed-{result.operation_id[:12]}.pdf"
+    assert not source.exists()
+    assert sha256_file(retained_pdf) == source_hash_before
 
-    sidecar = read_sidecar(source)
+    sidecar = read_sidecar(retained_pdf)
     assert sidecar is not None
     assert len(sidecar.split_operations) == 1
     operation = sidecar.split_operations[0]
@@ -76,6 +94,113 @@ def test_execute_split_writes_parts_and_records_provenance(tmp_path):
     assert operation.state == "completed"
     assert operation.completed_at_utc is not None
     assert all(output.sha256 is not None for output in operation.outputs)
+
+
+def test_execute_split_moves_completed_source_to_imported_and_rejects_new_plan(tmp_path):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "source.pdf", "docsplit000000004b", pages=5)
+    plan = plan_split("docsplit000000004b", [3], cfg)
+
+    result = execute_split(plan, cfg)
+
+    retained_pdf = cfg.imported_path / f"source--completed-{result.operation_id[:12]}.pdf"
+    retained_sidecar = retained_pdf.with_suffix(".json")
+    assert not source.exists()
+    assert not source.with_suffix(".json").exists()
+    assert retained_pdf.exists()
+    assert retained_sidecar.exists()
+    assert list_split_documents(cfg) == []
+    completed = list_completed_split_documents(cfg)
+    assert [entry.document_id for entry in completed.entries] == ["docsplit000000004b"]
+    assert completed.issues == ()
+    with pytest.raises(SplitError, match="already completed"):
+        plan_split("docsplit000000004b", [4], cfg)
+    with pytest.raises(SplitError, match="already completed"):
+        suggest_split_boundaries("docsplit000000004b", cfg, provider=lambda *_: {"candidates": []})
+
+
+def test_execute_split_exact_retry_reads_retained_completed_source(tmp_path):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "retry.pdf", "docsplit000000004c", pages=5)
+    plan = plan_split("docsplit000000004c", [3], cfg)
+
+    first = execute_split(plan, cfg)
+    second = execute_split(plan, cfg)
+
+    assert first.operation_id == second.operation_id
+    assert [entry.filename for entry in second.outputs] == [entry.filename for entry in first.outputs]
+
+
+def test_execute_split_retains_long_valid_source_and_updates_sidecar(tmp_path):
+    cfg = make_config(tmp_path)
+    stem = "a" * 220
+    source = write_split_doc(cfg.split_path, f"{stem}.pdf", "docsplit-long-filename", pages=5)
+    source_bytes = source.read_bytes()
+    plan = plan_split("docsplit-long-filename", [3], cfg)
+
+    result = execute_split(plan, cfg)
+    retry = execute_split(plan, cfg)
+
+    retained_pdf = cfg.imported_path / f"{stem}--completed-{result.operation_id[:12]}.pdf"
+    assert not source.exists()
+    assert not source.with_suffix(".json").exists()
+    assert retained_pdf.read_bytes() == source_bytes
+    sidecar = read_sidecar(retained_pdf)
+    assert sidecar is not None
+    assert Path(sidecar.current_path) == retained_pdf
+    assert retry == result
+
+
+def test_execute_split_rejects_overlong_retained_name_before_writing(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, f"{'a' * 227}.pdf", "docsplit-overlong", pages=5)
+    sidecar = source.with_suffix(".json")
+    original_pair = source.read_bytes(), sidecar.read_bytes()
+    plan = plan_split("docsplit-overlong", [3], cfg)
+    monkeypatch.setattr(os, "pathconf", lambda path, name: 255, raising=False)
+
+    with pytest.raises(SplitError, match="Source filename is too long"):
+        execute_split(plan, cfg)
+
+    assert (source.read_bytes(), sidecar.read_bytes()) == original_pair
+    assert not cfg.inbox_path.exists()
+    assert not cfg.imported_path.exists()
+
+
+@pytest.mark.parametrize("retention_interrupted", [False, True])
+def test_execute_split_rejects_a_different_saved_plan_after_completion(
+    tmp_path, monkeypatch, retention_interrupted
+):
+    cfg = make_config(tmp_path)
+    document_id = "docsplit-completed-alternate"
+    write_split_doc(cfg.split_path, "source.pdf", document_id, pages=5)
+    original = plan_split(document_id, [3], cfg)
+    alternate = plan_split(document_id, [4], cfg)
+
+    if retention_interrupted:
+        with monkeypatch.context() as scoped:
+            def interrupt_retention(**kwargs):
+                raise SplitError("Synthetic interruption before retention")
+
+            scoped.setattr(split_module, "_retain_completed_source", interrupt_retention)
+            with pytest.raises(SplitError, match="Synthetic interruption"):
+                execute_split(original, cfg)
+    else:
+        execute_split(original, cfg)
+
+    root = cfg.split_path if retention_interrupted else cfg.imported_path
+    source, = root.glob("*.pdf")
+    sidecar_path = source.with_suffix(".json")
+    original_pair = source.read_bytes(), sidecar_path.read_bytes()
+    for part in original.parts:
+        (cfg.inbox_path / part.destination_filename).unlink()
+
+    with pytest.raises(SplitError, match="Only an exact retry"):
+        execute_split(alternate, cfg)
+
+    assert (source.read_bytes(), sidecar_path.read_bytes()) == original_pair
+    assert not list(cfg.inbox_path.iterdir())
+    assert not (cfg.imported_path / ".split-completed-transition").exists()
 
 
 def test_execute_split_rejects_tampered_sidecar_output_ranges(tmp_path):
@@ -153,6 +278,141 @@ def test_execute_split_does_not_republish_completed_outputs(tmp_path):
         execute_split(plan, cfg)
 
 
+def _write_legacy_completed_split_in_split_root(cfg, *, name: str, doc_id: str):
+    source = write_split_doc(cfg.split_path, name, doc_id, pages=5)
+    plan = plan_split(doc_id, [3], cfg)
+    source_bytes = source.read_bytes()
+    outputs = []
+    cfg.inbox_path.mkdir(parents=True, exist_ok=True)
+    for part in plan.parts:
+        part_payload = split_module._part_pdf_bytes(  # noqa: SLF001
+            source_bytes,
+            start_page=part.start_page,
+            end_page=part.end_page,
+        )
+        output_path = cfg.inbox_path / part.destination_filename
+        output_path.write_bytes(part_payload)
+        outputs.append(
+            SplitOutputRecord(
+                part_number=part.part_number,
+                start_page=part.start_page,
+                end_page=part.end_page,
+                filename=part.destination_filename,
+                sha256=sha256_file(output_path),
+            )
+        )
+    sidecar = read_sidecar(source)
+    assert sidecar is not None
+    sidecar.split_operations = [
+        SplitProvenanceRecord(
+            operation_id=plan.operation_id,
+            source_sha256=plan.source_sha256,
+            source_page_count=plan.source_page_count,
+            boundaries=plan.boundaries,
+            outputs=outputs,
+            state="completed",
+            created_at_utc="2026-10-09T00:00:00Z",
+            completed_at_utc="2026-10-09T00:10:00Z",
+        )
+    ]
+    source.with_suffix(".json").write_text(sidecar.model_dump_json(indent=2), encoding="utf-8")
+    return source, plan
+
+
+def test_reconcile_completed_split_sources_supports_dry_run_and_apply(tmp_path):
+    cfg = make_config(tmp_path)
+    source, plan = _write_legacy_completed_split_in_split_root(
+        cfg,
+        name="legacy.pdf",
+        doc_id="docsplitlegacy00001",
+    )
+
+    dry_run = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert len(dry_run.eligible) == 1
+    assert dry_run.transitioned == ()
+    assert dry_run.issues == ()
+    assert source.exists()
+
+    apply = reconcile_completed_split_sources(cfg, apply_changes=True)
+    assert len(apply.transitioned) == 1
+    retained_pdf = cfg.imported_path / f"legacy--completed-{plan.operation_id[:12]}.pdf"
+    assert retained_pdf.exists()
+    assert not source.exists()
+
+
+def test_reconcile_completed_split_sources_reports_missing_outputs(tmp_path):
+    cfg = make_config(tmp_path)
+    _source, _plan = _write_legacy_completed_split_in_split_root(
+        cfg,
+        name="legacy-missing.pdf",
+        doc_id="docsplitlegacy00002",
+    )
+    first_output = next(cfg.inbox_path.glob("legacy-missing--part-01.pdf"))
+    first_output.unlink()
+
+    result = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert len(result.eligible) == 0
+    assert len(result.issues) == 1
+    assert "missing output" in result.issues[0].reason
+
+
+def test_reconcile_completed_split_sources_rejects_forged_operation_id(tmp_path):
+    cfg = make_config(tmp_path)
+    source, _plan = _write_legacy_completed_split_in_split_root(
+        cfg,
+        name="legacy-forged.pdf",
+        doc_id="docsplitlegacy00006",
+    )
+    sidecar = read_sidecar(source)
+    assert sidecar is not None
+    sidecar.split_operations[0].operation_id = "abcdefgh"
+    source.with_suffix(".json").write_text(sidecar.model_dump_json(indent=2), encoding="utf-8")
+
+    result = reconcile_completed_split_sources(cfg, apply_changes=False)
+
+    assert result.eligible == ()
+    assert len(result.issues) == 1
+    assert "operation id" in result.issues[0].reason.lower()
+
+
+def test_reconcile_completed_split_sources_reports_orphan_split_sidecars(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.split_path.mkdir(parents=True, exist_ok=True)
+    (cfg.split_path / "orphan.json").write_text("{}", encoding="utf-8")
+
+    result = reconcile_completed_split_sources(cfg, apply_changes=False)
+
+    assert result.eligible == ()
+    assert len(result.issues) == 1
+    assert "no matching PDF" in result.issues[0].reason
+
+
+def test_reconcile_completed_split_sources_dry_run_reports_symlinked_retained_pair(tmp_path):
+    cfg = make_config(tmp_path)
+    source, plan = _write_legacy_completed_split_in_split_root(
+        cfg,
+        name="legacy-symlink.pdf",
+        doc_id="docsplitlegacy00007",
+    )
+    retained_pdf = cfg.imported_path / f"legacy-symlink--completed-{plan.operation_id[:12]}.pdf"
+    retained_sidecar = retained_pdf.with_suffix(".json")
+    cfg.imported_path.mkdir(parents=True, exist_ok=True)
+    try:
+        retained_pdf.symlink_to(source)
+        retained_sidecar.symlink_to(source.with_suffix(".json"))
+    except (NotImplementedError, OSError):
+        pytest.skip("Symlinks are not available on this platform.")
+
+    result = reconcile_completed_split_sources(cfg, apply_changes=False)
+
+    assert result.eligible == ()
+    assert len(result.issues) == 1
+    assert (
+        "symbolic link" in result.issues[0].reason
+        or "outside the expected lifecycle root" in result.issues[0].reason
+    )
+
+
 def test_execute_split_rejects_untracked_destination_collision(tmp_path):
     cfg = make_config(tmp_path)
     write_split_doc(cfg.split_path, "collision.pdf", "docsplit000000009", pages=6)
@@ -183,7 +443,7 @@ def test_plan_split_rejects_symlink_source(tmp_path):
     }
     symlink_pdf.with_suffix(".json").write_text(json.dumps(sidecar_payload), encoding="utf-8")
 
-    with pytest.raises(SplitError, match="not found in _Split"):
+    with pytest.raises(SplitError, match="Authoritative source"):
         plan_split("docsplit000000010", [2], cfg)
 
 
@@ -745,9 +1005,559 @@ def test_execute_split_recovers_after_final_completion_write_failure(tmp_path, m
     monkeypatch.setattr(split_module, "_write_sidecar_atomic", original_write_sidecar)
     result = execute_split(plan, cfg)
     assert len(result.outputs) == 2
-    sidecar = read_sidecar(cfg.split_path / "recover-complete.pdf")
+    retained_pdf = cfg.imported_path / f"recover-complete--completed-{result.operation_id[:12]}.pdf"
+    sidecar = read_sidecar(retained_pdf)
     assert sidecar is not None
     assert sidecar.split_operations[0].state == "completed"
+
+
+@pytest.mark.parametrize(
+    "fail_state",
+    [
+        "pdf_staged",
+        "sidecar_staged",
+        "retained_pdf_published",
+        "retained_sidecar_published",
+        "source_pdf_removed",
+        "source_sidecar_removed",
+    ],
+)
+def test_execute_split_recovers_across_completed_transition_states(tmp_path, monkeypatch, fail_state):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "transition-recover.pdf", "docsplit000000014", pages=5)
+    plan = plan_split("docsplit000000014", [3], cfg)
+    original_write_journal = split_module._write_completed_transition_journal
+    triggered = {"done": False}
+
+    def flaky_write_journal(journal_path, journal, *, state):
+        if state == fail_state and not triggered["done"]:
+            triggered["done"] = True
+            raise SplitError(f"injected transition failure at {state}")
+        return original_write_journal(journal_path, journal, state=state)
+
+    monkeypatch.setattr(split_module, "_write_completed_transition_journal", flaky_write_journal)
+    with pytest.raises(SplitError, match=f"injected transition failure at {fail_state}"):
+        execute_split(plan, cfg)
+
+    monkeypatch.setattr(split_module, "_write_completed_transition_journal", original_write_journal)
+    result = execute_split(plan, cfg)
+    retained_pdf = cfg.imported_path / f"transition-recover--completed-{result.operation_id[:12]}.pdf"
+    assert retained_pdf.exists()
+    assert not (cfg.split_path / "transition-recover.pdf").exists()
+    assert not (cfg.imported_path / ".split-completed-transition").exists()
+
+
+def test_execute_split_recovers_from_journal_with_pdf_only_in_imported(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "journal-recover.pdf", "docsplit000000015", pages=5)
+    plan = plan_split("docsplit000000015", [3], cfg)
+
+    original_remove = split_module._remove_source_file_if_present
+    original_write_journal = split_module._write_completed_transition_journal
+    removed_pdf = {"done": False}
+
+    def staged_remove(source_path, *, root, expected_hash, label):
+        if label == "PDF" and not removed_pdf["done"]:
+            removed_pdf["done"] = True
+            return original_remove(
+                source_path,
+                root=root,
+                expected_hash=expected_hash,
+                label=label,
+            )
+        if label == "sidecar":
+            raise SplitError("injected stop after source PDF cleanup")
+        return original_remove(source_path, root=root, expected_hash=expected_hash, label=label)
+
+    monkeypatch.setattr(split_module, "_remove_source_file_if_present", staged_remove)
+    with pytest.raises(SplitError, match="injected stop after source PDF cleanup"):
+        execute_split(plan, cfg)
+
+    monkeypatch.setattr(split_module, "_remove_source_file_if_present", original_remove)
+    monkeypatch.setattr(split_module, "_write_completed_transition_journal", original_write_journal)
+    result = execute_split(plan, cfg)
+    retained_pdf = cfg.imported_path / f"journal-recover--completed-{result.operation_id[:12]}.pdf"
+    retained_sidecar = retained_pdf.with_suffix(".json")
+    assert retained_pdf.exists()
+    assert retained_sidecar.exists()
+    assert not (cfg.split_path / "journal-recover.pdf").exists()
+    assert not (cfg.split_path / "journal-recover.json").exists()
+
+
+def test_split_declines_linked_transition_directory_before_publishing(tmp_path):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "source.pdf", "docsplit-safe-root", pages=5)
+    plan = plan_split("docsplit-safe-root", [3], cfg)
+    original = source.read_bytes(), source.with_suffix(".json").read_bytes()
+    transition = cfg.imported_path / ".split-completed-transition"
+    transition.mkdir(parents=True)
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    try:
+        (transition / plan.operation_id).symlink_to(unrelated, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Directory links are unavailable.")
+
+    with pytest.raises(SplitError, match="operation directory must not be a link"):
+        execute_split(plan, cfg)
+
+    assert (source.read_bytes(), source.with_suffix(".json").read_bytes()) == original
+    assert not list(unrelated.iterdir())
+    assert not list(cfg.inbox_path.glob("*.pdf"))
+
+
+@pytest.mark.parametrize(
+    ("artifact", "interrupted_state"),
+    [("source.pdf", "sidecar_staged"), ("source.json", "retained_pdf_published")],
+)
+@pytest.mark.parametrize("staged_link", [False, True])
+def test_exact_retry_checks_staged_file_before_publishing(
+    tmp_path, monkeypatch, artifact, interrupted_state, staged_link
+):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "source.pdf", "docsplit-verify-stage", pages=5)
+    plan = plan_split("docsplit-verify-stage", [3], cfg)
+    write_journal = split_module._write_completed_transition_journal
+
+    def interrupt(journal_path, journal, *, state):
+        written = write_journal(journal_path, journal, state=state)
+        if state == interrupted_state:
+            raise SplitError("Synthetic interruption before publication")
+        return written
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(split_module, "_write_completed_transition_journal", interrupt)
+        with pytest.raises(SplitError, match="Synthetic interruption"):
+            execute_split(plan, cfg)
+
+    stage, _, _ = split_module._completed_transition_paths(
+        imported_root=cfg.imported_path, operation_id=plan.operation_id,
+    )
+    staged = stage / artifact
+    staged_bytes = staged.read_bytes()
+    suffix = staged.suffix
+    destination = cfg.imported_path / f"source--completed-{plan.operation_id[:12]}{suffix}"
+    sidecar = source.with_suffix(".json")
+    source_pair = source.read_bytes(), sidecar.read_bytes()
+    if staged_link:
+        unrelated = tmp_path / f"unrelated{suffix}"
+        unrelated.write_bytes(b"Synthetic unrelated file")
+        staged.unlink()
+        try:
+            staged.symlink_to(unrelated)
+        except (OSError, NotImplementedError):
+            pytest.skip("File links are unavailable.")
+        message = "outside the expected lifecycle root"
+    else:
+        staged.write_bytes(b"Synthetic changed staging file")
+        message = "hash mismatch"
+
+    with pytest.raises(SplitError, match=message):
+        execute_split(plan, cfg)
+
+    assert not destination.exists()
+    assert (source.read_bytes(), sidecar.read_bytes()) == source_pair
+    staged.unlink()
+    staged.write_bytes(staged_bytes)
+    assert execute_split(plan, cfg).operation_id == plan.operation_id
+
+
+def test_reconciliation_reports_staging_left_without_a_journal(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.split_path.mkdir()
+    stage = cfg.imported_path / ".split-completed-transition" / ("a" * 32)
+    stage.mkdir(parents=True)
+    orphan = stage / "source.json"
+    orphan.write_text("{}", encoding="utf-8")
+
+    result = reconcile_completed_split_sources(cfg, apply_changes=False)
+
+    assert not result.eligible
+    assert len(result.issues) == 1
+    assert "without a journal" in result.issues[0].reason
+    assert orphan.read_text(encoding="utf-8") == "{}"
+
+
+@pytest.mark.parametrize("interrupted_file", ["source.json", "transition-state.json"])
+def test_finalized_transition_keeps_journal_through_partial_cleanup(
+    tmp_path, monkeypatch, interrupted_file
+):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "source.pdf", "docsplit-partial-cleanup", pages=5)
+    plan = plan_split("docsplit-partial-cleanup", [3], cfg)
+    stage, _, journal = split_module._completed_transition_paths(
+        imported_root=cfg.imported_path, operation_id=plan.operation_id,
+    )
+    unlink = Path.unlink
+
+    def interrupt(path, *args, **kwargs):
+        if path == stage / interrupted_file:
+            assert journal.is_file()
+            raise OSError("Synthetic cleanup interruption")
+        return unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "unlink", interrupt)
+        with pytest.raises(SplitError, match="Could not clean"):
+            execute_split(plan, cfg)
+
+    assert json.loads(journal.read_text(encoding="utf-8"))["state"] == "finalized"
+    preview = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert len(preview.eligible) == 1 and not preview.issues
+    applied = reconcile_completed_split_sources(cfg, apply_changes=True)
+    assert len(applied.transitioned) == 1 and not applied.issues
+    assert not stage.exists()
+
+
+def test_split_cleanup_accepts_other_worker_finishing_cleanup(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "source.pdf", "docsplit-overlapping-cleanup", pages=5)
+    plan = plan_split("docsplit-overlapping-cleanup", [3], cfg)
+    stage, transition, _ = split_module._completed_transition_paths(
+        imported_root=cfg.imported_path, operation_id=plan.operation_id,
+    )
+    unlink = Path.unlink
+    ran_second_cleanup = False
+
+    def overlap(path, *args, **kwargs):
+        nonlocal ran_second_cleanup
+        if path.parent == stage and path.name in {"source.pdf", "source.json"} and not ran_second_cleanup:
+            ran_second_cleanup = True
+            split_module._cleanup_completed_transition_artifacts(
+                operation_root=stage, transition_root=transition,
+            )
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", overlap)
+    result = execute_split(plan, cfg)
+
+    assert ran_second_cleanup
+    assert result.operation_id == plan.operation_id
+    assert not stage.exists()
+    completed = list_completed_split_documents(cfg)
+    assert len(completed.entries) == 1 and not completed.issues
+
+
+@pytest.mark.parametrize("retained_artifact", [".pdf", ".json"])
+@pytest.mark.parametrize("remove_retained_artifact", [True, False])
+def test_exact_retry_preserves_source_if_retained_pair_is_unverified(
+    tmp_path, monkeypatch, retained_artifact, remove_retained_artifact
+):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "source.pdf", "docsplit-retained-check", pages=5)
+    plan = plan_split("docsplit-retained-check", [3], cfg)
+    write_journal = split_module._write_completed_transition_journal
+
+    def interrupt(journal_path, journal, *, state):
+        written = write_journal(journal_path, journal, state=state)
+        if state == "retained_sidecar_published":
+            raise SplitError("Synthetic interruption before source cleanup")
+        return written
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(split_module, "_write_completed_transition_journal", interrupt)
+        with pytest.raises(SplitError, match="Synthetic interruption"):
+            execute_split(plan, cfg)
+
+    retained, = cfg.imported_path.glob("*.pdf")
+    target = retained.with_suffix(retained_artifact)
+    if remove_retained_artifact:
+        target.unlink()
+    elif retained_artifact == ".pdf":
+        target.write_bytes(pdf_bytes(2))
+    else:
+        record = json.loads(target.read_text(encoding="utf-8"))
+        record["summary_short"] = "Synthetic change after publication"
+        target.write_text(json.dumps(record), encoding="utf-8")
+    original = source.read_bytes(), source.with_suffix(".json").read_bytes()
+
+    with pytest.raises(SplitError):
+        execute_split(plan, cfg)
+
+    assert (source.read_bytes(), source.with_suffix(".json").read_bytes()) == original
+
+
+def test_execute_split_recovers_after_cleanup_failure_with_owned_temp_residue(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "cleanup-recover.pdf", "docsplit000000025", pages=5)
+    plan = plan_split("docsplit000000025", [3], cfg)
+    original_cleanup = split_module._cleanup_completed_transition_artifacts
+    triggered = {"done": False}
+
+    def flaky_cleanup(*, operation_root, transition_root):
+        if not triggered["done"]:
+            triggered["done"] = True
+            (operation_root / ".transition-state.json.injected.tmp").write_text("{}", encoding="utf-8")
+            raise SplitError("injected cleanup failure")
+        return original_cleanup(operation_root=operation_root, transition_root=transition_root)
+
+    monkeypatch.setattr(split_module, "_cleanup_completed_transition_artifacts", flaky_cleanup)
+    with pytest.raises(SplitError, match="injected cleanup failure"):
+        execute_split(plan, cfg)
+
+    monkeypatch.setattr(split_module, "_cleanup_completed_transition_artifacts", original_cleanup)
+    result = execute_split(plan, cfg)
+    retained_pdf = cfg.imported_path / f"cleanup-recover--completed-{result.operation_id[:12]}.pdf"
+    assert retained_pdf.exists()
+    assert not (cfg.imported_path / ".split-completed-transition").exists()
+
+
+@pytest.mark.parametrize("split_root_present", [True, False])
+def test_reconcile_completed_split_sources_accepts_finalized_cleanup_residue(
+    tmp_path, monkeypatch, split_root_present
+):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "cleanup-residue.pdf", "docsplit000000026", pages=5)
+    plan = plan_split("docsplit000000026", [3], cfg)
+    original_cleanup = split_module._cleanup_completed_transition_artifacts
+    triggered = {"done": False}
+
+    def fail_once_cleanup(*, operation_root, transition_root):
+        if not triggered["done"]:
+            triggered["done"] = True
+            raise SplitError("injected cleanup failure")
+        return original_cleanup(operation_root=operation_root, transition_root=transition_root)
+
+    monkeypatch.setattr(split_module, "_cleanup_completed_transition_artifacts", fail_once_cleanup)
+    with pytest.raises(SplitError, match="injected cleanup failure"):
+        execute_split(plan, cfg)
+
+    monkeypatch.setattr(split_module, "_cleanup_completed_transition_artifacts", original_cleanup)
+    retained_pdf = cfg.imported_path / f"cleanup-residue--completed-{plan.operation_id[:12]}.pdf"
+    retained_sidecar = retained_pdf.with_suffix(".json")
+    operation_root, _transition_root, journal_path = split_module._completed_transition_paths(  # noqa: SLF001
+        imported_root=cfg.imported_path,
+        operation_id=plan.operation_id,
+    )
+    staged_sidecar = operation_root / "source.json"
+    assert retained_sidecar.exists()
+    assert staged_sidecar.exists()
+    assert journal_path.exists()
+    assert not (cfg.split_path / "cleanup-residue.pdf").exists()
+    assert not (cfg.split_path / "cleanup-residue.json").exists()
+    if not split_root_present:
+        cfg.split_path.rmdir()
+
+    retained_doc = read_sidecar(retained_pdf)
+    staged_doc = split_module._read_sidecar_validated(staged_sidecar)  # noqa: SLF001
+    assert retained_doc is not None
+    assert staged_doc.current_path != retained_doc.current_path
+
+    dry_run = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert len(dry_run.eligible) == 1
+    assert dry_run.issues == ()
+
+    apply = reconcile_completed_split_sources(cfg, apply_changes=True)
+    assert len(apply.transitioned) == 1
+    assert apply.issues == ()
+    assert not operation_root.exists()
+    assert cfg.split_path.exists() is split_root_present
+
+    replay = execute_split(plan, cfg)
+    assert replay.operation_id == plan.operation_id
+    assert cfg.split_path.exists() is split_root_present
+
+
+def test_list_completed_split_documents_reports_invalid_entries(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.split_path.mkdir(parents=True, exist_ok=True)
+    imported_pdf = cfg.imported_path / "broken--completed-aaaaaaaaaaaa.pdf"
+    cfg.imported_path.mkdir(parents=True, exist_ok=True)
+    imported_pdf.write_bytes(pdf_bytes(2))
+
+    result = list_completed_split_documents(cfg)
+
+    assert result.entries == ()
+    assert len(result.issues) == 1
+    assert result.issues[0].retained_pdf == imported_pdf.name
+
+
+def test_list_completed_split_documents_reports_orphan_sidecars(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.split_path.mkdir(parents=True, exist_ok=True)
+    cfg.imported_path.mkdir(parents=True, exist_ok=True)
+    (cfg.imported_path / "orphan--completed-aaaaaaaaaaaa.json").write_text("{}", encoding="utf-8")
+
+    result = list_completed_split_documents(cfg)
+
+    assert result.entries == ()
+    assert len(result.issues) == 1
+    assert "no matching PDF" in result.issues[0].reason
+
+
+def test_reconcile_completed_split_sources_dry_run_detects_destination_collision(tmp_path):
+    cfg = make_config(tmp_path)
+    source, plan = _write_legacy_completed_split_in_split_root(
+        cfg,
+        name="legacy-collision.pdf",
+        doc_id="docsplitlegacy00003",
+    )
+    retained_pdf = cfg.imported_path / f"legacy-collision--completed-{plan.operation_id[:12]}.pdf"
+    cfg.imported_path.mkdir(parents=True, exist_ok=True)
+    retained_pdf.write_bytes(pdf_bytes(1))
+    retained_pdf.with_suffix(".json").write_text("{}", encoding="utf-8")
+
+    result = reconcile_completed_split_sources(cfg, apply_changes=False)
+
+    assert result.eligible == ()
+    assert len(result.issues) == 1
+    assert "collision" in result.issues[0].reason.lower() or "invalid" in result.issues[0].reason.lower()
+    assert source.exists()
+
+
+def test_reconcile_completed_split_sources_recovers_journal_only_candidate(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "legacy-journal.pdf", "docsplitlegacy00004", pages=5)
+    plan = plan_split("docsplitlegacy00004", [3], cfg)
+
+    original_write_journal = split_module._write_completed_transition_journal
+
+    def fail_after_pdf_publish(journal_path, journal, *, state):
+        result = original_write_journal(journal_path, journal, state=state)
+        if state == "source_pdf_removed":
+            raise SplitError("injected stop at source_pdf_removed")
+        return result
+
+    monkeypatch.setattr(split_module, "_write_completed_transition_journal", fail_after_pdf_publish)
+    with pytest.raises(SplitError, match="source_pdf_removed"):
+        execute_split(plan, cfg)
+
+    monkeypatch.setattr(split_module, "_write_completed_transition_journal", original_write_journal)
+    assert not (cfg.split_path / "legacy-journal.pdf").exists()
+    assert (cfg.split_path / "legacy-journal.json").exists()
+    preview = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert len(preview.eligible) == 1
+    assert preview.issues == ()
+    result = reconcile_completed_split_sources(cfg, apply_changes=True)
+    assert len(result.transitioned) == 1
+    assert result.issues == ()
+    retained_pdf = cfg.imported_path / f"legacy-journal--completed-{plan.operation_id[:12]}.pdf"
+    assert retained_pdf.exists()
+    assert not (cfg.split_path / "legacy-journal.json").exists()
+
+
+def test_reconcile_completed_split_sources_dry_run_detects_stale_journal_retained_pdf_collision(
+    tmp_path, monkeypatch
+):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "legacy-stale-collision.pdf", "docsplitlegacy00008", pages=5)
+    plan = plan_split("docsplitlegacy00008", [3], cfg)
+    original_write_journal = split_module._write_completed_transition_journal
+
+    def fail_before_retained_pdf_state(journal_path, journal, *, state):
+        if state == "retained_pdf_published":
+            raise SplitError("injected stop before retained_pdf_published journal write")
+        return original_write_journal(journal_path, journal, state=state)
+
+    monkeypatch.setattr(split_module, "_write_completed_transition_journal", fail_before_retained_pdf_state)
+    with pytest.raises(SplitError, match="retained_pdf_published"):
+        execute_split(plan, cfg)
+    monkeypatch.setattr(split_module, "_write_completed_transition_journal", original_write_journal)
+
+    retained_pdf = cfg.imported_path / f"legacy-stale-collision--completed-{plan.operation_id[:12]}.pdf"
+    assert retained_pdf.exists()
+    retained_pdf.write_bytes(pdf_bytes(1))
+
+    result = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert result.eligible == ()
+    assert len(result.issues) >= 1
+    assert any("retained pdf hash mismatch" in issue.reason.lower() for issue in result.issues)
+
+
+def test_reconcile_completed_split_sources_dry_run_accepts_valid_stale_journal_artifact(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "legacy-stale-valid.pdf", "docsplitlegacy00009", pages=5)
+    plan = plan_split("docsplitlegacy00009", [3], cfg)
+    original_write_journal = split_module._write_completed_transition_journal
+
+    def fail_before_retained_pdf_state(journal_path, journal, *, state):
+        if state == "retained_pdf_published":
+            raise SplitError("injected stop before retained_pdf_published journal write")
+        return original_write_journal(journal_path, journal, state=state)
+
+    monkeypatch.setattr(split_module, "_write_completed_transition_journal", fail_before_retained_pdf_state)
+    with pytest.raises(SplitError, match="retained_pdf_published"):
+        execute_split(plan, cfg)
+    monkeypatch.setattr(split_module, "_write_completed_transition_journal", original_write_journal)
+
+    dry_run = reconcile_completed_split_sources(cfg, apply_changes=False)
+    assert len(dry_run.eligible) == 1
+    assert dry_run.issues == ()
+
+    apply = reconcile_completed_split_sources(cfg, apply_changes=True)
+    assert len(apply.transitioned) == 1
+    assert apply.issues == ()
+
+
+def test_concurrent_execute_split_attempts_do_not_overwrite_retained_outputs(tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    write_split_doc(cfg.split_path, "concurrent.pdf", "docsplit000000016", pages=5)
+    plan = plan_split("docsplit000000016", [3], cfg)
+    original_publish = split_module._publish_retained_from_stage
+    gate = {"armed": True}
+
+    def delayed_publish(stage_path, destination_path, *, expected_hash, root, label):
+        if gate["armed"] and label == "PDF":
+            gate["armed"] = False
+            time.sleep(0.05)
+        return original_publish(
+            stage_path,
+            destination_path,
+            expected_hash=expected_hash,
+            root=root,
+            label=label,
+        )
+
+    monkeypatch.setattr(split_module, "_publish_retained_from_stage", delayed_publish)
+    results: list[object] = []
+
+    def run_once():
+        try:
+            results.append(execute_split(plan, cfg))
+        except Exception as exc:  # noqa: BLE001
+            results.append(exc)
+
+    t1 = threading.Thread(target=run_once)
+    t2 = threading.Thread(target=run_once)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    successes = [item for item in results if not isinstance(item, Exception)]
+    assert len(successes) >= 1
+    retained_pdf = cfg.imported_path / f"concurrent--completed-{plan.operation_id[:12]}.pdf"
+    retained_sidecar = retained_pdf.with_suffix(".json")
+    assert retained_pdf.exists()
+    assert retained_sidecar.exists()
+    assert not (cfg.split_path / "concurrent.pdf").exists()
+
+
+def test_concurrent_reconcile_attempts_are_idempotent(tmp_path):
+    cfg = make_config(tmp_path)
+    source, plan = _write_legacy_completed_split_in_split_root(
+        cfg,
+        name="legacy-concurrent.pdf",
+        doc_id="docsplitlegacy00005",
+    )
+    results: list[CompletedSplitReconcileResult] = []
+
+    def run_once():
+        results.append(reconcile_completed_split_sources(cfg, apply_changes=True))
+
+    t1 = threading.Thread(target=run_once)
+    t2 = threading.Thread(target=run_once)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    retained_pdf = cfg.imported_path / f"legacy-concurrent--completed-{plan.operation_id[:12]}.pdf"
+    retained_sidecar = retained_pdf.with_suffix(".json")
+    assert retained_pdf.exists()
+    assert retained_sidecar.exists()
+    assert not source.exists()
+    assert any(result.transitioned for result in results)
 
 
 def test_exclusive_atomic_write_does_not_overwrite_racing_writer(tmp_path, monkeypatch):
@@ -844,6 +1654,41 @@ def test_execute_split_rejects_aliased_split_and_inbox_roots(tmp_path):
     assert source.with_suffix(".json").read_bytes() == sidecar_before
 
 
+@pytest.mark.parametrize(
+    ("imported_dir", "archive_dir"),
+    [
+        ("Archive", "Archive"),
+        ("_Review", "Archive"),
+        ("_Inbox", "Archive"),
+        ("_Imported", "_imported/Retained"),
+        ("Rétention", "Re\u0301tention"),
+    ],
+)
+def test_completed_split_rejects_overlapping_retention_root(tmp_path, imported_dir, archive_dir):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "source.pdf", "docsplit000000024", pages=4)
+    plan = plan_split("docsplit000000024", [3], cfg)
+    original_pdf = source.read_bytes()
+    original_sidecar = source.with_suffix(".json").read_bytes()
+    cfg.imported_dir = imported_dir
+    cfg.archive_dir = archive_dir
+
+    with patch("aktenfux.split.PdfReader") as pdf_reader:
+        for operation in (
+            lambda: execute_split(plan, cfg),
+            lambda: plan_split(plan.document_id, [3], cfg),
+            lambda: list_completed_split_documents(cfg),
+            lambda: reconcile_completed_split_sources(cfg, apply_changes=True),
+        ):
+            with pytest.raises(SplitError, match="imported root overlaps another lifecycle"):
+                operation()
+        pdf_reader.assert_not_called()
+
+    assert source.read_bytes() == original_pdf
+    assert source.with_suffix(".json").read_bytes() == original_sidecar
+    assert list(cfg.inbox_path.glob("*.pdf")) == []
+
+
 def test_plan_split_rejects_pdf_hash_mismatch_before_parse(tmp_path):
     cfg = make_config(tmp_path)
     source = write_split_doc(cfg.split_path, "replaced.pdf", "docsplit000000019", pages=3)
@@ -853,6 +1698,41 @@ def test_plan_split_rejects_pdf_hash_mismatch_before_parse(tmp_path):
         with pytest.raises(SplitError, match="authoritative sidecar"):
             plan_split("docsplit000000019", [2], cfg)
         pdf_reader.assert_not_called()
+
+
+def test_plan_split_rejects_hard_linked_source_pdf(tmp_path):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "hardlink.pdf", "docsplit000000023", pages=3)
+    external = tmp_path / "outside.pdf"
+    external.write_bytes(source.read_bytes())
+    source.unlink()
+    try:
+        os.link(external, source, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno in {errno.EPERM, errno.EXDEV, errno.EOPNOTSUPP, errno.ENOTSUP}:
+            pytest.skip("Hard links are not available on this platform.")
+        raise
+
+    with pytest.raises(SplitError, match="Authoritative source"):
+        plan_split("docsplit000000023", [2], cfg)
+
+
+def test_plan_split_rejects_hard_linked_source_sidecar(tmp_path):
+    cfg = make_config(tmp_path)
+    source = write_split_doc(cfg.split_path, "hardlink-sidecar.pdf", "docsplit000000024", pages=3)
+    sidecar = source.with_suffix(".json")
+    external = tmp_path / "outside.json"
+    external.write_bytes(sidecar.read_bytes())
+    sidecar.unlink()
+    try:
+        os.link(external, sidecar, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno in {errno.EPERM, errno.EXDEV, errno.EOPNOTSUPP, errno.ENOTSUP}:
+            pytest.skip("Hard links are not available on this platform.")
+        raise
+
+    with pytest.raises(SplitError, match="not found"):
+        plan_split("docsplit000000024", [2], cfg)
 
 
 def test_exclusive_write_falls_back_without_hard_link_support(tmp_path, monkeypatch):

@@ -7,6 +7,7 @@ import logging
 import shutil
 from pathlib import Path
 from typing import BinaryIO
+from unicodedata import normalize
 
 from aktenfux.schema import SidecarDocument
 
@@ -45,6 +46,14 @@ def assert_within_base(path: Path, base_dir: Path) -> None:
         raise ValueError(
             f"Path traversal detected: {path} is not inside {base_dir}"
         )
+
+
+def paths_overlap(first: Path, second: Path) -> bool:
+    """Compare path components conservatively across case and Unicode variants."""
+    first_parts = tuple(normalize("NFC", part).casefold() for part in first.parts)
+    second_parts = tuple(normalize("NFC", part).casefold() for part in second.parts)
+    common_length = min(len(first_parts), len(second_parts))
+    return first_parts[:common_length] == second_parts[:common_length]
 
 
 # ---------------------------------------------------------------------------

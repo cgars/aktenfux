@@ -51,4 +51,4 @@ The intended default is a single-user, local-first application with local infere
 - [Threat model](docs/threat-model.md)
 - [ELI5 guide](docs/eli5.md)
 - [ADR 0001](docs/decisions/0001-local-first-human-controlled-archive.md)
-
+- [ADR 0002](docs/decisions/0002-completed-split-source-lifecycle.md)
